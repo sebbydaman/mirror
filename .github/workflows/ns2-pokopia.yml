@@ -60,6 +60,48 @@ jobs:
         run: |
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-ns2-build-fixes.ps1"
 
+          # Recover the exact conservative TMML path from the known-working SW2
+          # binary. Mesa's SM70/Turing encoding independently confirms opcode
+          # 0xb69 and the texture-cbuf field layout. Keep this deliberately narrow:
+          # 2D, one R LOD result, cbuf descriptor, no divergent/BA/bindless modes.
+          $amperePath = "src/shader_recompiler/frontend/ampere/lower_to_maxwell.h"
+          $ampereText = Get-Content $amperePath -Raw
+          if (-not $ampereText.Contains('case 0xb69:')) {
+              $tmmlNeedle = '        case 0x816: { // Captured PRMT half-word concatenation'
+              if (-not $ampereText.Contains($tmmlNeedle)) {
+                  throw "Could not locate PRMT insertion point for native TMML"
+              }
+              $tmmlBlock = @'
+          case 0xb69: { // TMML, 2D mipmap-level query, single R result
+              const u32 binding = insn.Bits(54, 5);
+              const u32 offset = insn.Bits(40, 14);
+              const u32 source = insn.Bits(24, 8);
+              if (insn.Bits(32, 8) != 255 || insn.Bits(59, 2) ||
+                  insn.Bits(61, 3) != 1 || insn.Bits(64, 8) != 255 ||
+                  insn.Bits(72, 4) != 1 || insn.Bits(76, 15) ||
+                  insn.Bits(91, 1) || binding >= 18 || offset > 0x1fff ||
+                  dest == 255 || source >= 249) {
+                  return fail(index, "native texture mipmap level query mode");
+              }
+              if (result.required_texture_buffer != ~0U &&
+                  result.required_texture_buffer != binding) {
+                  return fail(index, "native texture descriptor buffer conflict");
+              }
+              result.required_texture_buffer = binding;
+              emit(base(0xdf58000000000000ULL) | (u64{source} << 8) |
+                   (u64{2} << 28) | (u64{1} << 31) | (u64{offset} << 36));
+              break;
+          }
+          '@
+              $ampereText = $ampereText.Replace(
+                  $tmmlNeedle,
+                  $tmmlBlock.TrimEnd("`r", "`n") + "`n" + $tmmlNeedle)
+              Set-Content -Path $amperePath -Value $ampereText -Encoding utf8 -NoNewline
+              Write-Host "Added native TMML 2D LOD query lowering recovered from working SW2 build."
+          } else {
+              Write-Host "Native TMML lowering already present."
+          }
+
           # Native shaders are immutable for the lifetime of a compiled pipeline,
           # but the environment adapter currently lowers identical Ampere source
           # every time a new environment is constructed. The working SW2 log
@@ -187,7 +229,7 @@ jobs:
               Write-Host "Native shader lowering cache already present."
           }
 
-          git diff -- src/video_core/shader_environment.cpp
+          git diff -- src/shader_recompiler/frontend/ampere/lower_to_maxwell.h src/video_core/shader_environment.cpp
 
       - name: Restore CPM dependency cache
         uses: actions/cache@v4
@@ -285,6 +327,7 @@ jobs:
           Cross-game evidence: this source reaches Donkey Kong Bananza gameplay with generic GPU/compute/shader fixes.
           Known-working Pokopia comparison binary: source checkpoint 75c801a, MSVC 19.51 / runtime 14.51
           Native shader lowering cache: enabled (content-addressed, 4096 entries)
+          Native TMML 2D LOD query lowering: enabled (recovered from working binary and Mesa SM70 encoding).
           '@ | Set-Content -Path "$bin\BUILD_SOURCE.txt" -Encoding UTF8
 
       - name: Upload Windows build
