@@ -73,6 +73,55 @@ if (-not $ampereText.Contains('case 0x361:')) {
     Write-Host "Native bindless 2D/cube TEX lowering already present."
 }
 
+# Broaden the native TXQ dimension-query lowering. The baseline only accepts a
+# fixed XY query from descriptor buffer 2. Maxwell TXQ already supports a 4-bit
+# component mask (X/Y/Z/mip-count), so preserve the native mask, validate the
+# packed destination span, and accept any descriptor buffer the existing
+# environment can bind. Keep descriptor-buffer conflicts explicit.
+$ampereText = Get-Content $amperePath -Raw
+$oldTxq = @'
+        case 0xb6f: { // TXQ texture dimensions, two packed scalar outputs.
+            if (insn.Bits(59, 5) || insn.Bits(64, 8) != 255 || insn.Bits(72, 4) != 3 ||
+                insn.Bits(76, 14) || insn.Bits(91, 1) || insn.Bits(54, 5) != 2 ||
+                insn.Bits(40, 14) > 0x1fff || (dest & 1) || dest >= 254)
+                return fail(index, "native texture dimension query mode");
+            result.required_texture_buffer = 2;
+            emit(0xdf48000000000000ULL | predicate | dest | (u64{insn.Bits(24, 8)} << 8) |
+                 (u64{1} << 22) | (u64{3} << 31) | (u64{insn.Bits(40, 14)} << 36) |
+                 (u64{insn.Bits(90, 1)} << 49));
+            break;
+        }
+'@
+$newTxq = @'
+        case 0xb6f: { // TXQ texture dimensions, packed X/Y/Z/mip-count outputs.
+            const u32 binding = insn.Bits(54, 5);
+            const u32 mask = insn.Bits(72, 4);
+            const u32 outputs = (mask & 1U) + ((mask >> 1) & 1U) +
+                                ((mask >> 2) & 1U) + ((mask >> 3) & 1U);
+            if (insn.Bits(59, 5) || insn.Bits(64, 8) != 255 || mask == 0 ||
+                insn.Bits(76, 14) || insn.Bits(91, 1) || binding >= 18 ||
+                insn.Bits(40, 14) > 0x1fff || (dest & 1) || dest + outputs > 250)
+                return fail(index, "native texture dimension query mode");
+            if (result.required_texture_buffer != ~0U &&
+                result.required_texture_buffer != binding)
+                return fail(index, "native texture descriptor buffer conflict");
+            result.required_texture_buffer = binding;
+            emit(0xdf48000000000000ULL | predicate | dest | (u64{insn.Bits(24, 8)} << 8) |
+                 (u64{1} << 22) | (u64{mask} << 31) | (u64{insn.Bits(40, 14)} << 36) |
+                 (u64{insn.Bits(90, 1)} << 49));
+            break;
+        }
+'@
+if ($ampereText.Contains($oldTxq)) {
+    $ampereText = $ampereText.Replace($oldTxq, $newTxq)
+    Set-Content -Path $amperePath -Value $ampereText -Encoding utf8 -NoNewline
+    Write-Host "Extended native TXQ dimension-query lowering."
+} elseif ($ampereText.Contains('case 0xb6f: { // TXQ texture dimensions, packed X/Y/Z/mip-count outputs.')) {
+    Write-Host "Extended native TXQ dimension-query lowering already present."
+} else {
+    throw "Could not locate baseline native TXQ dimension-query lowering"
+}
+
 # Turing/Ampere TLD4 texture gather. The 0x2593 cross-game baseline does not
 # implement opcode 0xb63. This conservative 2D cbuf-descriptor subset matches
 # STORM's generic lowering and Mesa NAK's SM70 encoding. Unsupported modes keep
