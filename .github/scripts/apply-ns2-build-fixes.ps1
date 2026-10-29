@@ -10,9 +10,11 @@ if (-not (Test-Path $baseScript)) {
 & $baseScript
 
 # SM70-SM90 bindless TEX uses opcode 0x361 (.B) instead of the cbuf descriptor
-# opcode 0xb60. Lower the conservative scalar 2D implicit-LOD subset to Maxwell
-# TEX_b, whose frontend already consumes the texture handle from the metadata
-# register. Sample into scratch registers first, then scatter the packed selected
+# opcode 0xb60. Lower the conservative scalar 2D/cube implicit-LOD subset to
+# Maxwell TEX_b, whose frontend already consumes the texture handle from the
+# metadata register. Mesa NAK packs non-array cube sampling as three consecutive
+# coordinates in src0 and the bindless handle in src1, matching TEX_b's cube
+# layout. Sample into scratch registers first, then scatter the packed selected
 # channels back to the native split destinations. Unsupported texture modes keep
 # failing instead of being approximated.
 $amperePath = "src/shader_recompiler/frontend/ampere/lower_to_maxwell.h"
@@ -24,27 +26,30 @@ if (-not $ampereText.Contains('case 0x361:')) {
     }
 
     $bindlessBlock = @'
-        case 0x361: { // TEX.B, scalar bindless 2D implicit-LOD sample
+        case 0x361: { // TEX.B, scalar bindless 2D/cube implicit-LOD sample
             const u32 mask = insn.Bits(72, 4);
             const u32 second_dest = insn.Bits(64, 8);
             const u32 coord_reg = insn.Bits(24, 8);
             const u32 meta_reg = insn.Bits(32, 8);
+            const u32 dimension = insn.Bits(61, 3);
+            const bool cube = dimension == 3;
             const bool split = second_dest != 255;
             const u32 channels = (mask & 1U) + ((mask >> 1) & 1U) +
                                  ((mask >> 2) & 1U) + ((mask >> 3) & 1U);
-            if (!insn.Bits(59, 1) || !insn.Bits(60, 1) || insn.Bits(61, 3) != 1 ||
+            if (!insn.Bits(59, 1) || !insn.Bits(60, 1) || (dimension != 1 && !cube) ||
                 mask == 0 || insn.Bits(76, 5) || insn.Bits(81, 3) != 7 ||
-                insn.Bits(87, 3) || insn.Bits(91, 1) || coord_reg >= 250 || meta_reg >= 250 ||
+                insn.Bits(87, 3) || insn.Bits(91, 1) ||
+                coord_reg >= (cube ? 248U : 250U) || meta_reg >= 250 ||
                 dest == 255 || channels > (split ? 4U : 2U) ||
                 (channels > 1 && (dest >= 254 || (dest & 1))) ||
                 (split && (second_dest >= 254 || (channels > 2 && (second_dest & 1))))) {
-                return fail(index, "native bindless 2D texture mode");
+                return fail(index, "native bindless 2D/cube texture mode");
             }
             // Maxwell TEX_b: coord base in bits 8..15, bindless handle/meta base in
-            // bits 20..27, type=2D in bits 28..30, and packed selected channels.
+            // bits 20..27, texture type in bits 28..30, and packed selected channels.
             emit(0xde80000000000000ULL | predicate | 250 |
                  (u64{coord_reg} << 8) | (u64{meta_reg} << 20) |
-                 (u64{2} << 28) | (u64{mask} << 31) |
+                 (u64{cube ? 6U : 2U} << 28) | (u64{mask} << 31) |
                  (u64{insn.Bits(90, 1)} << 49));
             const std::array<u32, 4> targets{
                 static_cast<u32>(dest), static_cast<u32>(dest) + 1,
@@ -63,9 +68,9 @@ if (-not $ampereText.Contains('case 0x361:')) {
         $bindlessNeedle,
         $bindlessBlock.TrimEnd("`r", "`n") + "`n" + $bindlessNeedle)
     Set-Content -Path $amperePath -Value $ampereText -Encoding utf8 -NoNewline
-    Write-Host "Added conservative native bindless 2D TEX lowering."
+    Write-Host "Added conservative native bindless 2D/cube TEX lowering."
 } else {
-    Write-Host "Native bindless 2D TEX lowering already present."
+    Write-Host "Native bindless 2D/cube TEX lowering already present."
 }
 
 # Turing/Ampere TLD4 texture gather. The 0x2593 cross-game baseline does not
