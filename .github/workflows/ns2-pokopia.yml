@@ -1,0 +1,93 @@
+name: Build Eden NS2 Pokopia
+
+on:
+  push:
+    branches:
+      - ns2-pokopia
+    paths:
+      - .github/workflows/ns2-pokopia.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout Eden
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply NS2/T239 port
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add ns2port https://github.com/suyu-emu/drippu.git
+          git fetch --no-tags --depth=2 ns2port f8b0ff864e0ac74aa6a9dd05e5c454ebb9b55001
+          git cherry-pick --no-commit f8b0ff864e0ac74aa6a9dd05e5c454ebb9b55001
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "NS2 port produced merge conflicts:"
+            git status --short
+            git diff --name-only --diff-filter=U
+            exit 1
+          }
+          git add -A
+          if (git diff --cached --quiet) {
+            Write-Host "NS2 changes are already present."
+          } else {
+            git commit -m "Apply NS2/T239 compatibility port for Pokopia testing"
+            git push origin HEAD:ns2-pokopia
+          }
+
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: ./tools/windows/install-vulkan-sdk.ps1
+
+      - name: Configure Release build
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "Visual Studio C++ toolchain not found" }
+          $devcmd = Join-Path $vs "Common7\Tools\VsDevCmd.bat"
+          cmd /c "`"$devcmd`" -arch=x64 -host_arch=x64 && cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DYUZU_TESTS=OFF -DBUILD_TESTING=OFF -DENABLE_WERROR=OFF"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build Eden
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $devcmd = Join-Path $vs "Common7\Tools\VsDevCmd.bat"
+          cmd /c "`"$devcmd`" -arch=x64 -host_arch=x64 && cmake --build build --parallel 4"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Add Pokopia configuration note
+        shell: pwsh
+        run: |
+          @'
+          Add these values to the appropriate sections of Eden's qt-config.ini:
+
+          [Core]
+          memory_layout_mode\default=false
+          memory_layout_mode=4
+          use_multi_core\default=false
+          use_multi_core=false
+
+          [Renderer]
+          backend\default=false
+          backend=1
+          '@ | Set-Content -Path build/bin/POKOPIA_CONFIG.txt -Encoding UTF8
+
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: Eden-NS2-Pokopia-Windows
+          path: build/bin/**
+          if-no-files-found: error
+          compression-level: 6
