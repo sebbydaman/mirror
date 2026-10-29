@@ -135,4 +135,41 @@ if (-not $queryText.Contains('pointer, pointer_timestamp, native_trace, trace_as
     Write-Host "Native query trace capture fix already present."
 }
 
-git diff -- src/core/device_memory_manager.inc src/video_core/macro.h src/video_core/memory_manager.h src/video_core/engines/puller.cpp src/video_core/query_cache/query_cache.h
+$amperePath = "src/shader_recompiler/frontend/ampere/lower_to_maxwell.h"
+$ampereText = Get-Content $amperePath -Raw
+$oldFmulMode = 'insn.Bits(91, 1) != (opcode == 0xc20)'
+$newFmulMode = 'insn.Bits(91, 1) != (opcode == 0xc20 ? 1U : 0U)'
+if ($ampereText.Contains($oldFmulMode)) {
+    $ampereText = $ampereText.Replace($oldFmulMode, $newFmulMode)
+    Write-Host "Fixed native FMUL signed/unsigned mode comparison."
+}
+$oldFaddMode = 'insn.Bits(91, 1) != (opcode == 0xe21)'
+$newFaddMode = 'insn.Bits(91, 1) != (opcode == 0xe21 ? 1U : 0U)'
+if ($ampereText.Contains($oldFaddMode)) {
+    $ampereText = $ampereText.Replace($oldFaddMode, $newFaddMode)
+    Write-Host "Fixed native FADD signed/unsigned mode comparison."
+}
+Set-Content -Path $amperePath -Value $ampereText -Encoding utf8 -NoNewline
+
+$shaderEnvPath = "src/video_core/shader_environment.h"
+$shaderEnvText = Get-Content $shaderEnvPath -Raw
+$fileEnvStart = $shaderEnvText.IndexOf('class FileEnvironment final : public Shader::Environment')
+if ($fileEnvStart -lt 0) {
+    throw "Could not locate FileEnvironment declaration"
+}
+$fileEnvText = $shaderEnvText.Substring($fileEnvStart)
+if (-not $fileEnvText.Contains('TranslateProgramAddress(u32 address) const override;')) {
+    $readInstructionNeedle = '    [[nodiscard]] u64 ReadInstruction(u32 address) override;'
+    $readInstructionIndex = $shaderEnvText.IndexOf($readInstructionNeedle, $fileEnvStart)
+    if ($readInstructionIndex -lt 0) {
+        throw "Could not locate FileEnvironment ReadInstruction declaration"
+    }
+    $insertAt = $readInstructionIndex + $readInstructionNeedle.Length
+    $shaderEnvText = $shaderEnvText.Insert($insertAt, "`n`n    [[nodiscard]] u32 TranslateProgramAddress(u32 address) const override;")
+    Set-Content -Path $shaderEnvPath -Value $shaderEnvText -Encoding utf8 -NoNewline
+    Write-Host "Restored FileEnvironment native program-address translation declaration."
+} else {
+    Write-Host "FileEnvironment native address translation declaration already present."
+}
+
+git diff -- src/core/device_memory_manager.inc src/video_core/macro.h src/video_core/memory_manager.h src/video_core/engines/puller.cpp src/video_core/query_cache/query_cache.h src/shader_recompiler/frontend/ampere/lower_to_maxwell.h src/video_core/shader_environment.h
