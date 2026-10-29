@@ -28,8 +28,11 @@ jobs:
       - name: Checkout complete NS2 source
         uses: actions/checkout@v5
         with:
-          repository: ShadyHero/Eden-NS2
-          ref: 1a6d7d4bf2b55feba32f56d2119aeeeeaab19823
+          # Cross-game NS2 baseline: this fork has generic Ampere lowering,
+          # compute/QMD, mapping, and buffer-cache fixes proven through actual
+          # Donkey Kong Bananza gameplay. It does not hard-code that title ID.
+          repository: 0x2593/Eden-NS2
+          ref: f1b03214c4eb368879aa33a88b3f29a23ca7c8be
           path: eden
           fetch-depth: 1
 
@@ -276,10 +279,11 @@ jobs:
           '@ | Set-Content -Path "$bin\POKOPIA_CONFIG.txt" -Encoding UTF8
 
           @'
-          NS2 source: ShadyHero/Eden-NS2
-          Pinned commit: 1a6d7d4bf2b55feba32f56d2119aeeeeaab19823
+          NS2 source: 0x2593/Eden-NS2
+          Pinned commit: f1b03214c4eb368879aa33a88b3f29a23ca7c8be
           Eden base lineage: 05f36d990ce5301b310871451201a72e4c52b4df
-          Known-working comparison binary: source checkpoint 75c801a, MSVC 19.51 / runtime 14.51
+          Cross-game evidence: this source reaches Donkey Kong Bananza gameplay with generic GPU/compute/shader fixes.
+          Known-working Pokopia comparison binary: source checkpoint 75c801a, MSVC 19.51 / runtime 14.51
           Native shader lowering cache: enabled (content-addressed, 4096 entries)
           '@ | Set-Content -Path "$bin\BUILD_SOURCE.txt" -Encoding UTF8
 
