@@ -51,11 +51,140 @@ jobs:
           }
           Write-Host "Pinned NS2 source: $(git rev-parse HEAD)"
 
-      - name: Apply Pokopia and compiler compatibility fixes
+      - name: Apply NS2 compatibility and runtime optimizations
         shell: pwsh
         working-directory: eden
         run: |
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-ns2-build-fixes.ps1"
+
+          # Native shaders are immutable for the lifetime of a compiled pipeline,
+          # but the environment adapter currently lowers identical Ampere source
+          # every time a new environment is constructed. The working SW2 log
+          # showed hundreds of repeated lowerings and thousands of repeated BRX
+          # captures. Cache successful content-addressed lowerings so repeated
+          # draws reuse the canonical Maxwell program while retaining the normal
+          # shader/pipeline caches above it.
+          $shaderEnvPath = "src/video_core/shader_environment.cpp"
+          $shaderEnvText = Get-Content $shaderEnvPath -Raw
+          if (-not $shaderEnvText.Contains('native_shader_lowering_cache_mutex')) {
+              if (-not $shaderEnvText.Contains('#include <mutex>')) {
+                  $includeNeedle = '#include <memory>'
+                  if (-not $shaderEnvText.Contains($includeNeedle)) {
+                      throw "Could not locate shader_environment memory include"
+                  }
+                  $shaderEnvText = $shaderEnvText.Replace(
+                      $includeNeedle,
+                      "#include <memory>`n#include <mutex>`n#include <unordered_map>")
+              }
+
+              $namespaceNeedle = 'namespace VideoCommon {'
+              if (-not $shaderEnvText.Contains($namespaceNeedle)) {
+                  throw "Could not locate VideoCommon namespace"
+              }
+              $cacheBlock = @'
+          namespace VideoCommon {
+
+          namespace {
+
+          constexpr size_t NativeShaderLoweringCacheMaxEntries = 4096;
+
+          struct NativeShaderLoweringCacheEntry {
+              u32 source_size{};
+              Shader::Ampere::LoweredProgram program;
+          };
+
+          std::mutex native_shader_lowering_cache_mutex;
+          std::unordered_map<u64, NativeShaderLoweringCacheEntry> native_shader_lowering_cache;
+
+          std::optional<Shader::Ampere::LoweredProgram> FindCachedNativeShader(
+              std::span<const Shader::Ampere::Instruction> native) {
+              const u64 key = Shader::Ampere::NativeProgramKey(native);
+              const u32 source_size = static_cast<u32>(native.size_bytes());
+              std::scoped_lock lock{native_shader_lowering_cache_mutex};
+              const auto it = native_shader_lowering_cache.find(key);
+              if (it == native_shader_lowering_cache.end() || it->second.source_size != source_size) {
+                  return std::nullopt;
+              }
+              return it->second.program;
+          }
+
+          void CacheNativeShader(std::span<const Shader::Ampere::Instruction> native,
+                                 const Shader::Ampere::LoweredProgram& program) {
+              if (!program) {
+                  return;
+              }
+              const u64 key = Shader::Ampere::NativeProgramKey(native);
+              const u32 source_size = static_cast<u32>(native.size_bytes());
+              std::scoped_lock lock{native_shader_lowering_cache_mutex};
+              if (native_shader_lowering_cache.size() >= NativeShaderLoweringCacheMaxEntries &&
+                  native_shader_lowering_cache.find(key) == native_shader_lowering_cache.end()) {
+                  native_shader_lowering_cache.clear();
+              }
+              native_shader_lowering_cache.insert_or_assign(
+                  key, NativeShaderLoweringCacheEntry{source_size, program});
+          }
+
+          } // namespace
+          '@
+              $shaderEnvText = $shaderEnvText.Replace(
+                  $namespaceNeedle,
+                  $cacheBlock.TrimEnd("`r", "`n"))
+
+              $lowerNeedle = '    auto lowered = Shader::Ampere::LowerToMaxwell(native);'
+              if (-not $shaderEnvText.Contains($lowerNeedle)) {
+                  throw "Could not locate native shader lowering call"
+              }
+              $lowerReplacement = @'
+              auto cached_lowered = FindCachedNativeShader(native);
+              auto lowered = cached_lowered ? std::move(*cached_lowered)
+                                            : Shader::Ampere::LowerToMaxwell(native);
+              const bool lowered_from_cache = cached_lowered.has_value();
+          '@
+              $shaderEnvText = $shaderEnvText.Replace(
+                  $lowerNeedle,
+                  $lowerReplacement.TrimEnd("`r", "`n"))
+
+              $textureNeedle = '    if (lowered.required_texture_buffer != ~0U) {'
+              if (-not $shaderEnvText.Contains($textureNeedle)) {
+                  throw "Could not locate native texture-buffer handling"
+              }
+              $textureReplacement = @'
+              if (!lowered_from_cache) {
+                  CacheNativeShader(native, lowered);
+              }
+              if (lowered.required_texture_buffer != ~0U) {
+          '@
+              $shaderEnvText = $shaderEnvText.Replace(
+                  $textureNeedle,
+                  $textureReplacement.TrimEnd("`r", "`n"))
+
+              $logNeedle = @'
+              LOG_INFO(Shader, "Lowered native shader at {:#x}: {} source bytes, {} instructions",
+                       program_base, native_source_size, lowered.instructions.size());
+          '@
+              $logReplacement = @'
+              if (lowered_from_cache) {
+                  LOG_DEBUG(Shader, "Reused cached native shader at {:#x}: {} source bytes, {} instructions",
+                            program_base, native_source_size, lowered.instructions.size());
+              } else {
+                  LOG_INFO(Shader, "Lowered native shader at {:#x}: {} source bytes, {} instructions",
+                           program_base, native_source_size, lowered.instructions.size());
+              }
+          '@
+              if (-not $shaderEnvText.Contains($logNeedle.TrimEnd("`r", "`n"))) {
+                  throw "Could not locate native shader lowering log"
+              }
+              $shaderEnvText = $shaderEnvText.Replace(
+                  $logNeedle.TrimEnd("`r", "`n"),
+                  $logReplacement.TrimEnd("`r", "`n"))
+
+              Set-Content -Path $shaderEnvPath -Value $shaderEnvText -Encoding utf8 -NoNewline
+              Write-Host "Enabled content-addressed native shader lowering cache."
+          } else {
+              Write-Host "Native shader lowering cache already present."
+          }
+
+          git diff -- src/video_core/shader_environment.cpp
 
       - name: Restore CPM dependency cache
         uses: actions/cache@v4
@@ -151,6 +280,7 @@ jobs:
           Pinned commit: 1a6d7d4bf2b55feba32f56d2119aeeeeaab19823
           Eden base lineage: 05f36d990ce5301b310871451201a72e4c52b4df
           Known-working comparison binary: source checkpoint 75c801a, MSVC 19.51 / runtime 14.51
+          Native shader lowering cache: enabled (content-addressed, 4096 entries)
           '@ | Set-Content -Path "$bin\BUILD_SOURCE.txt" -Encoding UTF8
 
       - name: Upload Windows build
