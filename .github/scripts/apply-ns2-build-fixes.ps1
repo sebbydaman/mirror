@@ -51,4 +51,73 @@ struct NativeMacroContext {
     Write-Host "Native Turing macro state fix already present."
 }
 
-git diff -- src/core/device_memory_manager.inc src/video_core/macro.h
+$memoryPath = "src/video_core/memory_manager.h"
+$memoryText = Get-Content $memoryPath -Raw
+if (-not $memoryText.Contains('bool UsesNativeTiling() const')) {
+    $destructorNeedle = '    ~MemoryManager();'
+    if (-not $memoryText.Contains($destructorNeedle)) {
+        throw "Could not locate MemoryManager destructor declaration"
+    }
+    $nativeApi = @'
+    ~MemoryManager();
+
+    void SetNativeSyncpointShim(GPUVAddr address);
+    void EnableNativeTiling() { native_tiling = true; }
+    bool UsesNativeTiling() const { return native_tiling; }
+    bool IsShuttingDown() const;
+'@
+    $memoryText = $memoryText.Replace($destructorNeedle, $nativeApi.TrimEnd("`r", "`n"))
+    Write-Host "Restored native MemoryManager API declarations."
+}
+if (-not $memoryText.Contains('std::atomic<GPUVAddr> native_syncpoint_shim{};')) {
+    $systemNeedle = '    Core::System& system;'
+    if (-not $memoryText.Contains($systemNeedle)) {
+        throw "Could not locate MemoryManager system member"
+    }
+    $memoryText = $memoryText.Replace($systemNeedle, "    std::atomic<GPUVAddr> native_syncpoint_shim{};`n$systemNeedle")
+    Write-Host "Restored native syncpoint shim state."
+}
+Set-Content -Path $memoryPath -Value $memoryText -Encoding utf8 -NoNewline
+
+$pullerPath = "src/video_core/engines/puller.cpp"
+$pullerText = Get-Content $pullerPath -Raw
+if (-not $pullerText.Contains('u32 ReadNativeSemaphoreWord(DmaPusher& dma_pusher, GPUVAddr address)')) {
+    $constantsNeedle = 'constexpr u32 Gf100BindValidMask =  0x1f0000 | Gf100BindClassMask;'
+    if (-not $pullerText.Contains($constantsNeedle)) {
+        throw "Could not locate puller bind constants"
+    }
+    $nativeSemaphoreHelper = @'
+constexpr u32 Gf100BindValidMask =  0x1f0000 | Gf100BindClassMask;
+
+u32 ReadNativeSemaphoreWord(DmaPusher& dma_pusher, GPUVAddr address) {
+    const auto cpu_address = dma_pusher.memory_manager.GpuToCpuAddress(address);
+    if (cpu_address && dma_pusher.rasterizer->MustFlushRegion(
+                           *cpu_address, sizeof(u32), VideoCommon::CacheType::BufferCache)) {
+        dma_pusher.rasterizer->FlushRegion(*cpu_address, sizeof(u32),
+                                           VideoCommon::CacheType::BufferCache);
+        const u32 value = dma_pusher.memory_manager.Read<u32>(address);
+        LOG_WARNING(HW_GPU, "Native semaphore buffer readback: address={:#x}, current={}",
+                    address, value);
+        VideoCommon::TraceNativeQuery(6, dma_pusher.memory_manager.GetID(), address,
+                                      *cpu_address, 0, value, 0);
+        return value;
+    }
+    return dma_pusher.memory_manager.Read<u32>(address);
+}
+'@
+    $pullerText = $pullerText.Replace($constantsNeedle, $nativeSemaphoreHelper.TrimEnd("`r", "`n"))
+    Write-Host "Restored native semaphore read helper."
+}
+if (-not $pullerText.Contains('dma_pusher.memory_manager.EnableNativeTiling();')) {
+    $engineNeedle = '    const auto engine_id = static_cast<EngineID>(engine);'
+    if (-not $pullerText.Contains($engineNeedle)) {
+        throw "Could not locate puller engine-id conversion"
+    }
+    $pullerText = $pullerText.Replace(
+        $engineNeedle,
+        "    if (dma_pusher.channel_state.native_abi) dma_pusher.memory_manager.EnableNativeTiling();`n$engineNeedle")
+    Write-Host "Enabled native tiling for native GPU channels."
+}
+Set-Content -Path $pullerPath -Value $pullerText -Encoding utf8 -NoNewline
+
+git diff -- src/core/device_memory_manager.inc src/video_core/macro.h src/video_core/memory_manager.h src/video_core/engines/puller.cpp
