@@ -120,4 +120,19 @@ if (-not $pullerText.Contains('dma_pusher.memory_manager.EnableNativeTiling();')
 }
 Set-Content -Path $pullerPath -Value $pullerText -Encoding utf8 -NoNewline
 
-git diff -- src/core/device_memory_manager.inc src/video_core/macro.h src/video_core/memory_manager.h src/video_core/engines/puller.cpp
+$queryPath = "src/video_core/query_cache/query_cache.h"
+$queryText = Get-Content $queryPath -Raw
+if (-not $queryText.Contains('pointer, pointer_timestamp, native_trace, trace_asid, addr, cpu_addr,')) {
+    $captureNeedle = '                                     pointer, pointer_timestamp] {'
+    if (-not $queryText.Contains($captureNeedle)) {
+        throw "Could not locate native query deferred-operation capture list"
+    }
+    $captureReplacement = "                                     pointer, pointer_timestamp, native_trace, trace_asid, addr, cpu_addr,`n                                     counter_type] {"
+    $queryText = $queryText.Replace($captureNeedle, $captureReplacement)
+    Set-Content -Path $queryPath -Value $queryText -Encoding utf8 -NoNewline
+    Write-Host "Captured native query trace state for deferred query operations."
+} else {
+    Write-Host "Native query trace capture fix already present."
+}
+
+git diff -- src/core/device_memory_manager.inc src/video_core/macro.h src/video_core/memory_manager.h src/video_core/engines/puller.cpp src/video_core/query_cache/query_cache.h
