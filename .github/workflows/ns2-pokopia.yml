@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - ns2-pokopia
-    paths:
-      - .github/workflows/ns2-pokopia.yml
   workflow_dispatch:
 
 permissions:
@@ -22,9 +20,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Apply NS2/T239 port
+      - name: Apply NS2/T239 port if needed
         shell: pwsh
         run: |
+          if (Test-Path "src/core/hle/service/am/service/gpu_session.cpp") {
+            Write-Host "NS2/T239 changes are already present; skipping import."
+            exit 0
+          }
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add ns2port https://github.com/suyu-emu/drippu.git
