@@ -67,8 +67,20 @@ jobs:
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           $devcmd = Join-Path $vs "Common7\Tools\VsDevCmd.bat"
-          cmd /c "`"$devcmd`" -arch=x64 -host_arch=x64 && cmake --build build --parallel 4"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $command = "`"$devcmd`" -arch=x64 -host_arch=x64 && cmake --build build --parallel 4 --verbose > build.log 2>&1"
+          cmd /c $command
+          $buildExitCode = $LASTEXITCODE
+          if (Test-Path build.log) { Get-Content build.log }
+          if ($buildExitCode -ne 0) { exit $buildExitCode }
+
+      - name: Upload compiler log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Eden-NS2-Pokopia-build-log
+          path: build.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Add Pokopia configuration note
         shell: pwsh
