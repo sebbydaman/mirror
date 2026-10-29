@@ -73,19 +73,20 @@ if (-not $ampereText.Contains('case 0x361:')) {
     Write-Host "Native bindless 2D/cube TEX lowering already present."
 }
 
-# Broaden the native TXQ dimension-query lowering. The baseline only accepts a
-# fixed XY query from descriptor buffer 2. Maxwell TXQ already supports a 4-bit
-# component mask (X/Y/Z/mip-count), so preserve the native mask, validate the
-# packed destination span, and accept any descriptor buffer the existing
-# environment can bind. Keep descriptor-buffer conflicts explicit.
+# Broaden the native TXQ dimension-query lowering. The pinned NS2 source already
+# accepts any descriptor buffer but only a fixed XY query. Maxwell TXQ supports
+# a 4-bit component mask (X/Y/Z/mip-count), so preserve the native mask and
+# validate the packed destination span while retaining descriptor conflicts.
 $ampereText = Get-Content $amperePath -Raw
 $oldTxq = @'
         case 0xb6f: { // TXQ texture dimensions, two packed scalar outputs.
             if (insn.Bits(59, 5) || insn.Bits(64, 8) != 255 || insn.Bits(72, 4) != 3 ||
-                insn.Bits(76, 14) || insn.Bits(91, 1) || insn.Bits(54, 5) != 2 ||
+                insn.Bits(76, 14) || insn.Bits(91, 1) || insn.Bits(54, 5) >= 18 ||
                 insn.Bits(40, 14) > 0x1fff || (dest & 1) || dest >= 254)
                 return fail(index, "native texture dimension query mode");
-            result.required_texture_buffer = 2;
+            if (result.required_texture_buffer != ~0U && result.required_texture_buffer != insn.Bits(54, 5))
+                return fail(index, "native texture descriptor buffer conflict");
+            result.required_texture_buffer = insn.Bits(54, 5);
             emit(0xdf48000000000000ULL | predicate | dest | (u64{insn.Bits(24, 8)} << 8) |
                  (u64{1} << 22) | (u64{3} << 31) | (u64{insn.Bits(40, 14)} << 36) |
                  (u64{insn.Bits(90, 1)} << 49));
@@ -119,7 +120,7 @@ if ($ampereText.Contains($oldTxq)) {
 } elseif ($ampereText.Contains('case 0xb6f: { // TXQ texture dimensions, packed X/Y/Z/mip-count outputs.')) {
     Write-Host "Extended native TXQ dimension-query lowering already present."
 } else {
-    throw "Could not locate baseline native TXQ dimension-query lowering"
+    throw "Could not locate pinned native TXQ dimension-query lowering"
 }
 
 # Turing/Ampere TLD4 texture gather. The 0x2593 cross-game baseline does not
