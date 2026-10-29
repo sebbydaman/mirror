@@ -47,6 +47,66 @@ jobs:
             git push origin HEAD:ns2-pokopia
           }
 
+      - name: Apply known upstream NS2 build fixes
+        shell: pwsh
+        run: |
+          $changed = $false
+
+          $devicePath = "src/core/device_memory_manager.inc"
+          $deviceText = Get-Content $devicePath -Raw
+          $kernelInclude = '#include "core/hle/kernel/board/nintendo/nx/k_system_control.h"'
+          if (-not $deviceText.Contains($kernelInclude)) {
+            $deviceNeedle = '#include "core/device_memory.h"'
+            if (-not $deviceText.Contains($deviceNeedle)) {
+              throw "Could not locate device_memory.h include while applying upstream NS2 build fix"
+            }
+            $deviceText = $deviceText.Replace($deviceNeedle, "$deviceNeedle`n$kernelInclude")
+            Set-Content -Path $devicePath -Value $deviceText -Encoding utf8 -NoNewline
+            $changed = $true
+            Write-Host "Applied KSystemControl include fix."
+          }
+
+          $macroPath = "src/video_core/macro.h"
+          $macroText = Get-Content $macroPath -Raw
+          if (-not $macroText.Contains('bool native_turing{};')) {
+            $macroPattern = '    bool is_interpreted;\r?\n};\r?\n\r?\n} // namespace Tegra'
+            $macroReplacement = @"
+    bool is_interpreted;
+    bool native_turing{};
+    bool native_execution_failed{};
+    u32 native_write_offset{};
+    std::array<u32, 0x3000> native_code{};
+    TuringMacroInterpreter native_interpreter;
+};
+
+struct NativeMacroContext {
+    MacroEngine engine{true};
+    std::array<u32, 0x80> positions{};
+    MacroEngine compute_engine{true};
+    std::array<u32, 0x80> compute_positions{};
+};
+
+} // namespace Tegra
+"@
+            $newMacroText = [regex]::Replace($macroText, $macroPattern, $macroReplacement, 1)
+            if ($newMacroText -eq $macroText) {
+              throw "Could not locate MacroEngine tail while applying upstream NS2 build fix"
+            }
+            Set-Content -Path $macroPath -Value $newMacroText -Encoding utf8 -NoNewline
+            $changed = $true
+            Write-Host "Applied native Turing macro state fix."
+          }
+
+          if ($changed) {
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add $devicePath $macroPath
+            git commit -m "Port upstream NS2 build fixes"
+            git push origin HEAD:ns2-pokopia
+          } else {
+            Write-Host "Known upstream NS2 build fixes are already present."
+          }
+
       - name: Install Vulkan SDK
         shell: pwsh
         run: ./tools/windows/install-vulkan-sdk.ps1
