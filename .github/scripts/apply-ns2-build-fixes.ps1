@@ -174,6 +174,42 @@ if ($ampereText.Contains($oldBrx)) {
     throw "Could not locate pinned native BRX/BRXU lowering"
 }
 
+# Native geometry OUT immediate-stream form. Mesa NAK encodes the SM70+ OUT
+# family at opcode 0x124; with the immediate source form the full 12-bit opcode
+# is 0x924. Support only the documented EMIT and EMIT_THEN_CUT modes for stream
+# indices 0..3. Maxwell OUT_reg already maps those bits to EmitVertex and
+# EndPrimitive in the existing frontend, so materialize the stream index in a
+# reserved scratch register and preserve the native predicate/destination pair.
+$ampereText = Get-Content $amperePath -Raw
+if (-not $ampereText.Contains('case 0x924: { // OUT, immediate geometry stream')) {
+    $outNeedle = '        case 0x949: case 0x958: { // Captured BRX / BRXU with native-PC jump-table values'
+    if (-not $ampereText.Contains($outNeedle)) {
+        throw "Could not locate BRX insertion point for native geometry OUT"
+    }
+    $outBlock = @'
+        case 0x924: { // OUT, immediate geometry stream: EMIT / EMIT_THEN_CUT
+            const u32 stream = insn.words[1];
+            const u32 mode = insn.Bits(78, 2);
+            if (stream > 3 || (mode != 1 && mode != 3) ||
+                insn.Bits(64, 14) || insn.Bits(80, 25) || insn.Bits(126, 2)) {
+                return fail(index, "native geometry OUT immediate mode");
+            }
+            mov_imm(250, stream);
+            emit(0xfbe0000000000000ULL | predicate | dest |
+                 (u64{insn.Bits(24, 8)} << 8) | (u64{250} << 20) |
+                 (u64{1} << 39) | (u64{mode == 3} << 40));
+            break;
+        }
+'@
+    $ampereText = $ampereText.Replace(
+        $outNeedle,
+        $outBlock.TrimEnd("`r", "`n") + "`n" + $outNeedle)
+    Set-Content -Path $amperePath -Value $ampereText -Encoding utf8 -NoNewline
+    Write-Host "Added native geometry OUT immediate-stream lowering."
+} else {
+    Write-Host "Native geometry OUT immediate-stream lowering already present."
+}
+
 # Turing/Ampere TLD4 texture gather. The 0x2593 cross-game baseline does not
 # implement opcode 0xb63. This conservative 2D cbuf-descriptor subset matches
 # STORM's generic lowering and Mesa NAK's SM70 encoding. Unsupported modes keep
