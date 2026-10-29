@@ -8,6 +8,7 @@
 
 #include <memory>
 #include <mutex>
+#include <vector>
 #include "common/container/unordered_map.h"
 
 #include "video_core/dma_pusher.h"
@@ -27,7 +28,10 @@ public:
     void DeclareChannel(std::shared_ptr<ChannelState> new_channel);
 
 private:
+    void ResumePending(GPU& gpu);
+
     ::Common::unordered_map<s32, std::shared_ptr<ChannelState>> channels;
+    std::vector<std::shared_ptr<ChannelState>> pending_native_channels;
     std::mutex scheduling_guard;
 };
 
