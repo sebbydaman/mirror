@@ -123,6 +123,57 @@ if ($ampereText.Contains($oldTxq)) {
     throw "Could not locate pinned native TXQ dimension-query lowering"
 }
 
+# Generalize captured BRX/BRXU relative bases. Maxwell CFG reconstructs a
+# relative BRX target as table_value + lowered_PC + encoded_offset + 8, then
+# calls TranslateProgramAddress() on that native address. Ampere's equivalent is
+# table_value + native_PC + 16 + native_relative_base. Preserve that base in the
+# emitted offset so non-zero native jump-table bases remain correct after lowering.
+$ampereText = Get-Content $amperePath -Raw
+$oldBrx = @'
+        case 0x949: case 0x958: { // Captured BRX / BRXU with absolute native-PC table values
+            if (insn.Bits(12, 4) != 7 || (insn.words[2] & ~0x3ffffU) != (opcode == 0x958 ? 0x0b800000U : 0x03800000U))
+                return fail(index, "native computed branch mode");
+            const u64 raw = insn.words[1] | (u64{insn.words[2] & 0x3ffff} << 32);
+            const s64 relative = static_cast<s64>(raw << 14) >> 14;
+            if (s64{index} * 16 + 16 + relative != 0)
+                return fail(index, "native computed branch relative base");
+            const s64 offset = -s64{address_of(static_cast<u32>(result.instructions.size()))} - 8;
+            if (offset < -0x800000) return fail(index, "native computed branch range");
+            const u32 source = opcode == 0x958 ? uniform_register(insn.Bits(24, 8)) : insn.Bits(24, 8);
+            if (source == ~0U) return fail(index, "native uniform computed branch source");
+            emit(0xe25000000000000fULL | predicate | (u64{source} << 8) |
+                 ((static_cast<u64>(offset) & 0xffffff) << 20));
+            break;
+        }
+'@
+$newBrx = @'
+        case 0x949: case 0x958: { // Captured BRX / BRXU with native-PC jump-table values
+            if (insn.Bits(12, 4) != 7 || (insn.words[2] & ~0x3ffffU) != (opcode == 0x958 ? 0x0b800000U : 0x03800000U))
+                return fail(index, "native computed branch mode");
+            const u64 raw = insn.words[1] | (u64{insn.words[2] & 0x3ffff} << 32);
+            const s64 relative = static_cast<s64>(raw << 14) >> 14;
+            const s64 native_base = s64{index} * 16 + 16 + relative;
+            const s64 lowered_pc = s64{address_of(static_cast<u32>(result.instructions.size()))};
+            const s64 offset = native_base - lowered_pc - 8;
+            if (offset < -0x800000 || offset > 0x7fffff)
+                return fail(index, "native computed branch range");
+            const u32 source = opcode == 0x958 ? uniform_register(insn.Bits(24, 8)) : insn.Bits(24, 8);
+            if (source == ~0U) return fail(index, "native uniform computed branch source");
+            emit(0xe25000000000000fULL | predicate | (u64{source} << 8) |
+                 ((static_cast<u64>(offset) & 0xffffff) << 20));
+            break;
+        }
+'@
+if ($ampereText.Contains($oldBrx)) {
+    $ampereText = $ampereText.Replace($oldBrx, $newBrx)
+    Set-Content -Path $amperePath -Value $ampereText -Encoding utf8 -NoNewline
+    Write-Host "Extended native BRX/BRXU relative-base lowering."
+} elseif ($ampereText.Contains('case 0x949: case 0x958: { // Captured BRX / BRXU with native-PC jump-table values')) {
+    Write-Host "Extended native BRX/BRXU relative-base lowering already present."
+} else {
+    throw "Could not locate pinned native BRX/BRXU lowering"
+}
+
 # Turing/Ampere TLD4 texture gather. The 0x2593 cross-game baseline does not
 # implement opcode 0xb63. This conservative 2D cbuf-descriptor subset matches
 # STORM's generic lowering and Mesa NAK's SM70 encoding. Unsupported modes keep
