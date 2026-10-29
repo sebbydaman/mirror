@@ -172,4 +172,72 @@ if (-not $fileEnvText.Contains('TranslateProgramAddress(u32 address) const overr
     Write-Host "FileEnvironment native address translation declaration already present."
 }
 
-git diff -- src/core/device_memory_manager.inc src/video_core/macro.h src/video_core/memory_manager.h src/video_core/engines/puller.cpp src/video_core/query_cache/query_cache.h src/shader_recompiler/frontend/ampere/lower_to_maxwell.h src/video_core/shader_environment.h
+# Pull two low-risk native-compute stability guards from the newer Windows-tested STORM NS2 lineage.
+$keplerPath = "src/video_core/engines/kepler_compute.cpp"
+$keplerText = Get-Content $keplerPath -Raw
+if (-not $keplerText.Contains('if (method < Regs::NUM_REGS) {')) {
+    $sinkOld = @'
+void KeplerCompute::ConsumeSinkImpl(Core::System& system) {
+    for (auto [method, value] : method_sink) {
+        regs.reg_array[method] = value;
+    }
+    method_sink.clear();
+}
+'@
+    $sinkNew = @'
+void KeplerCompute::ConsumeSinkImpl(Core::System& system) {
+    for (auto [method, value] : method_sink) {
+        if (method < Regs::NUM_REGS) {
+            regs.reg_array[method] = value;
+        }
+    }
+    method_sink.clear();
+}
+'@
+    if ($keplerText.Contains($sinkOld.TrimEnd("`r", "`n"))) {
+        $keplerText = $keplerText.Replace($sinkOld.TrimEnd("`r", "`n"), $sinkNew.TrimEnd("`r", "`n"))
+        Write-Host "Guarded native compute sink register writes."
+    } else {
+        Write-Host "Native compute sink guard pattern not found; leaving source unchanged."
+    }
+} else {
+    Write-Host "Native compute sink register guard already present."
+}
+
+if (-not $keplerText.Contains('if (data.exec_address >= launch_desc_loc) {')) {
+    $offsetOld = @'
+        for (auto& data : uploads) {
+            const GPUVAddr offset = data.exec_address - launch_desc_loc;
+            if (offset / sizeof(u32) == LAUNCH_REG_INDEX(grid_dim_x)) {
+                const bool source_dirty = memory_manager.IsMemoryDirty(data.upload_address, data.copy_size);
+                if (data.was_dirty || source_dirty) {
+                    indirect_compute = {data.upload_address};
+                }
+            }
+        }
+'@
+    $offsetNew = @'
+        for (auto& data : uploads) {
+            if (data.exec_address >= launch_desc_loc) {
+                const GPUVAddr offset = data.exec_address - launch_desc_loc;
+                if (offset / sizeof(u32) == LAUNCH_REG_INDEX(grid_dim_x)) {
+                    const bool source_dirty = memory_manager.IsMemoryDirty(data.upload_address, data.copy_size);
+                    if (data.was_dirty || source_dirty) {
+                        indirect_compute = {data.upload_address};
+                    }
+                }
+            }
+        }
+'@
+    if ($keplerText.Contains($offsetOld.TrimEnd("`r", "`n"))) {
+        $keplerText = $keplerText.Replace($offsetOld.TrimEnd("`r", "`n"), $offsetNew.TrimEnd("`r", "`n"))
+        Write-Host "Guarded native compute launch-address subtraction."
+    } else {
+        Write-Host "Native compute launch-address guard pattern not found; leaving source unchanged."
+    }
+} else {
+    Write-Host "Native compute launch-address guard already present."
+}
+Set-Content -Path $keplerPath -Value $keplerText -Encoding utf8 -NoNewline
+
+git diff -- src/core/device_memory_manager.inc src/video_core/macro.h src/video_core/memory_manager.h src/video_core/engines/puller.cpp src/video_core/query_cache/query_cache.h src/shader_recompiler/frontend/ampere/lower_to_maxwell.h src/video_core/shader_environment.h src/video_core/engines/kepler_compute.cpp
