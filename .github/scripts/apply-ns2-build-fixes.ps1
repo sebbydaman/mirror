@@ -30,7 +30,8 @@ if (-not $ampereText.Contains('case 0x361:')) {
             const u32 coord_reg = insn.Bits(24, 8);
             const u32 meta_reg = insn.Bits(32, 8);
             const bool split = second_dest != 255;
-            const u32 channels = std::popcount(mask);
+            const u32 channels = (mask & 1U) + ((mask >> 1) & 1U) +
+                                 ((mask >> 2) & 1U) + ((mask >> 3) & 1U);
             if (!insn.Bits(59, 1) || !insn.Bits(60, 1) || insn.Bits(61, 3) != 1 ||
                 mask == 0 || insn.Bits(76, 5) || insn.Bits(81, 3) != 7 ||
                 insn.Bits(87, 3) || insn.Bits(91, 1) || coord_reg >= 250 || meta_reg >= 250 ||
