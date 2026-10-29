@@ -16,7 +16,7 @@ jobs:
 
     steps:
       - name: Checkout Eden
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -79,7 +79,7 @@ jobs:
 
       - name: Upload compiler log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: Eden-NS2-Pokopia-build-log
           path: build.log
@@ -104,7 +104,7 @@ jobs:
           '@ | Set-Content -Path build/bin/POKOPIA_CONFIG.txt -Encoding UTF8
 
       - name: Upload Windows build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: Eden-NS2-Pokopia-Windows
           path: build/bin/**
