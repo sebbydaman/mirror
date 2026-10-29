@@ -181,6 +181,8 @@ public:
 
     [[nodiscard]] u64 ReadInstruction(u32 address) override;
 
+    [[nodiscard]] u32 TranslateProgramAddress(u32 address) const override;
+
     [[nodiscard]] u32 ReadCbufValue(u32 cbuf_index, u32 cbuf_offset) override;
 
     [[nodiscard]] Shader::TextureType ReadTextureType(u32 handle) override;
