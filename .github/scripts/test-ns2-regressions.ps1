@@ -34,6 +34,13 @@ $vkTexture = "src/video_core/renderer_vulkan/vk_texture_cache.cpp"
 $textureCache = "src/video_core/texture_cache/texture_cache.h"
 $nx2 = "src/video_core/nx2.h"
 $bufferBase = "src/video_core/buffer_cache/buffer_cache_base.h"
+$bufferCache = "src/video_core/buffer_cache/buffer_cache.h"
+$drawManager = "src/video_core/engines/draw_manager.cpp"
+$maxwell3d = "src/video_core/engines/maxwell_3d.cpp"
+$dmaPusher = "src/video_core/dma_pusher.cpp"
+$dmaHeader = "src/video_core/dma_pusher.h"
+$nvhostGpu = "src/core/hle/service/nvdrv/devices/nvhost_gpu.cpp"
+$nvdrv = "src/core/hle/service/nvdrv/nvdrv.cpp"
 
 # New 01effa Mario Kart World memory/texture path.
 Require-Text $nx2 'Nx2SparseBlockWritten' 'NX2 sparse written-block tracking'
@@ -64,6 +71,29 @@ Require-Text $ampere '(width != 0 && width != 4 && width != 5)' 'B82 32-bit inde
 Require-Text $ampere '(target >= 28 && target != 63)' 'VOTEU extended uniform target range'
 Require-Text $ampere 'const bool word = (mode & ~0x1c100U) == 0x00203000;' 'F2I 32-bit rounding family'
 Require-Text $ampere 'case 0x308: case 0xb08: case 0xd08: { // MUFU' 'D08 uniform-source MUFU lowering'
+
+# #71+ generalized compatibility batch.
+Require-Text $drawManager 'bool Maxwell3D::DrawManager::IsInstanceLoopMethod' 'PR51 instance-loop method classification'
+Require-Text $maxwell3d 'draw_manager.HasDeferredDraw() && !DrawManager::IsInstanceLoopMethod(method)' 'PR51 deferred-instance state flush'
+Require-Text $nx2 'Nx2WrittenPageBits = 12' 'PR52 GPU-written command-page tracker'
+Require-Text $nx2 'Nx2MarkGpuWritten' 'PR52 GPU-write marking helper'
+Require-Text $bufferCache 'Tegra::Nx2MarkGpuWritten(device_addr, size);' 'PR52 shader buffer write tracking'
+Require-Text $nvdrv 'Tegra::Nx2ClearGpuWrittenPages();' 'PR52 per-session GPU-write reset'
+Require-Text $dmaHeader 'std::vector<CommandHeader> submitted_words;' 'PR28 submitted pushbuffer snapshot storage'
+Require-Text $nvhostGpu 'EDEN_NX2_PB_SNAPSHOT' 'PR28 submission snapshot capture'
+Require-Text $dmaPusher 'const bool gpu_written = FlushGpuWrittenCommands' 'combined PR52/PR28 command coherency path'
+Require-Text $dmaPusher 'IsMemoryDirty(address, size, VideoCommon::CacheType::BufferCache)' 'GPU-written command freshness check'
+Require-Text $ampere 'native zero-product carry add source' 'broader 0x224 IMAD carry lowering'
+Require-Text $ampere 'case 0x234: { // HSETP2 register form' '0x234 HSETP2 register lowering'
+Require-Text $ampere '0x5d20000000000000ULL' 'Maxwell HSETP2 encoding preserved'
+Require-Text $vkTexture 'Shader image type {} does not match view type {}' 'build-53 Vulkan image-view dimension guard'
+
+# 0x59f is still unknown. A successful build must not come from silently accepting it.
+$ampereText = Get-Content $ampere -Raw
+if ($ampereText.Contains('case 0x59f:')) {
+    throw 'NS2 regression: unresolved 0x59f was added without proven semantics'
+}
+Write-Host '[PASS] unresolved 0x59f remains rejected'
 
 # PRMT must no longer be routed through the unimplemented handlers.
 Require-File $notImpl
