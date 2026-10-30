@@ -44,7 +44,7 @@ jobs:
           foreach ($path in $required) {
             if (-not (Test-Path $path)) { throw "Incomplete Eglantine NS2 source tree: missing $path" }
           }
-          Write-Host "Pinned Eglantine source: $(git rev-parse HEAD)"
+          Write-Host "Bootstrap Eglantine source: $(git rev-parse HEAD)"
 
       - name: Apply best-of-both NS2 integration patches
         shell: pwsh
@@ -149,16 +149,19 @@ jobs:
 
           @'
           NS2 source: Djihads80/Eglantine
-          Pinned commit: f362528c0447c491bfe00c0bdd5d8c245396a24c
+          Workflow bootstrap commit: f362528c0447c491bfe00c0bdd5d8c245396a24c
+          Effective build base: 01effa81ab0e151f8cfd674bf4da952d24645943 (nx2-experimental sparse/ASTC merge)
           Integration: Eglantine broad NS2 platform/GPU support + sebbydaman/mirror shader improvements.
           Preserved improvements: bindless 2D/cube TEX, extended TXQ, generalized BRX/BRXU, native geometry OUT, validated geometry stage admission.
           Positive native shader cache: enabled with exact-source verification (4096 entries).
           Eglantine negative shader cache and ARMv8.1 LSE atomic support: preserved.
-          Generic 0x2593 Bananza overlap: Maxwell PRMT, 8-bit F2I, native geometry ISBERD/LEPC/prologue lowering.
+          Generic Bananza overlap: Maxwell PRMT, 8-bit F2I, native geometry ISBERD/LEPC/prologue lowering.
           Vulkan draw-state optimization: exact-payload push descriptors are reused within a valid command-buffer pipeline context.
           NS2 loader hardening: ZBIC magic detection, LZ4 fallback, alternate 0x100/0x108 first-segment recovery, and no silent corrupted-segment copy.
           NS2 memory layout: 39-bit heap/alias regions scale with intended guest memory; 12 GiB guests expose a 12 GiB heap and SetHeapSize validates against the process region.
           Bananza post-menu GPU path: native F2I byte/short destination lowering and 32 compute storage-buffer slots.
+          Bananza blue-world path: B82 32-bit indexed constant loads, UR16+ VOTEU, 32-bit F2I rounding forms, and D08 uniform-source MUFU.
+          Mario Kart World path: sparse GPU write backing, sparse layered Vulkan images, and per-layer large ASTC uploads from the 01effa base.
           Combined regression validation: enabled before compilation.
           Portable Windows packaging: dependency-audited; non-system DLL imports bundled recursively.
           '@ | Set-Content -Path "$bin\BUILD_SOURCE.txt" -Encoding UTF8
