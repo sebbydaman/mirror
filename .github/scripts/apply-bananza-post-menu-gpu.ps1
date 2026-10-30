@@ -106,7 +106,13 @@ $batchAnchorScript = Join-Path $PSScriptRoot "prepare-ns2-big-batch-anchors.ps1"
 $generalCompatScript = Join-Path $PSScriptRoot "apply-ns2-general-compat-batch-v2.ps1"
 & $generalCompatScript
 
+# Post-#73 runtime evidence: correct task/mesh indexed payloads, scalar TXQ destinations,
+# SR29/SR17 special-register reads and RET link semantics before compiling the next build.
+$runtimeV3Script = Join-Path $PSScriptRoot "apply-ns2-runtime-blockers-v3.ps1"
+& $runtimeV3Script
+
 git diff -- src/shader_recompiler/frontend/ampere/lower_to_maxwell.h `
+            src/shader_recompiler/frontend/maxwell/translate/impl/load_store_attribute.cpp `
             src/video_core/buffer_cache/buffer_cache_base.h `
             src/core/device_memory_manager.h `
             src/core/device_memory_manager.inc `
