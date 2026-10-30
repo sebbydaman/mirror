@@ -42,13 +42,13 @@ if (-not $inc.Contains('CutContinuityAt(start_page_d);')) {
 }
 
 if (-not $inc.Contains('void DeviceMemoryManager<Traits>::CutContinuityAt(size_t page)')) {
-    $trackNeedle = 'template <typename Traits>`r`nvoid DeviceMemoryManager<Traits>::TrackContinuityImpl'
-    $trackIndex = $inc.IndexOf($trackNeedle)
-    if ($trackIndex -lt 0) {
-        $trackNeedle = "template <typename Traits>`nvoid DeviceMemoryManager<Traits>::TrackContinuityImpl"
-        $trackIndex = $inc.IndexOf($trackNeedle)
-    }
-    if ($trackIndex -lt 0) { throw "PR48: TrackContinuityImpl insertion point not found" }
+    # Anchor on the function token rather than newline spelling so this works
+    # whether Git checks the source out as LF or CRLF on Windows runners.
+    $functionNeedle = 'void DeviceMemoryManager<Traits>::TrackContinuityImpl'
+    $functionIndex = $inc.IndexOf($functionNeedle)
+    if ($functionIndex -lt 0) { throw "PR48: TrackContinuityImpl function not found" }
+    $trackIndex = $inc.LastIndexOf('template <typename Traits>', $functionIndex)
+    if ($trackIndex -lt 0) { throw "PR48: TrackContinuityImpl template anchor not found" }
     $block = @'
 template <typename Traits>
 void DeviceMemoryManager<Traits>::CutContinuityAt(size_t page) {
