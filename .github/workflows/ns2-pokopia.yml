@@ -51,6 +51,7 @@ jobs:
         working-directory: eden
         run: |
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-integration.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-positive-shader-cache.ps1"
 
       - name: Restore CPM dependency cache
         uses: actions/cache@v4
@@ -140,6 +141,8 @@ jobs:
           Pinned commit: 50c9fd3471d5f0170a7495ee10fd8b0b2f0298e1
           Integration: Eglantine broad NS2 platform/GPU support + sebbydaman/mirror shader improvements.
           Preserved improvements: bindless 2D/cube TEX, extended TXQ, generalized BRX/BRXU, native geometry OUT, validated geometry stage admission.
+          Positive native shader cache: enabled with exact-source verification (4096 entries).
+          Eglantine negative shader cache: preserved.
           '@ | Set-Content -Path "$bin\BUILD_SOURCE.txt" -Encoding UTF8
 
       - name: Upload Windows build
