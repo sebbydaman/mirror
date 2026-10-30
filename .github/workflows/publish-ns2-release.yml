@@ -1,0 +1,48 @@
+name: Publish Eden NS2 Pokopia Release
+
+on:
+  push:
+    branches:
+      - ns2-pokopia
+    paths:
+      - .github/workflows/publish-ns2-release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: windows-2025
+    steps:
+      - name: Download validated Windows artifact from run 42
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 40990726615 --repo $env:GITHUB_REPOSITORY --name Eden-NS2-Pokopia-Windows --dir package
+
+      - name: Package release ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive -Path package\* -DestinationPath Eden-NS2-Pokopia-faa2bcd1-Windows.zip -CompressionLevel Optimal
+          Get-Item Eden-NS2-Pokopia-faa2bcd1-Windows.zip | Format-List Name,Length
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "ns2-pokopia-faa2bcd1"
+          $notes = @"
+          Experimental Switch 2 Eden build from validated CI run #42.
+
+          Source baseline: Djihads80/Eglantine 50c9fd3471d5f0170a7495ee10fd8b0b2f0298e1
+          Integration commit: faa2bcd128ddf151fcac8592acb70da2be29ba98
+
+          Includes Eglantine NS2 platform/GPU work plus the sebbydaman/mirror TXQ, BRX/BRXU, bindless TEX, geometry OUT/stage admission, positive shader cache, and selected generic 0x2593 Bananza shader/backend improvements.
+
+          Experimental software; compatibility and performance are still in development.
+          "@
+          gh release create $tag Eden-NS2-Pokopia-faa2bcd1-Windows.zip --repo $env:GITHUB_REPOSITORY --target faa2bcd128ddf151fcac8592acb70da2be29ba98 --title "Eden NS2 Pokopia experimental build faa2bcd1" --notes $notes
