@@ -274,4 +274,10 @@ if (-not $ampereText.Contains('case 0xb63:')) {
     Write-Host "Native TLD4 texture-gather lowering already present."
 }
 
-git diff -- src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+$geometryScript = Join-Path $PSScriptRoot "apply-ns2-geometry-stage.ps1"
+if (-not (Test-Path $geometryScript)) {
+    throw "Missing native geometry stage patch: $geometryScript"
+}
+& $geometryScript
+
+git diff -- src/shader_recompiler/frontend/ampere/lower_to_maxwell.h src/video_core/shader_environment.cpp
