@@ -92,5 +92,12 @@ Write-Host "Bananza post-menu GPU patch applied and validated."
 $blueScreenScript = Join-Path $PSScriptRoot "apply-bananza-blue-screen-gpu.ps1"
 & $blueScreenScript
 
+# Generalized GPU/device-memory mapping correctness from Eglantine PR #48.
+# This is relevant to the unmapped Device ReadBlock seen at Bananza's movement transition.
+$deviceMemoryScript = Join-Path $PSScriptRoot "apply-eglantine-pr48-device-memory.ps1"
+& $deviceMemoryScript
+
 git diff -- src/shader_recompiler/frontend/ampere/lower_to_maxwell.h `
-            src/video_core/buffer_cache/buffer_cache_base.h
+            src/video_core/buffer_cache/buffer_cache_base.h `
+            src/core/device_memory_manager.h `
+            src/core/device_memory_manager.inc
