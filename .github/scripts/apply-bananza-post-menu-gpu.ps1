@@ -97,7 +97,22 @@ $blueScreenScript = Join-Path $PSScriptRoot "apply-bananza-blue-screen-gpu.ps1"
 $deviceMemoryScript = Join-Path $PSScriptRoot "apply-eglantine-pr48-device-memory.ps1"
 & $deviceMemoryScript
 
+# Post-#71 generalized batch: PR51 deferred instancing, combined PR52+PR28 command coherency,
+# Bananza 0x224/0x234 semantics, and the newer Vulkan image-view safety fix.
+$generalCompatScript = Join-Path $PSScriptRoot "apply-ns2-general-compat-batch-v2.ps1"
+& $generalCompatScript
+
 git diff -- src/shader_recompiler/frontend/ampere/lower_to_maxwell.h `
             src/video_core/buffer_cache/buffer_cache_base.h `
             src/core/device_memory_manager.h `
-            src/core/device_memory_manager.inc
+            src/core/device_memory_manager.inc `
+            src/video_core/engines/draw_manager.cpp `
+            src/video_core/engines/maxwell_3d.cpp `
+            src/video_core/engines/maxwell_3d.h `
+            src/video_core/nx2.h `
+            src/video_core/buffer_cache/buffer_cache.h `
+            src/video_core/dma_pusher.cpp `
+            src/video_core/dma_pusher.h `
+            src/core/hle/service/nvdrv/nvdrv.cpp `
+            src/core/hle/service/nvdrv/devices/nvhost_gpu.cpp `
+            src/video_core/renderer_vulkan/vk_texture_cache.cpp
