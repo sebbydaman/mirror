@@ -21,12 +21,17 @@ Get-ChildItem $env:GITHUB_WORKSPACE -Filter *.dll -File -Recurse -ErrorAction Si
 }
 
 # Add MSVC redistributable DLLs as candidates. These are imported by our MSVC build and are
-# not guaranteed to be present on a clean Windows install.
+# not guaranteed to be present on a clean Windows install. Prefer the matching toolchain redist
+# over incidental copies elsewhere in the workspace.
 $redistRoot = Join-Path $vs "VC\Redist\MSVC"
 if (Test-Path $redistRoot) {
     Get-ChildItem $redistRoot -Filter *.dll -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
         $key = $_.Name.ToLowerInvariant()
-        if (-not $workspaceDlls.ContainsKey($key)) { $workspaceDlls[$key] = $_.FullName }
+        if ($key -like 'msvcp*.dll' -or $key -like 'vcruntime*.dll') {
+            $workspaceDlls[$key] = $_.FullName
+        } elseif (-not $workspaceDlls.ContainsKey($key)) {
+            $workspaceDlls[$key] = $_.FullName
+        }
     }
 }
 
@@ -59,7 +64,8 @@ while ($queue.Count -gt 0) {
     if (-not $visited.Add($binary)) { continue }
     foreach ($dll in (Get-Imports $binary)) {
         $systemPath = Join-Path $env:WINDIR "System32\$dll"
-        if ($dll -like 'api-ms-win-*' -or (Test-Path $systemPath)) {
+        $isMsvcRuntime = $dll -like 'MSVCP*.dll' -or $dll -like 'VCRUNTIME*.dll'
+        if (-not $isMsvcRuntime -and ($dll -like 'api-ms-win-*' -or (Test-Path $systemPath))) {
             $manifest.Add("SYSTEM  $dll")
             continue
         }
