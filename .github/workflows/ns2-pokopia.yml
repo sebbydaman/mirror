@@ -53,6 +53,7 @@ jobs:
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-integration.ps1"
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-positive-shader-cache.ps1"
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-bananza-generic-overlap.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-draw-state-cache.ps1"
 
       - name: Validate combined NS2 regression surface
         shell: pwsh
@@ -151,6 +152,7 @@ jobs:
           Positive native shader cache: enabled with exact-source verification (4096 entries).
           Eglantine negative shader cache and ARMv8.1 LSE atomic support: preserved.
           Generic 0x2593 Bananza overlap: Maxwell PRMT, 8-bit F2I, native geometry ISBERD/LEPC/prologue lowering.
+          Vulkan draw-state optimization: exact-payload push descriptors are reused within a valid command-buffer pipeline context.
           Combined regression validation: enabled before compilation.
           Portable Windows packaging: dependency-audited; non-system DLL imports bundled recursively.
           '@ | Set-Content -Path "$bin\BUILD_SOURCE.txt" -Encoding UTF8
