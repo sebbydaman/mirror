@@ -85,7 +85,8 @@ $newMufuGuard = @'
             if (operation > 9 || (operation == 9 && insn.Bits(73, 1)) || operation == 6 || operation == 7 || insn.Bits(80, 11) ||
                 (opcode == 0xd08 ? !insn.Bits(91, 1) || (insn.words[1] & ~0xc00000ffU) != 0 : insn.Bits(91, 1) != 0))
                 return fail(index, "native MUFU mode");
-'@.TrimEnd("`r", "`n")
+'@
+$newMufuGuard = $newMufuGuard.TrimEnd("`r", "`n")
 if ($text.Contains($oldMufuGuard)) {
     $text = $text.Replace($oldMufuGuard, $newMufuGuard)
 } elseif (-not $text.Contains('opcode == 0xd08 ? !insn.Bits(91, 1)')) {
