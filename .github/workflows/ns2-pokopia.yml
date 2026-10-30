@@ -152,7 +152,14 @@ jobs:
           Eglantine negative shader cache and ARMv8.1 LSE atomic support: preserved.
           Generic 0x2593 Bananza overlap: Maxwell PRMT, 8-bit F2I, native geometry ISBERD/LEPC/prologue lowering.
           Combined regression validation: enabled before compilation.
+          Portable Windows packaging: dependency-audited; non-system DLL imports bundled recursively.
           '@ | Set-Content -Path "$bin\BUILD_SOURCE.txt" -Encoding UTF8
+
+      - name: Package portable Windows runtime
+        shell: pwsh
+        working-directory: eden
+        run: |
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\package-windows-runtime.ps1" -BinDir "build/bin"
 
       - name: Upload Windows build
         uses: actions/upload-artifact@v6
