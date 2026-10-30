@@ -15,7 +15,6 @@ function Require-Text([string]$Path, [string]$Needle, [string]$Name) {
 
 $ampere = "src/shader_recompiler/frontend/ampere/lower_to_maxwell.h"
 $shaderEnv = "src/video_core/shader_environment.cpp"
-$shaderCacheH = "src/video_core/shader_cache.h"
 $shaderCacheCpp = "src/video_core/shader_cache.cpp"
 $notImpl = "src/shader_recompiler/frontend/maxwell/translate/impl/not_implemented.cpp"
 $prmt = "src/shader_recompiler/frontend/maxwell/translate/impl/integer_byte_permute.cpp"
@@ -35,7 +34,9 @@ Require-Text $ampere 'case 0x34e:' 'geometry LEPC lowering'
 Require-Text $ampere 'case 0x357:' 'geometry prologue lowering'
 Require-Text $prmt 'void TranslatorVisitor::PRMT_reg' 'Maxwell PRMT implementation'
 Require-Text $cmake 'frontend/maxwell/translate/impl/integer_byte_permute.cpp' 'PRMT source wired into shader_recompiler'
-Require-Text $f2i 'I8' '8-bit F2I destination support'
+Require-Text $f2i 'case DestFormat::I8:' '8-bit F2I destination decoding'
+Require-Text $f2i 'std::numeric_limits<s8>::max' 'signed 8-bit F2I clamp bounds'
+Require-Text $f2i 'std::numeric_limits<u8>::max' 'unsigned 8-bit F2I clamp bounds'
 
 # PRMT must no longer be routed through the unimplemented handlers.
 Require-File $notImpl
@@ -45,10 +46,15 @@ if ($notImplText.Contains('void TranslatorVisitor::PRMT_reg')) {
 }
 Write-Host '[PASS] PRMT removed from unimplemented handlers'
 
-# Preserve Eglantine's rejection cache and our positive successful-lowering cache.
+# Preserve Eglantine's rejection cache.
 Require-Text $shaderCacheCpp 'RememberRejection' 'negative native shader rejection cache'
 Require-Text $shaderCacheCpp 'IsRejected' 'negative shader lookup path'
-Require-Text $shaderCacheH 'positive_native' 'positive native shader cache storage'
-Require-Text $shaderCacheCpp 'positive_native' 'positive native shader cache lookup/store path'
+
+# The collision-safe successful-lowering cache is intentionally at native capture/lowering time
+# in shader_environment.cpp, where exact Ampere source instructions are still available.
+Require-Text $shaderEnv 'NativeShaderPositiveCacheMaxEntries = 4096' 'positive native shader cache capacity'
+Require-Text $shaderEnv 'FindPositiveNativeShaderCache' 'positive native shader cache lookup path'
+Require-Text $shaderEnv 'StorePositiveNativeShaderCache' 'positive native shader cache store path'
+Require-Text $shaderEnv 'SameNativeShader' 'positive shader exact-source collision check'
 
 Write-Host "NS2 combined regression validation passed."
