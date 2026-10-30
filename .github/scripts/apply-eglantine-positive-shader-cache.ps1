@@ -106,8 +106,14 @@ $lowerReplacement = @'
 '@
 $text = $text.Replace($lowerNeedle, $lowerReplacement.TrimEnd("`r", "`n"))
 
-$logNeedle = @'
+# Eglantine changed this diagnostic from INFO to DEBUG after the original integration.
+# Match either spelling so the functional cache patch remains source-version tolerant.
+$logInfoNeedle = @'
     LOG_INFO(Shader, "Lowered native shader at {:#x}: {} source bytes, {} instructions",
+             program_base, native_source_size, lowered.instructions.size());
+'@
+$logDebugNeedle = @'
+    LOG_DEBUG(Shader, "Lowered native shader at {:#x}: {} source bytes, {} instructions",
              program_base, native_source_size, lowered.instructions.size());
 '@
 $logReplacement = @'
@@ -115,14 +121,22 @@ $logReplacement = @'
         LOG_DEBUG(Shader, "Reused positive native shader cache at {:#x}: {} source bytes, {} instructions",
                   program_base, native_source_size, lowered.instructions.size());
     } else {
-        LOG_INFO(Shader, "Lowered native shader at {:#x}: {} source bytes, {} instructions",
-                 program_base, native_source_size, lowered.instructions.size());
+        LOG_DEBUG(Shader, "Lowered native shader at {:#x}: {} source bytes, {} instructions",
+                  program_base, native_source_size, lowered.instructions.size());
     }
 '@
-if (-not $text.Contains($logNeedle.TrimEnd("`r", "`n"))) {
+$matchedLog = $null
+foreach ($candidate in @($logInfoNeedle, $logDebugNeedle)) {
+    $candidate = $candidate.TrimEnd("`r", "`n")
+    if ($text.Contains($candidate)) {
+        $matchedLog = $candidate
+        break
+    }
+}
+if (-not $matchedLog) {
     throw "Could not locate native shader lowering log"
 }
-$text = $text.Replace($logNeedle.TrimEnd("`r", "`n"), $logReplacement.TrimEnd("`r", "`n"))
+$text = $text.Replace($matchedLog, $logReplacement.TrimEnd("`r", "`n"))
 
 Set-Content -Path $path -Value $text -Encoding utf8 -NoNewline
 Write-Host "Enabled collision-safe positive native shader lowering cache."
