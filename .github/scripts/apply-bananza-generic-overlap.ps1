@@ -94,21 +94,37 @@ if ($notImplNew -ne $notImplText) {
 # -----------------------------------------------------------------------------
 $f2iPath = "src/shader_recompiler/frontend/maxwell/translate/impl/floating_point_conversion_integer.cpp"
 $f2iText = Get-Content $f2iPath -Raw
-if ($f2iText.Contains("enum class DestFormat : u64 {`n    Invalid,`n    I16,")) {
-    $f2iText = $f2iText.Replace(
-        "enum class DestFormat : u64 {`n    Invalid,`n    I16,",
-        "enum class DestFormat : u64 {`n    I8,`n    I16,")
-    $f2iText = $f2iText.Replace(
-        "    switch (dest_format) {`n    case DestFormat::I16:",
-        "    switch (dest_format) {`n    case DestFormat::I8:`n        return 8;`n    case DestFormat::I16:")
-    $f2iText = $f2iText.Replace(
-        "        switch (format) {`n        case DestFormat::I16:",
-        "        switch (format) {`n        case DestFormat::I8:`n            return {static_cast<f64>((std::numeric_limits<s8>::max)()),`n                    static_cast<f64>((std::numeric_limits<s8>::min)())};`n        case DestFormat::I16:")
-    $unsignedNeedle = "        switch (format) {`n        case DestFormat::I16:"
-    $unsignedIndex = $f2iText.IndexOf($unsignedNeedle, $f2iText.IndexOf("} else {"))
-    if ($unsignedIndex -lt 0) { throw "Could not locate unsigned F2I bounds" }
-    $unsignedReplacement = "        switch (format) {`n        case DestFormat::I8:`n            return {static_cast<f64>((std::numeric_limits<u8>::max)()),`n                    static_cast<f64>((std::numeric_limits<u8>::min)())};`n        case DestFormat::I16:"
-    $f2iText = $f2iText.Remove($unsignedIndex, $unsignedNeedle.Length).Insert($unsignedIndex, $unsignedReplacement)
+if (-not $f2iText.Contains('DestFormat::I8')) {
+    # Destination encoding 0 is the captured 8-bit form. Eglantine labels it Invalid;
+    # the Bananza implementation identifies that encoding as I8.
+    $new = [regex]::Replace(
+        $f2iText,
+        'enum class DestFormat : u64 \{\r?\n\s*Invalid,\r?\n\s*I16,',
+        "enum class DestFormat : u64 {`n    I8,`n    I16,",
+        1)
+    if ($new -eq $f2iText) { throw "Could not patch F2I DestFormat enum for I8" }
+    $f2iText = $new
+
+    $new = [regex]::Replace(
+        $f2iText,
+        'switch \(dest_format\) \{\r?\n\s*case DestFormat::I16:',
+        "switch (dest_format) {`n    case DestFormat::I8:`n        return 8;`n    case DestFormat::I16:",
+        1)
+    if ($new -eq $f2iText) { throw "Could not patch F2I BitSize for I8" }
+    $f2iText = $new
+
+    $signedPattern = 'if \(is_signed\) \{\r?\n\s*switch \(format\) \{\r?\n\s*case DestFormat::I16:'
+    $signedReplacement = "if (is_signed) {`n        switch (format) {`n        case DestFormat::I8:`n            return {static_cast<f64>((std::numeric_limits<s8>::max)()),`n                    static_cast<f64>((std::numeric_limits<s8>::min)())};`n        case DestFormat::I16:"
+    $new = [regex]::Replace($f2iText, $signedPattern, $signedReplacement, 1)
+    if ($new -eq $f2iText) { throw "Could not patch signed F2I I8 bounds" }
+    $f2iText = $new
+
+    $unsignedPattern = '\} else \{\r?\n\s*switch \(format\) \{\r?\n\s*case DestFormat::I16:'
+    $unsignedReplacement = "} else {`n        switch (format) {`n        case DestFormat::I8:`n            return {static_cast<f64>((std::numeric_limits<u8>::max)()),`n                    static_cast<f64>((std::numeric_limits<u8>::min)())};`n        case DestFormat::I16:"
+    $new = [regex]::Replace($f2iText, $unsignedPattern, $unsignedReplacement, 1)
+    if ($new -eq $f2iText) { throw "Could not patch unsigned F2I I8 bounds" }
+    $f2iText = $new
+
     Set-Content -Path $f2iPath -Value $f2iText -Encoding utf8 -NoNewline
     Write-Host "Added Maxwell F2I 8-bit destination support."
 }
