@@ -1,5 +1,22 @@
 $ErrorActionPreference = "Stop"
 
+# Build from the newer nx2-experimental merge that contains the Mario Kart World
+# sparse-region, sparse-layer and per-layer ASTC upload work. The workflow still
+# checks out the older known-good source first; switch before applying any local
+# patches so the rest of the patch chain is layered on this exact source commit.
+$targetBase = "01effa81ab0e151f8cfd674bf4da952d24645943"
+$currentBase = (git rev-parse HEAD).Trim()
+if ($currentBase -ne $targetBase) {
+    Write-Host "Switching Eglantine base $currentBase -> $targetBase"
+    git fetch --depth=1 origin $targetBase
+    if ($LASTEXITCODE -ne 0) { throw "Could not fetch Eglantine base $targetBase" }
+    git checkout --detach $targetBase
+    if ($LASTEXITCODE -ne 0) { throw "Could not checkout Eglantine base $targetBase" }
+}
+$actualBase = (git rev-parse HEAD).Trim()
+if ($actualBase -ne $targetBase) { throw "Unexpected Eglantine base: $actualBase" }
+Write-Host "Using Eglantine sparse/ASTC base: $actualBase"
+
 $amperePath = "src/shader_recompiler/frontend/ampere/lower_to_maxwell.h"
 $ampereText = Get-Content $amperePath -Raw
 
@@ -133,8 +150,8 @@ if (-not $ampereText.Contains('case 0x924: { // OUT, immediate geometry stream')
 
 Set-Content -Path $amperePath -Value $ampereText -Encoding utf8 -NoNewline
 
-# Reuse the validated geometry-stage admission patch. Eglantine 50c9fd3 still
-# has the same native stage guard as the previous NS2 baseline.
+# Reuse the validated geometry-stage admission patch. The selected NX2 base still
+# has the same native stage guard as the previous baseline.
 $geometryScript = Join-Path $PSScriptRoot "apply-ns2-geometry-stage.ps1"
 & $geometryScript
 
