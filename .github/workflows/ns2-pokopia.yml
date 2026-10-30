@@ -54,6 +54,12 @@ jobs:
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-positive-shader-cache.ps1"
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-bananza-generic-overlap.ps1"
 
+      - name: Validate combined NS2 regression surface
+        shell: pwsh
+        working-directory: eden
+        run: |
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-ns2-regressions.ps1"
+
       - name: Restore CPM dependency cache
         uses: actions/cache@v4
         with:
@@ -145,6 +151,7 @@ jobs:
           Positive native shader cache: enabled with exact-source verification (4096 entries).
           Eglantine negative shader cache and ARMv8.1 LSE atomic support: preserved.
           Generic 0x2593 Bananza overlap: Maxwell PRMT, 8-bit F2I, native geometry ISBERD/LEPC/prologue lowering.
+          Combined regression validation: enabled before compilation.
           '@ | Set-Content -Path "$bin\BUILD_SOURCE.txt" -Encoding UTF8
 
       - name: Upload Windows build
