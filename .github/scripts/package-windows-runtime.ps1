@@ -1,8 +1,8 @@
-$ErrorActionPreference = "Stop"
-
 param(
     [string]$BinDir = "build/bin"
 )
+
+$ErrorActionPreference = "Stop"
 
 $bin = Resolve-Path $BinDir
 $exe = Join-Path $bin "eglantine.exe"
