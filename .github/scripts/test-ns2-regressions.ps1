@@ -51,18 +51,17 @@ Write-Host '[PASS] PRMT removed from unimplemented handlers'
 Require-Text $shaderCacheCpp 'RememberRejection' 'negative native shader rejection cache'
 Require-Text $shaderCacheCpp 'IsRejected' 'negative shader lookup path'
 
-# The collision-safe successful-lowering cache is intentionally at native capture/lowering time
-# in shader_environment.cpp, where exact Ampere source instructions are still available.
+# Collision-safe successful-lowering cache at the native capture/lowering point.
 Require-Text $shaderEnv 'NativeShaderPositiveCacheMaxEntries = 4096' 'positive native shader cache capacity'
 Require-Text $shaderEnv 'FindPositiveNativeShaderCache' 'positive native shader cache lookup path'
 Require-Text $shaderEnv 'StorePositiveNativeShaderCache' 'positive native shader cache store path'
 Require-Text $shaderEnv 'SameNativeShader' 'positive shader exact-source collision check'
 
-# Draw-state optimization: only reuse a push descriptor when the same pipeline remains bound and
-# the exact payload is unchanged. bind_pipeline becomes true after scheduler invalidation, so a new
-# command buffer cannot accidentally inherit stale push-descriptor state.
-Require-Text $vkGraphics 'bool update_push_descriptors' 'push-descriptor exact-payload cache'
+# Draw-state optimization. Use semantic markers rather than declaration spelling so harmless
+# const/formatting changes do not create a false regression failure.
+Require-Text $vkGraphics 'update_push_descriptors =' 'push-descriptor exact-payload cache'
 Require-Text $vkGraphics 'bind_pipeline || last_descriptor_payload.size() != num_descriptor_entries' 'push-descriptor pipeline/reset guard'
 Require-Text $vkGraphics 'if (update_push_descriptors)' 'conditional push-descriptor submission'
+Require-Text $vkGraphics 'PushDescriptorSetWithTemplateKHR' 'Vulkan push-descriptor path preserved'
 
 Write-Host "NS2 combined regression validation passed."
