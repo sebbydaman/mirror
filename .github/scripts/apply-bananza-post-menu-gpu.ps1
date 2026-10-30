@@ -97,6 +97,10 @@ $blueScreenScript = Join-Path $PSScriptRoot "apply-bananza-blue-screen-gpu.ps1"
 $deviceMemoryScript = Join-Path $PSScriptRoot "apply-eglantine-pr48-device-memory.ps1"
 & $deviceMemoryScript
 
+# Normalize one exact 01effa formatting anchor used by the larger combined patch.
+$batchAnchorScript = Join-Path $PSScriptRoot "prepare-ns2-big-batch-anchors.ps1"
+& $batchAnchorScript
+
 # Post-#71 generalized batch: PR51 deferred instancing, combined PR52+PR28 command coherency,
 # Bananza 0x224/0x234 semantics, and the newer Vulkan image-view safety fix.
 $generalCompatScript = Join-Path $PSScriptRoot "apply-ns2-general-compat-batch-v2.ps1"
