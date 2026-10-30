@@ -11,10 +11,6 @@ permissions:
 
 jobs:
   build-windows:
-    # The working SW2 binary was built with MSVC 19.51 / runtime 14.51.
-    # windows-2022 currently selects MSVC 14.44, which compiles the tree but
-    # cannot link the prebuilt Qt 6.11 libraries (__std_rotate/__std_unique_*
-    # and other newer STL helper symbols). Use the newer hosted image.
     runs-on: windows-2025
     timeout-minutes: 120
 
@@ -25,219 +21,45 @@ jobs:
           path: automation
           fetch-depth: 1
 
-      - name: Checkout complete NS2 source
+      - name: Checkout Eglantine NS2 source
         uses: actions/checkout@v5
         with:
-          # Cross-game NS2 baseline: this fork has generic Ampere lowering,
-          # compute/QMD, mapping, and buffer-cache fixes proven through actual
-          # Donkey Kong Bananza gameplay. It does not hard-code that title ID.
-          repository: 0x2593/Eden-NS2
-          ref: f1b03214c4eb368879aa33a88b3f29a23ca7c8be
+          repository: Djihads80/Eglantine
+          ref: 50c9fd3471d5f0170a7495ee10fd8b0b2f0298e1
           path: eden
           fetch-depth: 1
 
-      - name: Verify complete NS2 tree
+      - name: Verify Eglantine NS2 tree
         shell: pwsh
         working-directory: eden
         run: |
           $required = @(
-            "src/core/hle/service/am/service/gpu_session.cpp",
-            "src/core/hle/service/am/service/graphics_supervisor.cpp",
-            "src/core/hle/service/nvdrv/devices/nvhost_tsg_gpu.cpp",
             "src/shader_recompiler/frontend/ampere/lower_to_maxwell.h",
+            "src/video_core/shader_environment.cpp",
+            "src/video_core/shader_cache.h",
             "src/video_core/native_qmd.h",
             "src/video_core/native_semaphore.h",
-            "src/video_core/macro_turing.h"
+            "src/video_core/macro_turing.h",
+            "src/core/hle/service/nx2_gsv.h"
           )
           foreach ($path in $required) {
-            if (-not (Test-Path $path)) { throw "Incomplete NS2 source tree: missing $path" }
+            if (-not (Test-Path $path)) { throw "Incomplete Eglantine NS2 source tree: missing $path" }
           }
-          Write-Host "Pinned NS2 source: $(git rev-parse HEAD)"
+          Write-Host "Pinned Eglantine source: $(git rev-parse HEAD)"
 
-      - name: Apply NS2 compatibility and runtime optimizations
+      - name: Apply best-of-both NS2 integration patches
         shell: pwsh
         working-directory: eden
         run: |
-          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-ns2-build-fixes.ps1"
-
-          # Recover the exact conservative TMML path from the known-working SW2
-          # binary. Mesa's SM70/Turing encoding independently confirms opcode
-          # 0xb69 and the texture-cbuf field layout. Keep this deliberately narrow:
-          # 2D, one R LOD result, cbuf descriptor, no divergent/BA/bindless modes.
-          $amperePath = "src/shader_recompiler/frontend/ampere/lower_to_maxwell.h"
-          $ampereText = Get-Content $amperePath -Raw
-          if (-not $ampereText.Contains('case 0xb69:')) {
-              $tmmlNeedle = '        case 0x816: { // Captured PRMT half-word concatenation'
-              if (-not $ampereText.Contains($tmmlNeedle)) {
-                  throw "Could not locate PRMT insertion point for native TMML"
-              }
-              $tmmlBlock = @'
-          case 0xb69: { // TMML, 2D mipmap-level query, single R result
-              const u32 binding = insn.Bits(54, 5);
-              const u32 offset = insn.Bits(40, 14);
-              const u32 source = insn.Bits(24, 8);
-              if (insn.Bits(32, 8) != 255 || insn.Bits(59, 2) ||
-                  insn.Bits(61, 3) != 1 || insn.Bits(64, 8) != 255 ||
-                  insn.Bits(72, 4) != 1 || insn.Bits(76, 15) ||
-                  insn.Bits(91, 1) || binding >= 18 || offset > 0x1fff ||
-                  dest == 255 || source >= 249) {
-                  return fail(index, "native texture mipmap level query mode");
-              }
-              if (result.required_texture_buffer != ~0U &&
-                  result.required_texture_buffer != binding) {
-                  return fail(index, "native texture descriptor buffer conflict");
-              }
-              result.required_texture_buffer = binding;
-              emit(base(0xdf58000000000000ULL) | (u64{source} << 8) |
-                   (u64{2} << 28) | (u64{1} << 31) | (u64{offset} << 36));
-              break;
-          }
-          '@
-              $ampereText = $ampereText.Replace(
-                  $tmmlNeedle,
-                  $tmmlBlock.TrimEnd("`r", "`n") + "`n" + $tmmlNeedle)
-              Set-Content -Path $amperePath -Value $ampereText -Encoding utf8 -NoNewline
-              Write-Host "Added native TMML 2D LOD query lowering recovered from working SW2 build."
-          } else {
-              Write-Host "Native TMML lowering already present."
-          }
-
-          # Native shaders are immutable for the lifetime of a compiled pipeline,
-          # but the environment adapter currently lowers identical Ampere source
-          # every time a new environment is constructed. The working SW2 log
-          # showed hundreds of repeated lowerings and thousands of repeated BRX
-          # captures. Cache successful content-addressed lowerings so repeated
-          # draws reuse the canonical Maxwell program while retaining the normal
-          # shader/pipeline caches above it.
-          $shaderEnvPath = "src/video_core/shader_environment.cpp"
-          $shaderEnvText = Get-Content $shaderEnvPath -Raw
-          if (-not $shaderEnvText.Contains('native_shader_lowering_cache_mutex')) {
-              if (-not $shaderEnvText.Contains('#include <mutex>')) {
-                  $includeNeedle = '#include <memory>'
-                  if (-not $shaderEnvText.Contains($includeNeedle)) {
-                      throw "Could not locate shader_environment memory include"
-                  }
-                  $shaderEnvText = $shaderEnvText.Replace(
-                      $includeNeedle,
-                      "#include <memory>`n#include <mutex>`n#include <unordered_map>")
-              }
-
-              $namespaceNeedle = 'namespace VideoCommon {'
-              if (-not $shaderEnvText.Contains($namespaceNeedle)) {
-                  throw "Could not locate VideoCommon namespace"
-              }
-              $cacheBlock = @'
-          namespace VideoCommon {
-
-          namespace {
-
-          constexpr size_t NativeShaderLoweringCacheMaxEntries = 4096;
-
-          struct NativeShaderLoweringCacheEntry {
-              u32 source_size{};
-              Shader::Ampere::LoweredProgram program;
-          };
-
-          std::mutex native_shader_lowering_cache_mutex;
-          std::unordered_map<u64, NativeShaderLoweringCacheEntry> native_shader_lowering_cache;
-
-          std::optional<Shader::Ampere::LoweredProgram> FindCachedNativeShader(
-              std::span<const Shader::Ampere::Instruction> native) {
-              const u64 key = Shader::Ampere::NativeProgramKey(native);
-              const u32 source_size = static_cast<u32>(native.size_bytes());
-              std::scoped_lock lock{native_shader_lowering_cache_mutex};
-              const auto it = native_shader_lowering_cache.find(key);
-              if (it == native_shader_lowering_cache.end() || it->second.source_size != source_size) {
-                  return std::nullopt;
-              }
-              return it->second.program;
-          }
-
-          void CacheNativeShader(std::span<const Shader::Ampere::Instruction> native,
-                                 const Shader::Ampere::LoweredProgram& program) {
-              if (!program) {
-                  return;
-              }
-              const u64 key = Shader::Ampere::NativeProgramKey(native);
-              const u32 source_size = static_cast<u32>(native.size_bytes());
-              std::scoped_lock lock{native_shader_lowering_cache_mutex};
-              if (native_shader_lowering_cache.size() >= NativeShaderLoweringCacheMaxEntries &&
-                  native_shader_lowering_cache.find(key) == native_shader_lowering_cache.end()) {
-                  native_shader_lowering_cache.clear();
-              }
-              native_shader_lowering_cache.insert_or_assign(
-                  key, NativeShaderLoweringCacheEntry{source_size, program});
-          }
-
-          } // namespace
-          '@
-              $shaderEnvText = $shaderEnvText.Replace(
-                  $namespaceNeedle,
-                  $cacheBlock.TrimEnd("`r", "`n"))
-
-              $lowerNeedle = '    auto lowered = Shader::Ampere::LowerToMaxwell(native);'
-              if (-not $shaderEnvText.Contains($lowerNeedle)) {
-                  throw "Could not locate native shader lowering call"
-              }
-              $lowerReplacement = @'
-              auto cached_lowered = FindCachedNativeShader(native);
-              auto lowered = cached_lowered ? std::move(*cached_lowered)
-                                            : Shader::Ampere::LowerToMaxwell(native);
-              const bool lowered_from_cache = cached_lowered.has_value();
-          '@
-              $shaderEnvText = $shaderEnvText.Replace(
-                  $lowerNeedle,
-                  $lowerReplacement.TrimEnd("`r", "`n"))
-
-              $textureNeedle = '    if (lowered.required_texture_buffer != ~0U) {'
-              if (-not $shaderEnvText.Contains($textureNeedle)) {
-                  throw "Could not locate native texture-buffer handling"
-              }
-              $textureReplacement = @'
-              if (!lowered_from_cache) {
-                  CacheNativeShader(native, lowered);
-              }
-              if (lowered.required_texture_buffer != ~0U) {
-          '@
-              $shaderEnvText = $shaderEnvText.Replace(
-                  $textureNeedle,
-                  $textureReplacement.TrimEnd("`r", "`n"))
-
-              $logNeedle = @'
-              LOG_INFO(Shader, "Lowered native shader at {:#x}: {} source bytes, {} instructions",
-                       program_base, native_source_size, lowered.instructions.size());
-          '@
-              $logReplacement = @'
-              if (lowered_from_cache) {
-                  LOG_DEBUG(Shader, "Reused cached native shader at {:#x}: {} source bytes, {} instructions",
-                            program_base, native_source_size, lowered.instructions.size());
-              } else {
-                  LOG_INFO(Shader, "Lowered native shader at {:#x}: {} source bytes, {} instructions",
-                           program_base, native_source_size, lowered.instructions.size());
-              }
-          '@
-              if (-not $shaderEnvText.Contains($logNeedle.TrimEnd("`r", "`n"))) {
-                  throw "Could not locate native shader lowering log"
-              }
-              $shaderEnvText = $shaderEnvText.Replace(
-                  $logNeedle.TrimEnd("`r", "`n"),
-                  $logReplacement.TrimEnd("`r", "`n"))
-
-              Set-Content -Path $shaderEnvPath -Value $shaderEnvText -Encoding utf8 -NoNewline
-              Write-Host "Enabled content-addressed native shader lowering cache."
-          } else {
-              Write-Host "Native shader lowering cache already present."
-          }
-
-          git diff -- src/shader_recompiler/frontend/ampere/lower_to_maxwell.h src/video_core/shader_environment.cpp
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-integration.ps1"
 
       - name: Restore CPM dependency cache
         uses: actions/cache@v4
         with:
           path: eden/.cache/cpm
-          key: eden-ns2-cpm-${{ runner.os }}-${{ hashFiles('eden/cpmfile.json') }}
+          key: eden-eglantine-cpm-${{ runner.os }}-${{ hashFiles('eden/cpmfile.json') }}
           restore-keys: |
-            eden-ns2-cpm-${{ runner.os }}-
+            eden-eglantine-cpm-${{ runner.os }}-
 
       - name: Install Vulkan SDK
         shell: pwsh
@@ -252,11 +74,7 @@ jobs:
           $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           if (-not $vs) { throw "Visual Studio C++ toolchain not found" }
           $devcmd = Join-Path $vs "Common7\Tools\VsDevCmd.bat"
-
-          # Print the selected compiler version so a stale hosted image fails
-          # diagnostically instead of making us chase source errors.
           cmd /c "`"$devcmd`" -arch=x64 -host_arch=x64 && cl 2>&1 | findstr /C:`"Version`""
-
           $cpm = "$env:GITHUB_WORKSPACE\eden\.cache\cpm"
           $cmake = "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCPM_SOURCE_CACHE=$cpm -DYUZU_TESTS=OFF -DBUILD_TESTING=OFF -DENABLE_WERROR=OFF -DENABLE_QT_TRANSLATION=OFF -DYUZU_USE_BUNDLED_FFMPEG=ON -DENABLE_WEB_SERVICE=OFF -DENABLE_CUBEB=OFF -DENABLE_LIBUSB=OFF"
           cmd /c "`"$devcmd`" -arch=x64 -host_arch=x64 && $cmake"
@@ -282,7 +100,6 @@ jobs:
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           $devcmd = Join-Path $vs "Common7\Tools\VsDevCmd.bat"
-          # CMake target is still named "yuzu"; its OUTPUT_NAME is "eden" (eden.exe).
           $command = "`"$devcmd`" -arch=x64 -host_arch=x64 && cmake --build build --target yuzu --parallel 4 --verbose > build.log 2>&1"
           cmd /c $command
           $buildExitCode = $LASTEXITCODE
@@ -305,7 +122,6 @@ jobs:
         working-directory: eden
         run: |
           $bin = "build/bin"
-
           @'
           Add these values to the appropriate sections of Eden's qt-config.ini:
 
@@ -321,13 +137,10 @@ jobs:
           '@ | Set-Content -Path "$bin\POKOPIA_CONFIG.txt" -Encoding UTF8
 
           @'
-          NS2 source: 0x2593/Eden-NS2
-          Pinned commit: f1b03214c4eb368879aa33a88b3f29a23ca7c8be
-          Eden base lineage: 05f36d990ce5301b310871451201a72e4c52b4df
-          Cross-game evidence: this source reaches Donkey Kong Bananza gameplay with generic GPU/compute/shader fixes.
-          Known-working Pokopia comparison binary: source checkpoint 75c801a, MSVC 19.51 / runtime 14.51
-          Native shader lowering cache: enabled (content-addressed, 4096 entries)
-          Native TMML 2D LOD query lowering: enabled (recovered from working binary and Mesa SM70 encoding).
+          NS2 source: Djihads80/Eglantine
+          Pinned commit: 50c9fd3471d5f0170a7495ee10fd8b0b2f0298e1
+          Integration: Eglantine broad NS2 platform/GPU support + sebbydaman/mirror shader improvements.
+          Preserved improvements: bindless 2D/cube TEX, extended TXQ, generalized BRX/BRXU, native geometry OUT, validated geometry stage admission.
           '@ | Set-Content -Path "$bin\BUILD_SOURCE.txt" -Encoding UTF8
 
       - name: Upload Windows build
