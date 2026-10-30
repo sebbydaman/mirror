@@ -61,7 +61,7 @@ Require-Text $shaderEnv 'SameNativeShader' 'positive shader exact-source collisi
 # Draw-state optimization: only reuse a push descriptor when the same pipeline remains bound and
 # the exact payload is unchanged. bind_pipeline becomes true after scheduler invalidation, so a new
 # command buffer cannot accidentally inherit stale push-descriptor state.
-Require-Text $vkGraphics 'const bool update_push_descriptors' 'push-descriptor exact-payload cache'
+Require-Text $vkGraphics 'bool update_push_descriptors' 'push-descriptor exact-payload cache'
 Require-Text $vkGraphics 'bind_pipeline || last_descriptor_payload.size() != num_descriptor_entries' 'push-descriptor pipeline/reset guard'
 Require-Text $vkGraphics 'if (update_push_descriptors)' 'conditional push-descriptor submission'
 
