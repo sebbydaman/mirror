@@ -20,6 +20,7 @@ $notImpl = "src/shader_recompiler/frontend/maxwell/translate/impl/not_implemente
 $prmt = "src/shader_recompiler/frontend/maxwell/translate/impl/integer_byte_permute.cpp"
 $f2i = "src/shader_recompiler/frontend/maxwell/translate/impl/floating_point_conversion_integer.cpp"
 $cmake = "src/shader_recompiler/CMakeLists.txt"
+$vkGraphics = "src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp"
 
 # sebbydaman/mirror shader/control-flow improvements.
 Require-Text $ampere 'case 0x361: { // TEX.B, scalar bindless 2D/cube implicit-LOD sample' 'bindless 2D/cube TEX.B lowering'
@@ -56,5 +57,12 @@ Require-Text $shaderEnv 'NativeShaderPositiveCacheMaxEntries = 4096' 'positive n
 Require-Text $shaderEnv 'FindPositiveNativeShaderCache' 'positive native shader cache lookup path'
 Require-Text $shaderEnv 'StorePositiveNativeShaderCache' 'positive native shader cache store path'
 Require-Text $shaderEnv 'SameNativeShader' 'positive shader exact-source collision check'
+
+# Draw-state optimization: only reuse a push descriptor when the same pipeline remains bound and
+# the exact payload is unchanged. bind_pipeline becomes true after scheduler invalidation, so a new
+# command buffer cannot accidentally inherit stale push-descriptor state.
+Require-Text $vkGraphics 'const bool update_push_descriptors' 'push-descriptor exact-payload cache'
+Require-Text $vkGraphics 'bind_pipeline || last_descriptor_payload.size() != num_descriptor_entries' 'push-descriptor pipeline/reset guard'
+Require-Text $vkGraphics 'if (update_push_descriptors)' 'conditional push-descriptor submission'
 
 Write-Host "NS2 combined regression validation passed."
