@@ -85,5 +85,12 @@ if (-not $bufferCheck.Contains('constexpr u32 NUM_STORAGE_BUFFERS = 32;')) {
 }
 
 Write-Host "Bananza post-menu GPU patch applied and validated."
+
+# The next gameplay phase can keep running with HUD/audio/input while world draws are skipped.
+# Apply the exact shader forms captured in that blue-screen log after the byte/short F2I patch,
+# because the follow-up extends this same F2I block.
+$blueScreenScript = Join-Path $PSScriptRoot "apply-bananza-blue-screen-gpu.ps1"
+& $blueScreenScript
+
 git diff -- src/shader_recompiler/frontend/ampere/lower_to_maxwell.h `
             src/video_core/buffer_cache/buffer_cache_base.h
