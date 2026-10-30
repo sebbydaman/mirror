@@ -55,6 +55,7 @@ jobs:
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-bananza-generic-overlap.ps1"
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-draw-state-cache.ps1"
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-nso-loader.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-nx2-memory-layout.ps1"
 
       - name: Validate combined NS2 regression surface
         shell: pwsh
@@ -155,6 +156,7 @@ jobs:
           Generic 0x2593 Bananza overlap: Maxwell PRMT, 8-bit F2I, native geometry ISBERD/LEPC/prologue lowering.
           Vulkan draw-state optimization: exact-payload push descriptors are reused within a valid command-buffer pipeline context.
           NS2 loader hardening: ZBIC magic detection, LZ4 fallback, alternate 0x100/0x108 first-segment recovery, and no silent corrupted-segment copy.
+          NS2 memory layout: 39-bit heap/alias regions scale with intended guest memory; 12 GiB guests expose a 12 GiB heap and SetHeapSize validates against the process region.
           Combined regression validation: enabled before compilation.
           Portable Windows packaging: dependency-audited; non-system DLL imports bundled recursively.
           '@ | Set-Content -Path "$bin\BUILD_SOURCE.txt" -Encoding UTF8
