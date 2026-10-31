@@ -1,5 +1,15 @@
 $ErrorActionPreference = "Stop"
 
+# The earlier integration step intentionally edits the detached Eglantine worktree in place.
+# PokeDinner is applied with cherry-pick --no-commit, so give Git a clean CI-only checkpoint
+# first. This checkpoint exists only inside the ephemeral Actions checkout; it prevents Git from
+# rejecting the donor batch just because our already-validated local integration is dirty.
+if (git status --porcelain) {
+    git add -A
+    git -c user.name="Eden NS2 CI" -c user.email="actions@github.com" commit -m "CI checkpoint before PokeDinner 2.0 batch" --no-verify
+    if ($LASTEXITCODE -ne 0) { throw "Could not checkpoint local NS2 integration before PokeDinner batch" }
+}
+
 # Apply the curated PokeDinner 2.0 correctness/performance batch as one CI unit before
 # the local positive shader cache. This deliberately batches many source-proven donor
 # improvements into the same long Windows build.
