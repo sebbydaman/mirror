@@ -94,6 +94,16 @@ Require-Text $ampere 'native surface reduction mode' 'SURED mode validation guar
 Require-Text $ampere 'result.required_texture_buffer = binding;' 'SURED descriptor-buffer continuity'
 Require-Text $ampere '0xeb40000000000000ULL' 'Maxwell SURED encoding'
 
+# First-write correctness for Switch 2 sparse depth arrays. The D16 render target captured in the
+# runtime log must use resident per-layer sparse memory instead of the write-dropping
+# UnwrittenSparse replacement path. Keep the generic JoinImages GPU-data guard intact.
+Require-Text $vkTexture 'const bool sparse_layer_format =' 'sparse layered format eligibility'
+Require-Text $vkTexture 'format_type == VideoCore::Surface::SurfaceType::Depth;' 'sparse D16/depth array eligibility'
+Require-Text $vkTexture 'const VkImageAspectFlags sparse_aspect = ImageAspectMask(info.format);' 'sparse image native aspect selection'
+Require-Text $vkTexture 'VK_SPARSE_IMAGE_FORMAT_METADATA_BIT' 'sparse metadata requirement exclusion'
+Require-Text $vkTexture '.aspectMask = s.sparse.formatProperties.aspectMask,' 'aspect-aware sparse layer binding'
+Require-Text $textureCache 'if (True(overlap.flags & ImageFlagBits::GpuModified)) {' 'GPU-modified join data-loss guard preserved'
+
 # PRMT must no longer be routed through the unimplemented handlers.
 Require-File $notImpl
 $notImplText = Get-Content $notImpl -Raw
