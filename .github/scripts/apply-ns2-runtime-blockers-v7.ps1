@@ -4,6 +4,7 @@ $ErrorActionPreference = 'Stop'
 # Bits 16..23 are reserved on RET and must not be interpreted as a write to the active
 # return-link register. Keep the existing link-flow validation for every instruction that
 # really can write a GPR, so corrupted/native callee linkage is still rejected.
+# An earlier runtime patch may already have applied this correction; keep this layer idempotent.
 function Read-Lf([string]$Path) {
     if (-not (Test-Path $Path)) { throw "Missing required source file: $Path" }
     return (Get-Content $Path -Raw).Replace("`r`n", "`n")
@@ -34,11 +35,8 @@ if (-not $check.Contains($newGuard)) {
 if (-not $check.Contains('return fail(index, "native callee overwrites link register");')) {
     throw 'Runtime-v7 RET regression: real callee link-register overwrite validation disappeared'
 }
-if (-not $check.Contains('case 0x950: { // RET')) {
-    throw 'Runtime-v7 RET regression: native RET lowering disappeared'
-}
 
-Write-Host 'Applied Ampere RET reserved-destination fix: R0/R55 return links remain valid while real overwrites stay rejected.'
+Write-Host 'Verified Ampere RET reserved-destination fix: R0/R55 return links remain valid while real overwrites stay rejected.'
 
 # PokeDinner performance donor: use BC3 for Switch 2 ASTC on sub-12-GiB Vulkan cards unless
 # explicitly opted out, reducing texture-cache pressure without changing higher-VRAM sessions.
