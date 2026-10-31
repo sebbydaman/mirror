@@ -45,26 +45,30 @@ foreach ($needle in @(
 $shaderCacheHeaderPath = 'src/video_core/shader_cache.h'
 $shaderCacheHeader = Read-NativeReuseFile $shaderCacheHeaderPath
 if (-not $shaderCacheHeader.Contains('std::shared_ptr<const LoweredNativeCode> lowered_native;')) {
-    $old = @'
-struct ShaderInfo {
-    u64 unique_hash{};
-    size_t size_bytes{};
-};
-'@
-    $new = @'
-struct ShaderInfo {
-    u64 unique_hash{};
-    size_t size_bytes{};
+    # 6d8f95 moves device_memory visibility and can alter surrounding formatting. Anchor only
+    # inside ShaderInfo itself instead of requiring the entire struct to match byte-for-byte.
+    $shaderInfoStart = $shaderCacheHeader.IndexOf('struct ShaderInfo {')
+    if ($shaderInfoStart -lt 0) {
+        throw 'Could not locate ShaderInfo start for PokeDinner native-lowering reuse prerequisite'
+    }
+    $shaderInfoEnd = $shaderCacheHeader.IndexOf('};', $shaderInfoStart)
+    if ($shaderInfoEnd -lt 0) {
+        throw 'Could not locate ShaderInfo end for PokeDinner native-lowering reuse prerequisite'
+    }
+    $sizeMarker = '    size_t size_bytes{};'
+    $sizeAt = $shaderCacheHeader.IndexOf($sizeMarker, $shaderInfoStart)
+    if ($sizeAt -lt 0 -or $sizeAt -gt $shaderInfoEnd) {
+        throw 'Could not locate ShaderInfo size_bytes member for PokeDinner native-lowering reuse prerequisite'
+    }
+    $insertAt = $sizeAt + $sizeMarker.Length
+    $field = @'
+
     /// Lowered code of a native program, reused when its pipelines are built.
     std::shared_ptr<const LoweredNativeCode> lowered_native;
-};
 '@
-    $old = $old.TrimEnd("`r", "`n")
-    $new = $new.TrimEnd("`r", "`n")
-    if (-not $shaderCacheHeader.Contains($old)) {
-        throw 'Could not locate ShaderInfo for PokeDinner native-lowering reuse prerequisite'
-    }
-    $shaderCacheHeader = $shaderCacheHeader.Replace($old, $new)
+    $shaderCacheHeader = $shaderCacheHeader.Substring(0, $insertAt) +
+                         $field.TrimEnd("`r", "`n") +
+                         $shaderCacheHeader.Substring($insertAt)
     Write-NativeReuseFile $shaderCacheHeaderPath $shaderCacheHeader
 }
 
