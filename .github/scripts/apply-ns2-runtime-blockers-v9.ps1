@@ -12,6 +12,8 @@ function Write-Utf8([string]$Path, [string]$Text) {
     Set-Content -Path $Path -Value $Text -Encoding utf8 -NoNewline
 }
 function Replace-Once([string]$Text, [string]$Old, [string]$New, [string]$Label) {
+    $Old = $Old.Replace("`r`n", "`n")
+    $New = $New.Replace("`r`n", "`n")
     $at = $Text.IndexOf($Old)
     if ($at -lt 0) { throw "Could not locate $Label" }
     if ($Text.IndexOf($Old, $at + $Old.Length) -ge 0) { throw "Ambiguous anchor for $Label" }
@@ -40,9 +42,14 @@ if (-not $stage.Contains('    Task,')) {
 $vkPath = 'src/video_core/renderer_vulkan/maxwell_to_vk.cpp'
 $vk = Read-Lf $vkPath
 if (-not $vk.Contains('case Shader::Stage::Task:')) {
+    # The switch ends directly after Compute in the 01effa base; there is no default case.
+    # Anchor on Compute + the closing brace + the existing diagnostic so this cannot match
+    # another switch elsewhere in the file.
     $old = @'
     case Shader::Stage::Compute:
         return VK_SHADER_STAGE_COMPUTE_BIT;
+    }
+    UNIMPLEMENTED_MSG("Unimplemented shader stage={}", stage);
 '@
     $new = @'
     case Shader::Stage::Compute:
@@ -51,6 +58,8 @@ if (-not $vk.Contains('case Shader::Stage::Task:')) {
         return VK_SHADER_STAGE_TASK_BIT_EXT;
     case Shader::Stage::Mesh:
         return VK_SHADER_STAGE_MESH_BIT_EXT;
+    }
+    UNIMPLEMENTED_MSG("Unimplemented shader stage={}", stage);
 '@
     $vk = Replace-Once $vk $old $new 'Vulkan Task/Mesh stage mapping'
     Write-Utf8 $vkPath $vk
