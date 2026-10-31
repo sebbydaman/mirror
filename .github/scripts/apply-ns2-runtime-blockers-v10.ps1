@@ -56,11 +56,44 @@ foreach ($needle in @(
 
 # GLSL's Compute case declares local_x/local_y/local_z. Braces are required before adding later
 # case labels, otherwise MSVC C2360 rejects a jump across those initialized declarations.
+# Runtime-v8 may already have inserted the Task/Mesh rejection while applying the PokeDinner 2.0
+# batch, so normalize that intermediate form here instead of making two scripts fight over it.
 $glslPath = 'src/shader_recompiler/backend/glsl/glsl_emit_context.cpp'
 $glsl = Read-Lf $glslPath
 $glslMarker = 'throw InvalidArgument("GLSL does not support shader stage {}", program.stage);'
+$glslScopedMarker = 'case Stage::Compute: {'
 
-if (-not $glsl.Contains($glslMarker)) {
+if ($glsl.Contains($glslMarker) -and -not $glsl.Contains($glslScopedMarker)) {
+    $glslIntermediate = @'
+    case Stage::Compute:
+        stage_name = "cs";
+        const u32 local_x{(std::max)(program.workgroup_size[0], 1u)};
+        const u32 local_y{(std::max)(program.workgroup_size[1], 1u)};
+        const u32 local_z{(std::max)(program.workgroup_size[2], 1u)};
+        header += fmt::format("layout(local_size_x={},local_size_y={},local_size_z={}) in;",
+                              local_x, local_y, local_z);
+        break;
+    case Stage::Task:
+    case Stage::Mesh:
+        throw InvalidArgument("GLSL does not support shader stage {}", program.stage);
+'@
+    $glslScoped = @'
+    case Stage::Compute: {
+        stage_name = "cs";
+        const u32 local_x{(std::max)(program.workgroup_size[0], 1u)};
+        const u32 local_y{(std::max)(program.workgroup_size[1], 1u)};
+        const u32 local_z{(std::max)(program.workgroup_size[2], 1u)};
+        header += fmt::format("layout(local_size_x={},local_size_y={},local_size_z={}) in;",
+                              local_x, local_y, local_z);
+        break;
+    }
+    case Stage::Task:
+    case Stage::Mesh:
+        throw InvalidArgument("GLSL does not support shader stage {}", program.stage);
+'@
+    $glsl = Replace-Once $glsl $glslIntermediate $glslScoped 'runtime-v8 GLSL Compute scope normalization'
+    Write-Utf8 $glslPath $glsl
+} elseif (-not $glsl.Contains($glslMarker)) {
     $glslOld = @'
     case Stage::Compute:
         stage_name = "cs";
@@ -101,5 +134,5 @@ foreach ($needle in @(
     if (-not $glslCheck.Contains($needle)) { throw "Runtime-v10 GLSL EmitContext regression: missing $needle" }
 }
 
-Write-Host 'Added explicit Task/Mesh rejection to legacy GLASM and GLSL EmitContext stage switches.'
+Write-Host 'Added explicit Task/Mesh rejection to legacy GLASM and normalized GLSL Compute scope.'
 git diff -- $glasmPath $glslPath
