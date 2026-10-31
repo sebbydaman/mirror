@@ -114,4 +114,119 @@ if ($check.Contains('program != Maxwell::ShaderType::VertexB && program != Maxwe
 }
 
 Write-Host 'Enabled strictly validated native Tessellation evaluation-stage admission; unknown/task-mesh semantics remain rejected by the Ampere lowering.'
-git diff -- $shaderEnvPath
+
+# Native task/mesh pipeline foundation: expose VK_EXT_mesh_shader through Eden's existing
+# feature/property chain. This does not execute mesh work yet; it gives later Task/Mesh SPIR-V
+# and vkCmdDrawMeshTasksEXT patches an authoritative host capability and limit source.
+$vkHeaderPath = 'src/video_core/vulkan_common/vulkan_device.h'
+$vkHeader = Read-Lf $vkHeaderPath
+if (-not $vkHeader.Contains('FEATURE(EXT, MeshShader, MESH_SHADER, mesh_shader)')) {
+    $oldFeature = '    FEATURE(EXT, LineRasterization, LINE_RASTERIZATION, line_rasterization)                        \'
+    $newFeature = $oldFeature + "`n" +
+        '    FEATURE(EXT, MeshShader, MESH_SHADER, mesh_shader)                                        \'
+    $vkHeader = Replace-Once $vkHeader $oldFeature $newFeature 'VK_EXT_mesh_shader feature macro'
+
+    $oldRecommendedExt = '    EXTENSION_NAME(VK_EXT_LINE_RASTERIZATION_EXTENSION_NAME)                                       \'
+    $newRecommendedExt = $oldRecommendedExt + "`n" +
+        '    EXTENSION_NAME(VK_EXT_MESH_SHADER_EXTENSION_NAME)                                              \'
+    $vkHeader = Replace-Once $vkHeader $oldRecommendedExt $newRecommendedExt 'mesh shader recommended extension'
+
+    $oldRecommendedFeature = '    FEATURE_NAME(index_type_uint8, indexTypeUint8)                                                 \'
+    $newRecommendedFeature = $oldRecommendedFeature + "`n" +
+        '    FEATURE_NAME(mesh_shader, meshShader)                                                          \' + "`n" +
+        '    FEATURE_NAME(mesh_shader, taskShader)                                                          \'
+    $vkHeader = Replace-Once $vkHeader $oldRecommendedFeature $newRecommendedFeature 'mesh/task recommended features'
+
+    $methodAnchor = @'
+    /// Returns true if the device supports VK_EXT_transform_feedback.
+    bool IsExtTransformFeedbackSupported() const {
+        return extensions.transform_feedback;
+    }
+'@
+    $methodBlock = @'
+    /// Returns true when a native Vulkan mesh shader stage can be created.
+    bool IsExtMeshShaderSupported() const {
+        return extensions.mesh_shader && features.mesh_shader.meshShader;
+    }
+
+    /// Returns true when the optional task shader stage is also available.
+    bool IsExtTaskShaderSupported() const {
+        return IsExtMeshShaderSupported() && features.mesh_shader.taskShader;
+    }
+
+    /// Host task/mesh workgroup, payload and output limits.
+    const VkPhysicalDeviceMeshShaderPropertiesEXT& GetMeshShaderProperties() const {
+        return properties.mesh_shader;
+    }
+
+'@
+    $vkHeader = Replace-Once $vkHeader $methodAnchor ($methodBlock + $methodAnchor) 'mesh shader capability accessors'
+
+    $propertyAnchor = '        VkPhysicalDeviceTransformFeedbackPropertiesEXT transform_feedback{};'
+    $propertyReplacement = $propertyAnchor + "`n" +
+        '        VkPhysicalDeviceMeshShaderPropertiesEXT mesh_shader{};'
+    $vkHeader = Replace-Once $vkHeader $propertyAnchor $propertyReplacement 'mesh shader properties storage'
+    Write-Utf8 $vkHeaderPath $vkHeader
+}
+
+$vkCppPath = 'src/video_core/vulkan_common/vulkan_device.cpp'
+$vkCpp = Read-Lf $vkCppPath
+if (-not $vkCpp.Contains('VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT')) {
+    $propertyAnchor = @'
+    if (extensions.transform_feedback) {
+        properties.transform_feedback.sType =
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT;
+        SetNext(next, properties.transform_feedback);
+    }
+'@
+    $propertyBlock = @'
+    if (extensions.mesh_shader) {
+        properties.mesh_shader.sType =
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT;
+        SetNext(next, properties.mesh_shader);
+    }
+'@
+    $vkCpp = Replace-Once $vkCpp $propertyAnchor ($propertyAnchor + $propertyBlock) 'mesh shader properties query chain'
+
+    $removeAnchor = @'
+    // VK_EXT_transform_feedback
+    extensions.transform_feedback =
+        features.transform_feedback.transformFeedback &&
+        properties.transform_feedback.maxTransformFeedbackBuffers > 0;
+    RemoveExtensionFeatureIfUnsuitable(extensions.transform_feedback, features.transform_feedback,
+                                       VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
+'@
+    $removeBlock = @'
+
+    // VK_EXT_mesh_shader. Mesh is required for the native path; Task remains optional.
+    extensions.mesh_shader = features.mesh_shader.meshShader;
+    RemoveExtensionFeatureIfUnsuitable(extensions.mesh_shader, features.mesh_shader,
+                                       VK_EXT_MESH_SHADER_EXTENSION_NAME);
+'@
+    $vkCpp = Replace-Once $vkCpp $removeAnchor ($removeAnchor + $removeBlock) 'mesh shader feature suitability'
+    Write-Utf8 $vkCppPath $vkCpp
+}
+
+$vkHeaderCheck = Read-Lf $vkHeaderPath
+$vkCppCheck = Read-Lf $vkCppPath
+foreach ($needle in @(
+    'FEATURE(EXT, MeshShader, MESH_SHADER, mesh_shader)',
+    'EXTENSION_NAME(VK_EXT_MESH_SHADER_EXTENSION_NAME)',
+    'FEATURE_NAME(mesh_shader, meshShader)',
+    'FEATURE_NAME(mesh_shader, taskShader)',
+    'bool IsExtMeshShaderSupported() const',
+    'bool IsExtTaskShaderSupported() const',
+    'VkPhysicalDeviceMeshShaderPropertiesEXT mesh_shader{};'
+)) {
+    if (-not $vkHeaderCheck.Contains($needle)) { throw "Runtime-v6 mesh capability regression: missing $needle" }
+}
+foreach ($needle in @(
+    'VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT',
+    'extensions.mesh_shader = features.mesh_shader.meshShader;',
+    'VK_EXT_MESH_SHADER_EXTENSION_NAME'
+)) {
+    if (-not $vkCppCheck.Contains($needle)) { throw "Runtime-v6 mesh device regression: missing $needle" }
+}
+
+Write-Host 'Exposed VK_EXT_mesh_shader/taskShader host capabilities and native mesh limits; no mesh execution is enabled yet.'
+git diff -- $shaderEnvPath $vkHeaderPath $vkCppPath
