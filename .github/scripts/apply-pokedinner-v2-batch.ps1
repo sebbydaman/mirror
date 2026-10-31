@@ -88,7 +88,6 @@ foreach ($commit in $commits) {
         continue
     }
 
-    # Eglantine 01effa already has the desired Mario Kart image-size behavior.
     if ($commit -eq 'ba11b6d3990920c63cca4dbe1b95e2b08cca22bd') {
         $gsvPath = 'src/core/hle/service/nx2_gsv.h'
         $gsvText = Get-Content $gsvPath -Raw
@@ -98,11 +97,17 @@ foreach ($commit in $commits) {
         }
     }
 
-    # c404060 is instrumentation-only. Its Vulkan files apply cleanly, but its shader environment
-    # hunks overlap our native-geometry integration. Let Git apply every clean file, retain our two
-    # shader-environment files, then splice only the timing hooks into them. This keeps both feature
-    # sets and leaves a clean temporary checkpoint so the shader-reuse commit can follow normally.
+    # PipelineStats overlaps our shader_environment changes. First checkpoint every preceding
+    # no-commit donor change so Git's conflict "ours" is the actual async/shared-module state,
+    # not the old pre-batch HEAD. Then retain that modern integrated side and splice only the
+    # instrumentation hooks while allowing all non-conflicting c404 Vulkan files through.
     if ($commit -eq 'c404060104d2fcc3e4e17bd89c1d964cddf03348') {
+        git add -A
+        if (git status --porcelain) {
+            git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'CI checkpoint before PokeDinner pipeline stats' --no-verify
+            if ($LASTEXITCODE -ne 0) { throw 'Could not checkpoint PokeDinner batch before PipelineStats' }
+        }
+
         git cherry-pick --no-commit $commit
         if ($LASTEXITCODE -ne 0) {
             $conflicts = @(git diff --name-only --diff-filter=U)
@@ -141,7 +146,7 @@ void GenericEnvironment::InitializeNativeCode(std::shared_ptr<const LoweredNativ
         lowered = LowerNativeCode(source_header_size);
     }
 '@
-            $newCpp = [regex]::Replace($cppText, $initPattern, $initReplacement.TrimEnd("`r", "`n"), 1)
+            $newCpp = [regex]::Replace($cppText, $initPattern, $initReplacement.TrimEnd("`r", "`n"))
             if ($newCpp -eq $cppText) { throw 'Could not splice PipelineStats native-lowering timer into shader_environment.cpp' }
             $cppText = $newCpp
 
@@ -158,14 +163,14 @@ void GenericEnvironment::InitializeNativeCode(std::shared_ptr<const LoweredNativ
             $headerText = Get-Content $headerPath -Raw
             $headerPattern = 'void InitializeNativeCode\(std::shared_ptr<const LoweredNativeCode> lowered,\s*u32 source_header_size = 128\);'
             $headerReplacement = "void InitializeNativeCode(std::shared_ptr<const LoweredNativeCode> lowered,`n                              u32 source_header_size = 128, bool is_compute = false);"
-            $newHeader = [regex]::Replace($headerText, $headerPattern, $headerReplacement, 1)
+            $newHeader = [regex]::Replace($headerText, $headerPattern, $headerReplacement)
             if ($newHeader -eq $headerText) { throw 'Could not splice PipelineStats signature into shader_environment.h' }
             Set-Content -Path $headerPath -Value $newHeader -Encoding utf8 -NoNewline
 
             git add -A
             git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'CI checkpoint PokeDinner pipeline stats' --no-verify
             if ($LASTEXITCODE -ne 0) { throw 'Could not finalize c404060 PipelineStats conflict resolution' }
-            Write-Host 'Integrated c404060 PipelineStats while preserving native geometry and local shader-environment changes.'
+            Write-Host 'Integrated c404060 PipelineStats while preserving native geometry and async shader state.'
         }
         continue
     }
