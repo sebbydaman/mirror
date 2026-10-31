@@ -3,12 +3,21 @@ $ErrorActionPreference = "Stop"
 # Admit native Turing/Ampere geometry shaders only when the 0x50-byte SPH already
 # decodes into the fields Eden's existing Maxwell geometry frontend consumes.
 # This deliberately keeps tessellation and other native stages rejected and does
-# not synthesize or guess header state.
+# not synthesize or guess header state. Accept both the original Eglantine guard
+# and PokeDinner's looser geometry-enabled guard so this can be safely reapplied
+# after donor shader-environment conflict resolutions.
 $shaderEnvPath = "src/video_core/shader_environment.cpp"
 $shaderEnvText = Get-Content $shaderEnvPath -Raw
 
 $oldGuard = @'
         if (program != Maxwell::ShaderType::VertexB && program != Maxwell::ShaderType::Pixel) {
+            throw Shader::RuntimeError("Unsupported native graphics shader stage {}", static_cast<u32>(program));
+        }
+'@
+
+$pokedinnerGuard = @'
+        if (program != Maxwell::ShaderType::VertexB && program != Maxwell::ShaderType::Geometry &&
+            program != Maxwell::ShaderType::Pixel) {
             throw Shader::RuntimeError("Unsupported native graphics shader stage {}", static_cast<u32>(program));
         }
 '@
@@ -34,10 +43,13 @@ $newGuard = @'
         }
 '@
 
-if ($shaderEnvText.Contains($oldGuard.TrimEnd("`r", "`n"))) {
-    $shaderEnvText = $shaderEnvText.Replace(
-        $oldGuard.TrimEnd("`r", "`n"),
-        $newGuard.TrimEnd("`r", "`n"))
+$oldGuardText = $oldGuard.TrimEnd("`r", "`n")
+$pokedinnerGuardText = $pokedinnerGuard.TrimEnd("`r", "`n")
+$newGuardText = $newGuard.TrimEnd("`r", "`n")
+if ($shaderEnvText.Contains($oldGuardText)) {
+    $shaderEnvText = $shaderEnvText.Replace($oldGuardText, $newGuardText)
+} elseif ($shaderEnvText.Contains($pokedinnerGuardText)) {
+    $shaderEnvText = $shaderEnvText.Replace($pokedinnerGuardText, $newGuardText)
 } elseif ($shaderEnvText.Contains('const bool native_geometry = program == Maxwell::ShaderType::Geometry;')) {
     Write-Host "Validated native geometry stage admission already present."
 } else {

@@ -74,6 +74,7 @@ foreach ($commit in $commits) {
             Write-Host 'Eglantine ASTC path no longer uses the donor legacy layer-offset expression; preserving newer implementation.'
         }
         Set-Content -Path $utilPath -Value $utilText -Encoding utf8 -NoNewline
+
         $cmakePath = 'src/CMakeLists.txt'
         $cmakeText = Get-Content $cmakePath -Raw
         $cmakeText = [regex]::Replace($cmakeText, '(?m)^\s*/we4388.*\r?\n', '')
@@ -92,10 +93,11 @@ foreach ($commit in $commits) {
         }
     }
 
-    # PipelineStats overlaps our geometry-enabled shader environment. Commit all preceding
-    # no-commit donor work first so the conflict's "ours" side includes detached environments,
-    # async translation and shared shader modules. Resolve only the two expected files and splice
-    # the instrumentation by symbol/position, not whitespace-sensitive regexes.
+    # c404 PipelineStats conflicts only because our geometry validation edits the same shader
+    # environment pair. Checkpoint every preceding donor optimization first. Then, for exactly
+    # those two known conflicts, take PokeDinner's complete c404 versions (which already contain
+    # detached environments, async translation, shared modules and the timing hooks) and reapply
+    # our stricter geometry admission/diagnostic stage on top. This avoids fragile source parsing.
     if ($commit -eq 'c404060104d2fcc3e4e17bd89c1d964cddf03348') {
         git add -A
         if (git status --porcelain) {
@@ -112,78 +114,18 @@ foreach ($commit in $commits) {
                 git cherry-pick --abort 2>$null
                 throw "Unexpected c404060 conflict surface: $($conflicts -join ', ')"
             }
-            git checkout --ours -- src/video_core/shader_environment.cpp src/video_core/shader_environment.h
-            if ($LASTEXITCODE -ne 0) { throw 'Could not preserve integrated shader environment for c404060' }
-
-            $cppPath = 'src/video_core/shader_environment.cpp'
-            $cppText = Get-Content $cppPath -Raw
-            $statsInclude = '#include "video_core/renderer_vulkan/pipeline_stats.h"'
-            if (-not $cppText.Contains($statsInclude)) {
-                $memoryInclude = '#include "video_core/memory_manager.h"'
-                if (-not $cppText.Contains($memoryInclude)) { throw 'Could not locate PipelineStats include point' }
-                $cppText = $cppText.Replace($memoryInclude, "$memoryInclude`n$statsInclude")
-            }
-
-            $fnMarker = 'GenericEnvironment::InitializeNativeCode'
-            $fnStart = $cppText.IndexOf($fnMarker)
-            if ($fnStart -lt 0) { throw 'InitializeNativeCode symbol missing after pre-c404 checkpoint' }
-            $fnOpen = $cppText.IndexOf('{', $fnStart)
-            if ($fnOpen -lt 0) { throw 'InitializeNativeCode opening brace missing' }
-            $signature = $cppText.Substring($fnStart, $fnOpen - $fnStart)
-            if (-not $signature.Contains('bool is_compute')) {
-                $sigClose = $cppText.LastIndexOf(')', $fnOpen)
-                if ($sigClose -lt $fnStart) { throw 'InitializeNativeCode signature terminator missing' }
-                $cppText = $cppText.Insert($sigClose, ', bool is_compute')
-                $fnOpen = $cppText.IndexOf('{', $fnStart)
-            }
-
-            $lowerNeedle = 'lowered = LowerNativeCode(source_header_size);'
-            $lowerPos = $cppText.IndexOf($lowerNeedle, $fnOpen)
-            if ($lowerPos -lt 0) { throw 'InitializeNativeCode lowering call missing' }
-            $timerNeedle = 'Vulkan::PipelineStats::ScopedTimer timer'
-            $nextFunction = $cppText.IndexOf('std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode', $fnOpen)
-            if ($nextFunction -lt 0) { $nextFunction = $cppText.Length }
-            if ($cppText.IndexOf($timerNeedle, $fnOpen, $nextFunction - $fnOpen) -lt 0) {
-                $lineStart = $cppText.LastIndexOf("`n", $lowerPos)
-                if ($lineStart -lt 0) { $lineStart = 0 } else { ++$lineStart }
-                $timerBlock = @'
-        const Vulkan::PipelineStats::ScopedTimer timer{
-            is_compute ? Vulkan::PipelineStats::Kind::Compute
-                       : Vulkan::PipelineStats::Kind::Graphics,
-            Vulkan::PipelineStats::Stage::Lower};
-'@
-                $cppText = $cppText.Insert($lineStart, $timerBlock.TrimEnd("`r", "`n") + "`n")
-            }
-
-            $computeOld = 'InitializeNativeCode(std::move(lowered_native_), 0);'
-            $computeNew = 'InitializeNativeCode(std::move(lowered_native_), 0, true);'
-            if ($cppText.Contains($computeOld)) {
-                $cppText = $cppText.Replace($computeOld, $computeNew)
-            } elseif (-not $cppText.Contains($computeNew)) {
-                throw 'Could not mark native compute lowering for PipelineStats'
-            }
-            Set-Content -Path $cppPath -Value $cppText -Encoding utf8 -NoNewline
-
-            $headerPath = 'src/video_core/shader_environment.h'
-            $headerText = Get-Content $headerPath -Raw
-            $headerMarker = 'InitializeNativeCode'
-            $headerStart = $headerText.IndexOf($headerMarker)
-            if ($headerStart -lt 0) { throw 'InitializeNativeCode declaration missing' }
-            $headerEnd = $headerText.IndexOf(';', $headerStart)
-            if ($headerEnd -lt 0) { throw 'InitializeNativeCode declaration terminator missing' }
-            $headerDecl = $headerText.Substring($headerStart, $headerEnd - $headerStart)
-            if (-not $headerDecl.Contains('bool is_compute')) {
-                $headerClose = $headerText.LastIndexOf(')', $headerEnd)
-                if ($headerClose -lt $headerStart) { throw 'InitializeNativeCode declaration closing parenthesis missing' }
-                $headerText = $headerText.Insert($headerClose, ', bool is_compute = false')
-            }
-            Set-Content -Path $headerPath -Value $headerText -Encoding utf8 -NoNewline
-
-            git add -A
-            git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'CI checkpoint PokeDinner pipeline stats' --no-verify
-            if ($LASTEXITCODE -ne 0) { throw 'Could not finalize c404060 PipelineStats merge' }
-            Write-Host 'Integrated PipelineStats over geometry + async shader state.'
+            git checkout --theirs -- src/video_core/shader_environment.cpp src/video_core/shader_environment.h
+            if ($LASTEXITCODE -ne 0) { throw 'Could not select PokeDinner c404 shader-environment pair' }
         }
+
+        $geometryScript = Join-Path $PSScriptRoot 'apply-ns2-geometry-stage.ps1'
+        & $geometryScript
+        if ($LASTEXITCODE -ne 0) { throw 'Could not restore validated native geometry semantics after c404' }
+
+        git add -A
+        git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'CI checkpoint PokeDinner pipeline stats' --no-verify
+        if ($LASTEXITCODE -ne 0) { throw 'Could not finalize c404060 PipelineStats merge' }
+        Write-Host 'Integrated PipelineStats with PokeDinner async shader state and validated geometry semantics.'
         continue
     }
 
@@ -198,12 +140,14 @@ foreach ($commit in $commits) {
     }
 }
 
+# High-value regression needles before we pay for the long Windows compile.
 $checks = @{
     'src/video_core/renderer_vulkan/vk_pipeline_cache.cpp' = @('EDEN_NX2_SHADER_REUSE', 'EDEN_NX2_ASYNC_TRANSLATION')
     'src/video_core/renderer_vulkan/vk_rasterizer.cpp' = @('EDEN_NX2_RESETFIX')
     'src/video_core/dma_pusher.cpp' = @('EDEN_NX2_PBFLUSH')
     'src/video_core/renderer_vulkan/vk_texture_cache.cpp' = @('EDEN_NX2_VRAM_LIMIT_MIB')
     'src/video_core/renderer_vulkan/pipeline_stats.h' = @('EDEN_NX2_PIPELINE_STATS')
+    'src/video_core/shader_environment.cpp' = @('const bool native_geometry = program == Maxwell::ShaderType::Geometry;', 'Vulkan::PipelineStats')
     'src/shader_recompiler/frontend/ampere/lower_to_maxwell.h' = @('UISETP', 'IMAD.X')
 }
 foreach ($path in $checks.Keys) {
