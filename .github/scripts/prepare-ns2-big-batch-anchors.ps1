@@ -19,6 +19,20 @@ if ($batch.Contains($helper) -and -not $batch.Contains('$Old = $Old.Replace("`r`
     throw 'Could not normalize Replace-Once helper in generalized batch'
 }
 
+# Runtime-v8 is the PokeDinner 2.0 multi-feature batch. It also reads C++ as LF while PowerShell
+# here-strings are CRLF on the Windows runner. Normalize its replacement helper up front so all
+# source-verified ObjectPool/predicate/etc. edits can be exercised in one build rather than each
+# failing on line-ending-only anchor mismatches.
+$runtimeV8Script = Join-Path $PSScriptRoot 'apply-ns2-runtime-blockers-v8.ps1'
+$runtimeV8 = Get-Content $runtimeV8Script -Raw
+if ($runtimeV8.Contains($helper) -and -not $runtimeV8.Contains('$Old = $Old.Replace("`r`n", "`n")')) {
+    $runtimeV8 = $runtimeV8.Replace($helper, $normalizedHelper)
+    Set-Content -Path $runtimeV8Script -Value $runtimeV8 -Encoding utf8 -NoNewline
+    Write-Host 'Normalized PokeDinner 2.0 runtime-v8 replacement anchors to LF.'
+} elseif (-not $runtimeV8.Contains('$Old = $Old.Replace("`r`n", "`n")')) {
+    throw 'Could not normalize Replace-Once helper in PokeDinner 2.0 runtime-v8 batch'
+}
+
 # One 01effa signature differs only by legal C++ whitespace from the batch's exact replacement.
 $path = 'src/video_core/buffer_cache/buffer_cache.h'
 $text = (Get-Content $path -Raw).Replace("`r`n", "`n")
@@ -54,6 +68,7 @@ inline void Nx2ClearSparseRegions() {
 }
 
 '@
+    $sparseReset = $sparseReset.Replace("`r`n", "`n")
     $nx2 = $nx2.Substring(0, $at) + $sparseReset + $nx2.Substring($at)
     Set-Content -Path $nx2Path -Value $nx2 -Encoding utf8 -NoNewline
     Write-Host 'Prepared PokeDinner 2.0 sparse-session reset with stable function anchor.'
