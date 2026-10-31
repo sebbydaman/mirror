@@ -39,4 +39,10 @@ if (-not $check.Contains('case 0x950: { // RET')) {
 }
 
 Write-Host 'Applied Ampere RET reserved-destination fix: R0/R55 return links remain valid while real overwrites stay rejected.'
+
+# PokeDinner performance donor: use BC3 for Switch 2 ASTC on sub-12-GiB Vulkan cards unless
+# explicitly opted out, reducing texture-cache pressure without changing higher-VRAM sessions.
+$runtimeV8Script = Join-Path $PSScriptRoot 'apply-ns2-runtime-blockers-v8.ps1'
+& $runtimeV8Script
+
 git diff -- $amperePath
