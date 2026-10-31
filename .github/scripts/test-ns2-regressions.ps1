@@ -88,12 +88,11 @@ Require-Text $ampere 'case 0x234: { // HSETP2 register form' '0x234 HSETP2 regis
 Require-Text $ampere '0x5d20000000000000ULL' 'Maxwell HSETP2 encoding preserved'
 Require-Text $vkTexture 'Shader image type {} does not match view type {}' 'build-53 Vulkan image-view dimension guard'
 
-# 0x59f is still unknown. A successful build must not come from silently accepting it.
-$ampereText = Get-Content $ampere -Raw
-if ($ampereText.Contains('case 0x59f:')) {
-    throw 'NS2 regression: unresolved 0x59f was added without proven semantics'
-}
-Write-Host '[PASS] unresolved 0x59f remains rejected'
+# Ampere 0x59f has proven SURED semantics. Keep the lowering and its safety guards intact.
+Require-Text $ampere 'case 0x59f: { // SURED bound/immediate 2D U32 ADD, IGN clamp.' 'Ampere 0x59f SURED lowering'
+Require-Text $ampere 'native surface reduction mode' 'SURED mode validation guard'
+Require-Text $ampere 'result.required_texture_buffer = binding;' 'SURED descriptor-buffer continuity'
+Require-Text $ampere '0xeb40000000000000ULL' 'Maxwell SURED encoding'
 
 # PRMT must no longer be routed through the unimplemented handlers.
 Require-File $notImpl
