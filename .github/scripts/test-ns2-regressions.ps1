@@ -100,7 +100,7 @@ Require-Text $ampere '0xeb40000000000000ULL' 'Maxwell SURED encoding'
 Require-Text $vkTexture 'const bool sparse_layer_format =' 'sparse layered format eligibility'
 Require-Text $vkTexture 'format_type == VideoCore::Surface::SurfaceType::Depth;' 'sparse D16/depth array eligibility'
 Require-Text $vkTexture 'const VkImageAspectFlags sparse_aspect = ImageAspectMask(info.format);' 'sparse image native aspect selection'
-Require-Text $vkTexture 'VK_SPARSE_IMAGE_FORMAT_METADATA_BIT' 'sparse metadata requirement exclusion'
+Require-Text $vkTexture '(r.formatProperties.aspectMask & sparse_aspect) != 0;' 'sparse native-aspect requirement selection'
 Require-Text $vkTexture '.aspectMask = s.sparse.formatProperties.aspectMask,' 'aspect-aware sparse layer binding'
 Require-Text $textureCache 'if (True(overlap.flags & ImageFlagBits::GpuModified)) {' 'GPU-modified join data-loss guard preserved'
 
