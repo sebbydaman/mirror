@@ -83,3 +83,9 @@ if ($check.Contains('case 0x59f:') -and -not $check.Contains('native surface red
 }
 
 Write-Host 'Applied native Ampere SURED 0x59f lowering through Maxwell image-atomic semantics.'
+
+# The same runtime log that proved SURED also exposed the first-write sparse depth-array failure.
+# Apply the resident per-layer depth backing after the shader fix, while preserving JoinImages'
+# GPU-modified data-loss guard for all other cases.
+$runtimeV5Script = Join-Path $PSScriptRoot 'apply-ns2-runtime-blockers-v5.ps1'
+& $runtimeV5Script
