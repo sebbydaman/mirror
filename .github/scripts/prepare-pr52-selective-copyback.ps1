@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 # PokeDinner 2.0 replaces the old inline async-download block in MarkWrittenBuffer with
 # QueueDownload(device_addr, size). PR52's command-page history should layer on top of that
 # selective copyback policy, not replace it. This preparer also adapts PR28/PR52 to the current
-# DmaPusher shape, where Push() is inline in the header and Step() reads through GpuGuestMemory.
+# DmaPusher shape and reuses PokeDinner's existing GPU-written-command coherency helper.
 
 # -----------------------------------------------------------------------------
 # Buffer-cache write history on top of selective QueueDownload().
@@ -37,49 +37,65 @@ if (-not $text.Contains($marker)) {
 }
 
 # -----------------------------------------------------------------------------
-# DmaPusher command coherency. Current Eglantine/PokeDinner has Push() inline in dma_pusher.h,
-# so place the helper before DispatchCalls() instead of looking for a non-existent cpp Push().
-# A page that has ever been GPU-written always prefers current command memory over the submission
-# snapshot; if it is still dirty, drain the split and copy it back first.
+# Reuse PokeDinner 2.0's FlushGpuWrittenCommands instead of defining a second helper.
+# PR28 needs one extra fact from it: whether the command page has GPU-write history. Return true
+# whenever such a page is found, even if it has already been copied back and is currently clean;
+# an older CPU submission snapshot must never override newer GPU-generated command words.
 # -----------------------------------------------------------------------------
+$dmaHeaderPath = 'src/video_core/dma_pusher.h'
+$dmaHeader = (Get-Content $dmaHeaderPath -Raw).Replace("`r`n", "`n")
+$voidDecl = '    void FlushGpuWrittenCommands(GPUVAddr address, size_t size);'
+$boolDecl = '    [[nodiscard]] bool FlushGpuWrittenCommands(GPUVAddr address, size_t size);'
+if ($dmaHeader.Contains($voidDecl)) {
+    $dmaHeader = $dmaHeader.Replace($voidDecl, $boolDecl)
+    Set-Content -Path $dmaHeaderPath -Value $dmaHeader -Encoding utf8 -NoNewline
+    Write-Host 'Promoted PokeDinner command coherency helper to report GPU-write history.'
+} elseif (-not $dmaHeader.Contains('bool FlushGpuWrittenCommands(GPUVAddr address, size_t size);')) {
+    throw 'Could not locate PokeDinner FlushGpuWrittenCommands declaration'
+}
+
 $dmaPath = 'src/video_core/dma_pusher.cpp'
 $dma = (Get-Content $dmaPath -Raw).Replace("`r`n", "`n")
-if (-not $dma.Contains('bool DmaPusher::FlushGpuWrittenCommands(')) {
-    $anchor = 'void DmaPusher::DispatchCalls() {'
-    $at = $dma.IndexOf($anchor)
-    if ($at -lt 0) { throw 'Could not locate DispatchCalls for PR52 command coherency helper' }
+if ($dma.Contains('void DmaPusher::FlushGpuWrittenCommands(')) {
+    $helperStart = $dma.IndexOf('void DmaPusher::FlushGpuWrittenCommands(')
+    $helperEnd = $dma.IndexOf("`nvoid DmaPusher::ReportUnboundSubchannel()", $helperStart)
+    if ($helperEnd -lt 0) { throw 'Could not locate end of PokeDinner FlushGpuWrittenCommands helper' }
     $helper = @'
 bool DmaPusher::FlushGpuWrittenCommands(GPUVAddr address, size_t size) {
-    if (!g_nx2_ampere.load(std::memory_order_relaxed) || size == 0) {
+    // PokeDinner coherency path plus PR28 snapshot arbitration. A page-history hit means current
+    // command memory wins over an older submission snapshot, regardless of current dirty state.
+    if (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) || size == 0) {
         return false;
     }
-    bool potentially_written = false;
+    bool written = false;
     for (GPUVAddr page = address & ~GPUVAddr{0xfff}; page < address + size; page += 0x1000) {
         if (const auto device = memory_manager.GpuToCpuAddress(page);
-            device && Nx2IsGpuWritten(*device)) {
-            potentially_written = true;
+            device && Tegra::Nx2IsGpuWritten(*device)) {
+            written = true;
             break;
         }
     }
-    if (!potentially_written) {
+    if (!written) {
         return false;
     }
+    // The caches belong to the split's back thread. Drain a pending producer before checking
+    // whether the current GPU-written command bytes still need to be copied to guest memory.
     VideoCommon::GpuSplit::Get().Drain();
     if (memory_manager.IsMemoryDirty(address, size, VideoCommon::CacheType::BufferCache)) {
         memory_manager.FlushRegion(address, size, VideoCommon::CacheType::BufferCache);
     }
     return true;
 }
-
 '@
-    $dma = $dma.Substring(0, $at) + $helper.TrimEnd("`r", "`n") + "`n`n" + $dma.Substring($at)
+    $dma = $dma.Substring(0, $helperStart) + $helper.TrimEnd("`r", "`n") + "`n" + $dma.Substring($helperEnd + 1)
+} elseif (-not $dma.Contains('bool DmaPusher::FlushGpuWrittenCommands(')) {
+    throw 'Could not locate PokeDinner FlushGpuWrittenCommands implementation'
 }
 
 # Current Step() intentionally re-reads a resumed entry after a semaphore acquire. Preserve that:
 # use a submission snapshot only on the first pass and only for pages that have never been marked
 # GPU-written. GPU-written or resumed entries continue through the existing safe/unsafe wrappers.
-# Locate the read policy by function boundaries instead of matching comments/formatting exactly;
-# PokeDinner has changed this block several times (PBFLUSH, split-thread comments, extra flushes).
+# Locate the read policy by function boundaries instead of matching comments/formatting exactly.
 if (-not $dma.Contains('const bool gpu_written = FlushGpuWrittenCommands')) {
     $stepStart = $dma.IndexOf('bool DmaPusher::Step() {')
     if ($stepStart -lt 0) { throw 'Could not locate DmaPusher::Step for PR28/PR52 preparation' }
@@ -137,6 +153,7 @@ if (-not $dma.Contains('const bool gpu_written = FlushGpuWrittenCommands')) {
 # compatibility script runs. The header snapshot fields themselves are still added by that script.
 foreach ($needle in @(
     'bool DmaPusher::FlushGpuWrittenCommands(',
+    'return true;',
     'const bool gpu_written = FlushGpuWrittenCommands',
     'command_list.submitted_offsets',
     'command_list.submitted_words',
@@ -146,4 +163,4 @@ foreach ($needle in @(
     if (-not $dma.Contains($needle)) { throw "PR28/PR52 preparation regression: missing $needle" }
 }
 Set-Content -Path $dmaPath -Value $dma -Encoding utf8 -NoNewline
-Write-Host 'Prepared PR28/PR52 snapshot-vs-current command fetch for current DmaPusher.'
+Write-Host 'Prepared PR28/PR52 snapshot-vs-current command fetch using PokeDinner command coherency.'
