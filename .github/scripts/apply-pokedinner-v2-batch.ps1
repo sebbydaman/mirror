@@ -93,9 +93,6 @@ foreach ($commit in $commits) {
         }
     }
 
-    # PipelineStats overlaps our geometry-enabled shader environment. Take the donor pair as a
-    # coherent unit after checkpointing the async/shared-module state, then restore our stricter
-    # native-geometry admission and diagnostics on top.
     if ($commit -eq 'c404060104d2fcc3e4e17bd89c1d964cddf03348') {
         git add -A
         if (git status --porcelain) {
@@ -125,9 +122,6 @@ foreach ($commit in $commits) {
         continue
     }
 
-    # 2d53 widens uniform-arithmetic execution predicates to support UPn/!UPn. Port only that
-    # semantic gate so our independent native lowering extensions remain intact, then checkpoint
-    # because later donor commits touch the same header.
     if ($commit -eq '2d53aac0a1e1a6de56b9c27903149340b10e9a9f') {
         $amperePath = 'src/shader_recompiler/frontend/ampere/lower_to_maxwell.h'
         $ampereText = Get-Content $amperePath -Raw
@@ -152,10 +146,6 @@ foreach ($commit in $commits) {
         continue
     }
 
-    # 5116272 is the large Pokopia invisible-items/preview-shader fix. Its lower_to_maxwell.h
-    # includes all prerequisite donor predicate/atomic changes, but collides with our TEX.B/TXQ/
-    # BRX/geometry extensions. Checkpoint 303b20 first, take the donor shader file as the coherent
-    # Pokopia implementation, then reapply our four native-lowering overlays with a reusable script.
     if ($commit -eq '5116272a17388d7c0f2ce51f295df01628e89032') {
         git add -A
         if (git status --porcelain) {
@@ -185,11 +175,6 @@ foreach ($commit in $commits) {
         continue
     }
 
-    # c3be47d fixes Pokopia's GPU-computed sky/fog/exposure without restoring expensive full
-    # per-fence buffer downloads. Every other file in this donor commit merges cleanly; only
-    # buffer_cache.h overlaps Eglantine's newer cache hot-path work. Preserve that file and port
-    # the three implementation-side semantics that match the already-auto-merged declarations:
-    # selective QueueDownload, NoteCpuRead, and selective queuing from MarkWrittenBuffer.
     if ($commit -eq 'c3be47da94e4916dd02454b2d8f86b78301bbde0') {
         git add -A
         if (git status --porcelain) {
@@ -211,7 +196,6 @@ foreach ($commit in $commits) {
 
             $bufferPath = 'src/video_core/buffer_cache/buffer_cache.h'
             $bufferText = Get-Content $bufferPath -Raw
-
             $dmaOld = @'
         if (AsyncBufferDownloads()) {
             uncommitted_gpu_modified_ranges.Add(new_base_address, size);
@@ -273,7 +257,6 @@ void BufferCache<P>::NoteCpuRead(DAddr addr, size_t size) {
             } elseif (-not $bufferText.Contains($markNew)) {
                 throw 'Could not port MarkWrittenBuffer QueueDownload from c3be47d'
             }
-
             Set-Content -Path $bufferPath -Value $bufferText -Encoding utf8 -NoNewline
         }
 
@@ -281,6 +264,49 @@ void BufferCache<P>::NoteCpuRead(DAddr addr, size_t size) {
         git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'CI checkpoint PokeDinner selective CPU-read buffer copyback' --no-verify
         if ($LASTEXITCODE -ne 0) { throw 'Could not finalize c3be47d selective CPU-read copyback merge' }
         Write-Host 'Integrated selective CPU-read buffer copyback while preserving Eglantine buffer-cache hot paths.'
+        continue
+    }
+
+    # Final 2.0 commit: nx2.h normally merges its Nx2ClearSparseRegions helper cleanly, while
+    # Eglantine's nvdrv session-reset block lacks donor-only GPU-written-page ancestry and therefore
+    # conflicts. Preserve Eglantine nvdrv and add only the sparse-state reset beside its semaphore
+    # reset. Checkpoint 73f + TLD4.PTP first so this last cherry-pick starts from a clean tree.
+    if ($commit -eq '70ecb39ef0383eec95f8e1bc11c39f7f4dd9e4b2') {
+        git add -A
+        if (git status --porcelain) {
+            git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'CI checkpoint before final PokeDinner sparse reset' --no-verify
+            if ($LASTEXITCODE -ne 0) { throw 'Could not checkpoint final PokeDinner tail' }
+        }
+
+        git cherry-pick --no-commit $commit
+        if ($LASTEXITCODE -ne 0) {
+            $conflicts = @(git diff --name-only --diff-filter=U)
+            $expected = @('src/core/hle/service/nvdrv/nvdrv.cpp')
+            $unexpected = @($conflicts | Where-Object { $_ -notin $expected })
+            if ($unexpected.Count -gt 0 -or $conflicts.Count -eq 0) {
+                git cherry-pick --abort 2>$null
+                throw "Unexpected 70ecb39 sparse-reset conflict surface: $($conflicts -join ', ')"
+            }
+            git checkout --ours -- src/core/hle/service/nvdrv/nvdrv.cpp
+            if ($LASTEXITCODE -ne 0) { throw 'Could not preserve Eglantine nvdrv.cpp for sparse reset' }
+
+            $nvdrvPath = 'src/core/hle/service/nvdrv/nvdrv.cpp'
+            $nvdrvText = Get-Content $nvdrvPath -Raw
+            $sparseReset = '    Tegra::Nx2ClearSparseRegions();'
+            if (-not $nvdrvText.Contains($sparseReset)) {
+                $semaphoreReset = '    Tegra::Nx2ClearSemaphoreRegions();'
+                if (-not $nvdrvText.Contains($semaphoreReset)) {
+                    throw 'Could not locate Switch 2 session-reset insertion point in nvdrv.cpp'
+                }
+                $nvdrvText = $nvdrvText.Replace($semaphoreReset, "$semaphoreReset`n$sparseReset")
+            }
+            Set-Content -Path $nvdrvPath -Value $nvdrvText -Encoding utf8 -NoNewline
+        }
+
+        git add -A
+        git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'CI checkpoint PokeDinner sparse session reset' --no-verify
+        if ($LASTEXITCODE -ne 0) { throw 'Could not finalize 70ecb39 sparse-session reset merge' }
+        Write-Host 'Integrated final PokeDinner 2.0 sparse-session reset over Eglantine nvdrv.'
         continue
     }
 
@@ -299,17 +325,21 @@ void BufferCache<P>::NoteCpuRead(DAddr addr, size_t size) {
 $checks = @{
     'src/video_core/renderer_vulkan/vk_pipeline_cache.cpp' = @('EDEN_NX2_SHADER_REUSE', 'EDEN_NX2_ASYNC_TRANSLATION')
     'src/video_core/renderer_vulkan/vk_rasterizer.cpp' = @('EDEN_NX2_RESETFIX', 'buffer_cache.NoteCpuRead', 'PendingSemaphoreRelease')
+    'src/video_core/rasterizer_interface.h' = @('virtual std::optional<u32> PendingSemaphoreRelease')
     'src/video_core/dma_pusher.cpp' = @('EDEN_NX2_PBFLUSH')
     'src/video_core/buffer_cache/buffer_cache.h' = @('void BufferCache<P>::NoteCpuRead', 'QueueDownload(new_base_address, size)', 'QueueDownload(device_addr, size)')
     'src/video_core/buffer_cache/buffer_cache_base.h' = @('Common::RangeSet<DAddr> cpu_read_ranges', 'void QueueDownload(DAddr addr, u64 size)')
     'src/video_core/renderer_vulkan/vk_texture_cache.cpp' = @('EDEN_NX2_VRAM_LIMIT_MIB')
     'src/video_core/renderer_vulkan/pipeline_stats.h' = @('EDEN_NX2_PIPELINE_STATS')
     'src/video_core/shader_environment.cpp' = @('const bool native_geometry = program == Maxwell::ShaderType::Geometry;', 'Vulkan::PipelineStats')
+    'src/core/hle/service/nvdrv/nvdrv.cpp' = @('Tegra::Nx2ClearSparseRegions();')
+    'src/video_core/nx2.h' = @('inline void Nx2ClearSparseRegions()')
     'src/shader_recompiler/frontend/ampere/lower_to_maxwell.h' = @(
         'native inverted uniform true predicate',
         'checked_guard',
         'UIMAD.X carries in UPn',
         'UISETP, signed (bit 73) or unsigned, combined',
+        '2D gather with per-texel offsets',
         'case 0x361: { // TEX.B, scalar bindless 2D/cube implicit-LOD sample',
         'TXQ texture dimensions, packed X/Y/Z/mip-count outputs',
         'Captured BRX / BRXU with native-PC jump-table values',
