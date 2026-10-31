@@ -14,13 +14,15 @@ function Require-Text([string]$Path, [string]$Needle, [string]$Name) {
 }
 
 # The integration script deliberately switches the workflow's bootstrap checkout to
-# the newer nx2-experimental source before any local patches are applied.
+# the newer nx2-experimental source before local and PokeDinner patches are layered on top.
+# PokeDinner conflict resolution now creates ephemeral CI checkpoint commits, so HEAD is
+# expected to be a descendant of 01effa rather than byte-for-byte equal to it.
 $expectedBase = '01effa81ab0e151f8cfd674bf4da952d24645943'
-$actualBase = (git rev-parse HEAD).Trim()
-if ($actualBase -ne $expectedBase) {
-    throw "NS2 regression: expected effective Eglantine base $expectedBase, got $actualBase"
+git merge-base --is-ancestor $expectedBase HEAD
+if ($LASTEXITCODE -ne 0) {
+    throw "NS2 regression: effective integration HEAD does not descend from Eglantine base $expectedBase"
 }
-Write-Host "[PASS] effective Eglantine base $actualBase"
+Write-Host "[PASS] effective Eglantine base ancestry $expectedBase -> $(git rev-parse --short HEAD)"
 
 $ampere = "src/shader_recompiler/frontend/ampere/lower_to_maxwell.h"
 $shaderEnv = "src/video_core/shader_environment.cpp"
