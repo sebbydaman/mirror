@@ -93,11 +93,9 @@ foreach ($commit in $commits) {
         }
     }
 
-    # c404 PipelineStats conflicts only because our geometry validation edits the same shader
-    # environment pair. Checkpoint every preceding donor optimization first. Then, for exactly
-    # those two known conflicts, take PokeDinner's complete c404 versions (which already contain
-    # detached environments, async translation, shared modules and the timing hooks) and reapply
-    # our stricter geometry admission/diagnostic stage on top. This avoids fragile source parsing.
+    # PipelineStats overlaps our geometry-enabled shader environment. Take the donor pair as a
+    # coherent unit after checkpointing the async/shared-module state, then restore our stricter
+    # native-geometry admission and diagnostics on top.
     if ($commit -eq 'c404060104d2fcc3e4e17bd89c1d964cddf03348') {
         git add -A
         if (git status --porcelain) {
@@ -118,10 +116,8 @@ foreach ($commit in $commits) {
             if ($LASTEXITCODE -ne 0) { throw 'Could not select PokeDinner c404 shader-environment pair' }
         }
 
-        $geometryScript = Join-Path $PSScriptRoot 'apply-ns2-geometry-stage.ps1'
-        & $geometryScript
+        & (Join-Path $PSScriptRoot 'apply-ns2-geometry-stage.ps1')
         if ($LASTEXITCODE -ne 0) { throw 'Could not restore validated native geometry semantics after c404' }
-
         git add -A
         git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'CI checkpoint PokeDinner pipeline stats' --no-verify
         if ($LASTEXITCODE -ne 0) { throw 'Could not finalize c404060 PipelineStats merge' }
@@ -129,9 +125,9 @@ foreach ($commit in $commits) {
         continue
     }
 
-    # 2d53aac only widens the uniform-arithmetic execution predicate check to support UPn/!UPn.
-    # Our native-lowering file carries additional Switch 2 opcode work in other regions, so port
-    # this small semantic edit directly instead of resolving the entire header as one side.
+    # 2d53 widens uniform-arithmetic execution predicates to support UPn/!UPn. Port only that
+    # semantic gate so our independent native lowering extensions remain intact, then checkpoint
+    # because later donor commits touch the same header.
     if ($commit -eq '2d53aac0a1e1a6de56b9c27903149340b10e9a9f') {
         $amperePath = 'src/shader_recompiler/frontend/ampere/lower_to_maxwell.h'
         $ampereText = Get-Content $amperePath -Raw
@@ -144,21 +140,48 @@ foreach ($commit in $commits) {
                 (insn.Bits(12, 4) & 7) == 7 && insn.Bits(12, 4) != 7)
                 return fail(index, "native inverted uniform true predicate");
 '@
-            $newAmpereText = [regex]::Replace(
-                $ampereText, $predicatePattern, $predicateReplacement.TrimEnd("`r", "`n"), 1)
-            if ($newAmpereText -eq $ampereText) {
-                throw 'Could not locate uniform arithmetic predicate gate for 2d53aac'
-            }
+            $newAmpereText = [regex]::Replace($ampereText, $predicatePattern,
+                $predicateReplacement.TrimEnd("`r", "`n"), 1)
+            if ($newAmpereText -eq $ampereText) { throw 'Could not locate uniform arithmetic predicate gate for 2d53aac' }
             Set-Content -Path $amperePath -Value $newAmpereText -Encoding utf8 -NoNewline
         }
-
-        # The following donor commits touch the same native-lowering header. Commit the accumulated
-        # shader-reuse/LEA/predicate state now so Git sees a clean base instead of refusing the next
-        # cherry-pick because our semantic port is intentionally uncommitted.
         git add -A
         git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'CI checkpoint PokeDinner shader reuse and uniform predicates' --no-verify
         if ($LASTEXITCODE -ne 0) { throw 'Could not checkpoint shader state after 2d53aac' }
         Write-Host 'Ported 2d53aac inverted uniform predicate support and checkpointed shader state.'
+        continue
+    }
+
+    # 5116272 is the large Pokopia invisible-items/preview-shader fix. Its lower_to_maxwell.h
+    # includes all prerequisite donor predicate/atomic changes, but collides with our TEX.B/TXQ/
+    # BRX/geometry extensions. Checkpoint 303b20 first, take the donor shader file as the coherent
+    # Pokopia implementation, then reapply our four native-lowering overlays with a reusable script.
+    if ($commit -eq '5116272a17388d7c0f2ce51f295df01628e89032') {
+        git add -A
+        if (git status --porcelain) {
+            git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'CI checkpoint before Pokopia guarded uniforms' --no-verify
+            if ($LASTEXITCODE -ne 0) { throw 'Could not checkpoint atomic-range fix before Pokopia guarded uniforms' }
+        }
+
+        git cherry-pick --no-commit $commit
+        if ($LASTEXITCODE -ne 0) {
+            $conflicts = @(git diff --name-only --diff-filter=U)
+            $expected = @('src/shader_recompiler/frontend/ampere/lower_to_maxwell.h')
+            $unexpected = @($conflicts | Where-Object { $_ -notin $expected })
+            if ($unexpected.Count -gt 0 -or $conflicts.Count -eq 0) {
+                git cherry-pick --abort 2>$null
+                throw "Unexpected 5116272 Pokopia conflict surface: $($conflicts -join ', ')"
+            }
+            git checkout --theirs -- src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+            if ($LASTEXITCODE -ne 0) { throw 'Could not select PokeDinner Pokopia native-lowering implementation' }
+        }
+
+        & (Join-Path $PSScriptRoot 'apply-ns2-native-lowering-overlays.ps1')
+        if ($LASTEXITCODE -ne 0) { throw 'Could not restore native lowering overlays after 5116272' }
+        git add -A
+        git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'CI checkpoint Pokopia guarded uniform shaders' --no-verify
+        if ($LASTEXITCODE -ne 0) { throw 'Could not finalize 5116272 Pokopia shader merge' }
+        Write-Host 'Integrated Pokopia guarded uniform shaders while preserving TEX.B/TXQ/BRX/geometry overlays.'
         continue
     }
 
@@ -181,7 +204,16 @@ $checks = @{
     'src/video_core/renderer_vulkan/vk_texture_cache.cpp' = @('EDEN_NX2_VRAM_LIMIT_MIB')
     'src/video_core/renderer_vulkan/pipeline_stats.h' = @('EDEN_NX2_PIPELINE_STATS')
     'src/video_core/shader_environment.cpp' = @('const bool native_geometry = program == Maxwell::ShaderType::Geometry;', 'Vulkan::PipelineStats')
-    'src/shader_recompiler/frontend/ampere/lower_to_maxwell.h' = @('UISETP', 'IMAD.X', 'native inverted uniform true predicate')
+    'src/shader_recompiler/frontend/ampere/lower_to_maxwell.h' = @(
+        'native inverted uniform true predicate',
+        'checked_guard',
+        'UIMAD.X carries in UPn',
+        'UISETP, signed (bit 73) or unsigned, combined',
+        'case 0x361: { // TEX.B, scalar bindless 2D/cube implicit-LOD sample',
+        'TXQ texture dimensions, packed X/Y/Z/mip-count outputs',
+        'Captured BRX / BRXU with native-PC jump-table values',
+        'OUT, immediate geometry stream: EMIT / EMIT_THEN_CUT'
+    )
 }
 foreach ($path in $checks.Keys) {
     if (-not (Test-Path $path)) { throw "PokeDinner 2.0 regression: missing $path" }
