@@ -65,8 +65,36 @@ if (-not $vk.Contains('case Shader::Stage::Task:')) {
     Write-Utf8 $vkPath $vk
 }
 
+# StageName is compiled with exhaustive-switch warnings enabled. Once Task/Mesh are added to
+# Shader::Stage, leaving this switch unchanged makes MSVC C4062 fail the video_core build even
+# though the Vulkan mapping itself is valid. Keep the names explicit rather than adding a
+# default so future stage additions still trigger the same compile-time integration check.
+$spirvPath = 'src/shader_recompiler/backend/spirv/spirv_emit_context.cpp'
+$spirv = Read-Lf $spirvPath
+if (-not $spirv.Contains('case Stage::Task:')) {
+    $old = @'
+    case Stage::Geometry:
+        return "gs";
+    case Stage::Fragment:
+        return "fs";
+'@
+    $new = @'
+    case Stage::Geometry:
+        return "gs";
+    case Stage::Task:
+        return "task";
+    case Stage::Mesh:
+        return "mesh";
+    case Stage::Fragment:
+        return "fs";
+'@
+    $spirv = Replace-Once $spirv $old $new 'SPIR-V Task/Mesh stage names'
+    Write-Utf8 $spirvPath $spirv
+}
+
 $stageCheck = Read-Lf $stagePath
 $vkCheck = Read-Lf $vkPath
+$spirvCheck = Read-Lf $spirvPath
 foreach ($needle in @(
     '    Task,',
     '    Mesh,',
@@ -83,6 +111,14 @@ foreach ($needle in @(
 )) {
     if (-not $vkCheck.Contains($needle)) { throw "Runtime-v9 Vulkan stage regression: missing $needle" }
 }
+foreach ($needle in @(
+    'case Stage::Task:',
+    'return "task";',
+    'case Stage::Mesh:',
+    'return "mesh";'
+)) {
+    if (-not $spirvCheck.Contains($needle)) { throw "Runtime-v9 SPIR-V stage-name regression: missing $needle" }
+}
 
-Write-Host 'Added isolated Task/Mesh shader identities and Vulkan stage mapping; legacy stage indexing remains unchanged.'
-git diff -- $stagePath $vkPath
+Write-Host 'Added isolated Task/Mesh shader identities, Vulkan mapping, and SPIR-V stage names; legacy stage indexing remains unchanged.'
+git diff -- $stagePath $vkPath $spirvPath
