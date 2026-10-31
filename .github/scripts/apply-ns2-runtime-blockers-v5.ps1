@@ -25,48 +25,44 @@ $text = Read-Lf $path
 $eligibilityMarker = 'const bool sparse_layer_format ='
 
 if (-not $text.Contains($eligibilityMarker)) {
-    $oldEligibility = @'
-    if (!device.IsSparseResidencyImage2DSupported() || info.type != ImageType::e2D ||
-        info.resources.layers <= 1 || info.num_samples != 1 ||
-        VideoCore::Surface::GetFormatType(info.format) != VideoCore::Surface::SurfaceType::ColorTexture) {
-        return false;
-    }
-'@
-    $newEligibility = @'
+    # Patch small semantic anchors rather than an entire formatted if-block. Earlier scripts can
+    # normalize whitespace/line endings without changing this condition's meaning.
+    $usesSparseSignature =
+        '[[nodiscard]] bool UsesSparseLayers(const Device& device, const ImageInfo& info, GPUVAddr gpu_addr) {'
+    $newUsesSparseSignature = @'
+[[nodiscard]] bool UsesSparseLayers(const Device& device, const ImageInfo& info, GPUVAddr gpu_addr) {
     const auto format_type = VideoCore::Surface::GetFormatType(info.format);
     const bool sparse_layer_format =
         format_type == VideoCore::Surface::SurfaceType::ColorTexture ||
         format_type == VideoCore::Surface::SurfaceType::Depth;
-    if (!device.IsSparseResidencyImage2DSupported() || info.type != ImageType::e2D ||
-        info.resources.layers <= 1 || info.num_samples != 1 || !sparse_layer_format) {
-        return false;
-    }
 '@
-    $text = Replace-Once $text $oldEligibility $newEligibility 'SparseLayers format eligibility'
+    $text = Replace-Once $text $usesSparseSignature $newUsesSparseSignature 'UsesSparseLayers signature'
 
-    $oldRequirements = @'
-    const auto requirements = device.GetLogical().GetImageSparseMemoryRequirements(handle);
+    $colorOnlyCondition =
+        'VideoCore::Surface::GetFormatType(info.format) != VideoCore::Surface::SurfaceType::ColorTexture) {'
+    $text = Replace-Once $text $colorOnlyCondition '!sparse_layer_format) {' 'SparseLayers color-only condition'
+
+    $requirementsLambda = @'
     const auto it = std::ranges::find_if(requirements, [](const auto& r) {
         return (r.formatProperties.aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) != 0;
     });
 '@
-    $newRequirements = @'
-    const auto requirements = device.GetLogical().GetImageSparseMemoryRequirements(handle);
+    $aspectLambda = @'
     const VkImageAspectFlags sparse_aspect = ImageAspectMask(info.format);
     const auto it = std::ranges::find_if(requirements, [sparse_aspect](const auto& r) {
         return (r.formatProperties.flags & VK_SPARSE_IMAGE_FORMAT_METADATA_BIT) == 0 &&
                (r.formatProperties.aspectMask & sparse_aspect) != 0;
     });
 '@
-    $text = Replace-Once $text $oldRequirements $newRequirements 'SparseLayers aspect requirement'
+    $text = Replace-Once $text $requirementsLambda $aspectLambda 'SparseLayers aspect requirement'
 
     $bindStart = $text.IndexOf('std::vector<u32> Image::BindLayers(std::span<const u32> layers) {')
     if ($bindStart -lt 0) { throw 'Could not locate BindLayers implementation' }
     $bindEnd = $text.IndexOf('VkImageView Image::StorageImageLayerView', $bindStart)
     if ($bindEnd -lt 0) { throw 'Could not locate end of BindLayers implementation' }
     $bind = $text.Substring($bindStart, $bindEnd - $bindStart)
-    $oldAspect = '                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,'
-    $newAspect = '                    .aspectMask = s.sparse.formatProperties.aspectMask,'
+    $oldAspect = '.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,'
+    $newAspect = '.aspectMask = s.sparse.formatProperties.aspectMask,'
     if (-not $bind.Contains($oldAspect)) { throw 'Could not locate hard-coded sparse color aspect' }
     if ($bind.IndexOf($oldAspect) -ne $bind.LastIndexOf($oldAspect)) {
         throw 'Ambiguous hard-coded sparse color aspect in BindLayers'
@@ -82,9 +78,11 @@ foreach ($needle in @(
     'const bool sparse_layer_format =',
     'format_type == VideoCore::Surface::SurfaceType::ColorTexture ||',
     'format_type == VideoCore::Surface::SurfaceType::Depth;',
+    'info.resources.layers <= 1 || info.num_samples != 1 ||',
+    '!sparse_layer_format) {',
     'const VkImageAspectFlags sparse_aspect = ImageAspectMask(info.format);',
     'VK_SPARSE_IMAGE_FORMAT_METADATA_BIT',
-    '.aspectMask = s.sparse.formatProperties.aspectMask,'
+    '.aspectMask = s.sparse.formatProperties.aspectMask,',
     'std::vector<u32> Image::BindLayers(std::span<const u32> layers)'
 )) {
     if (-not $check.Contains($needle)) { throw "Runtime-v5 sparse-depth regression: missing $needle" }
@@ -92,8 +90,8 @@ foreach ($needle in @(
 
 # Keep the join guard intact. If a GPU-modified image reaches this path for some other reason,
 # silently deleting it is still data loss and should remain visible during development.
-if (-not $check.Contains('UNIMPLEMENTED();')) {
-    throw 'Runtime-v5 regression: texture-cache unimplemented/data-loss guards unexpectedly disappeared'
+if (-not $check.Contains('if (True(overlap.flags & ImageFlagBits::GpuModified)) {')) {
+    throw 'Runtime-v5 regression: JoinImages GPU-modified data-loss guard disappeared'
 }
 
 Write-Host 'Generalized sparse-layer backing to depth arrays; first D16 render-target writes now have resident Vulkan memory.'
