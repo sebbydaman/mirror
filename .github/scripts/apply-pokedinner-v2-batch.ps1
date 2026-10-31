@@ -48,8 +48,6 @@ $commits = @(
 foreach ($commit in $commits) {
     Write-Host "Applying PokeDinner 2.0 commit $commit"
 
-    # Eglantine's sparse/per-layer ASTC util.cpp diverges from f285120. Port only the donor's
-    # native-tiling semantics instead of choosing one whole-file implementation over the other.
     if ($commit -eq 'f2851204978e2cd66123fef27487fe5718f587fa') {
         $utilPath = 'src/video_core/texture_cache/util.cpp'
         $utilText = Get-Content $utilPath -Raw
@@ -84,7 +82,6 @@ foreach ($commit in $commits) {
         continue
     }
 
-    # 01effa already removed the guessed Switch 2 image-size multiplier.
     if ($commit -eq 'ba11b6d3990920c63cca4dbe1b95e2b08cca22bd') {
         $gsvText = Get-Content 'src/core/hle/service/nx2_gsv.h' -Raw
         if (-not $gsvText.Contains('layout.size *= u64{preference[6]} * preference[7];')) {
@@ -99,7 +96,6 @@ foreach ($commit in $commits) {
             git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'CI checkpoint before PokeDinner pipeline stats' --no-verify
             if ($LASTEXITCODE -ne 0) { throw 'Could not checkpoint PokeDinner batch before PipelineStats' }
         }
-
         git cherry-pick --no-commit $commit
         if ($LASTEXITCODE -ne 0) {
             $conflicts = @(git diff --name-only --diff-filter=U)
@@ -112,7 +108,6 @@ foreach ($commit in $commits) {
             git checkout --theirs -- src/video_core/shader_environment.cpp src/video_core/shader_environment.h
             if ($LASTEXITCODE -ne 0) { throw 'Could not select PokeDinner c404 shader-environment pair' }
         }
-
         & (Join-Path $PSScriptRoot 'apply-ns2-geometry-stage.ps1')
         if ($LASTEXITCODE -ne 0) { throw 'Could not restore validated native geometry semantics after c404' }
         git add -A
@@ -152,7 +147,6 @@ foreach ($commit in $commits) {
             git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'CI checkpoint before Pokopia guarded uniforms' --no-verify
             if ($LASTEXITCODE -ne 0) { throw 'Could not checkpoint atomic-range fix before Pokopia guarded uniforms' }
         }
-
         git cherry-pick --no-commit $commit
         if ($LASTEXITCODE -ne 0) {
             $conflicts = @(git diff --name-only --diff-filter=U)
@@ -165,7 +159,6 @@ foreach ($commit in $commits) {
             git checkout --theirs -- src/shader_recompiler/frontend/ampere/lower_to_maxwell.h
             if ($LASTEXITCODE -ne 0) { throw 'Could not select PokeDinner Pokopia native-lowering implementation' }
         }
-
         & (Join-Path $PSScriptRoot 'apply-ns2-native-lowering-overlays.ps1')
         if ($LASTEXITCODE -ne 0) { throw 'Could not restore native lowering overlays after 5116272' }
         git add -A
@@ -181,7 +174,6 @@ foreach ($commit in $commits) {
             git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'CI checkpoint before selective CPU-read copyback' --no-verify
             if ($LASTEXITCODE -ne 0) { throw 'Could not checkpoint state before selective CPU-read copyback' }
         }
-
         git cherry-pick --no-commit $commit
         if ($LASTEXITCODE -ne 0) {
             $conflicts = @(git diff --name-only --diff-filter=U)
@@ -193,7 +185,6 @@ foreach ($commit in $commits) {
             }
             git checkout --ours -- src/video_core/buffer_cache/buffer_cache.h
             if ($LASTEXITCODE -ne 0) { throw 'Could not preserve Eglantine buffer_cache.h for c3be47d merge' }
-
             $bufferPath = 'src/video_core/buffer_cache/buffer_cache.h'
             $bufferText = Get-Content $bufferPath -Raw
             $dmaOld = @'
@@ -208,16 +199,13 @@ foreach ($commit in $commits) {
             } elseif (-not $bufferText.Contains($dmaNew)) {
                 throw 'Could not port selective DMACopy QueueDownload from c3be47d'
             }
-
             if (-not $bufferText.Contains('void BufferCache<P>::NoteCpuRead(DAddr addr, size_t size)')) {
                 $registeredNeedle = @'
 template <class P>
 bool BufferCache<P>::IsRegionRegistered(DAddr addr, size_t size) {
 '@
                 $registeredNeedle = $registeredNeedle.TrimEnd("`r", "`n")
-                if (-not $bufferText.Contains($registeredNeedle)) {
-                    throw 'Could not locate NoteCpuRead insertion point in buffer_cache.h'
-                }
+                if (-not $bufferText.Contains($registeredNeedle)) { throw 'Could not locate NoteCpuRead insertion point in buffer_cache.h' }
                 $noteBlock = @'
 template <class P>
 void BufferCache<P>::NoteCpuRead(DAddr addr, size_t size) {
@@ -240,11 +228,8 @@ void BufferCache<P>::NoteCpuRead(DAddr addr, size_t size) {
 }
 
 '@
-                $bufferText = $bufferText.Replace(
-                    $registeredNeedle,
-                    $noteBlock.TrimEnd("`r", "`n") + "`n`n" + $registeredNeedle)
+                $bufferText = $bufferText.Replace($registeredNeedle, $noteBlock.TrimEnd("`r", "`n") + "`n`n" + $registeredNeedle)
             }
-
             $markOld = @'
     if (AsyncBufferDownloads()) {
         uncommitted_gpu_modified_ranges.Add(device_addr, size);
@@ -259,7 +244,6 @@ void BufferCache<P>::NoteCpuRead(DAddr addr, size_t size) {
             }
             Set-Content -Path $bufferPath -Value $bufferText -Encoding utf8 -NoNewline
         }
-
         git add -A
         git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'CI checkpoint PokeDinner selective CPU-read buffer copyback' --no-verify
         if ($LASTEXITCODE -ne 0) { throw 'Could not finalize c3be47d selective CPU-read copyback merge' }
@@ -267,17 +251,12 @@ void BufferCache<P>::NoteCpuRead(DAddr addr, size_t size) {
         continue
     }
 
-    # Final 2.0 commit: nx2.h normally merges its Nx2ClearSparseRegions helper cleanly, while
-    # Eglantine's nvdrv session-reset block lacks donor-only GPU-written-page ancestry and therefore
-    # conflicts. Preserve Eglantine nvdrv and add only the sparse-state reset beside its semaphore
-    # reset. Checkpoint 73f + TLD4.PTP first so this last cherry-pick starts from a clean tree.
     if ($commit -eq '70ecb39ef0383eec95f8e1bc11c39f7f4dd9e4b2') {
         git add -A
         if (git status --porcelain) {
             git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'CI checkpoint before final PokeDinner sparse reset' --no-verify
             if ($LASTEXITCODE -ne 0) { throw 'Could not checkpoint final PokeDinner tail' }
         }
-
         git cherry-pick --no-commit $commit
         if ($LASTEXITCODE -ne 0) {
             $conflicts = @(git diff --name-only --diff-filter=U)
@@ -289,20 +268,16 @@ void BufferCache<P>::NoteCpuRead(DAddr addr, size_t size) {
             }
             git checkout --ours -- src/core/hle/service/nvdrv/nvdrv.cpp
             if ($LASTEXITCODE -ne 0) { throw 'Could not preserve Eglantine nvdrv.cpp for sparse reset' }
-
             $nvdrvPath = 'src/core/hle/service/nvdrv/nvdrv.cpp'
             $nvdrvText = Get-Content $nvdrvPath -Raw
             $sparseReset = '    Tegra::Nx2ClearSparseRegions();'
             if (-not $nvdrvText.Contains($sparseReset)) {
                 $semaphoreReset = '    Tegra::Nx2ClearSemaphoreRegions();'
-                if (-not $nvdrvText.Contains($semaphoreReset)) {
-                    throw 'Could not locate Switch 2 session-reset insertion point in nvdrv.cpp'
-                }
+                if (-not $nvdrvText.Contains($semaphoreReset)) { throw 'Could not locate Switch 2 session-reset insertion point in nvdrv.cpp' }
                 $nvdrvText = $nvdrvText.Replace($semaphoreReset, "$semaphoreReset`n$sparseReset")
             }
             Set-Content -Path $nvdrvPath -Value $nvdrvText -Encoding utf8 -NoNewline
         }
-
         git add -A
         git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'CI checkpoint PokeDinner sparse session reset' --no-verify
         if ($LASTEXITCODE -ne 0) { throw 'Could not finalize 70ecb39 sparse-session reset merge' }
@@ -314,14 +289,11 @@ void BufferCache<P>::NoteCpuRead(DAddr addr, size_t size) {
     if ($LASTEXITCODE -ne 0) {
         $conflicts = @(git diff --name-only --diff-filter=U)
         git cherry-pick --abort 2>$null
-        if ($conflicts.Count -gt 0) {
-            throw "PokeDinner 2.0 batch conflict at $commit in: $($conflicts -join ', ')"
-        }
+        if ($conflicts.Count -gt 0) { throw "PokeDinner 2.0 batch conflict at $commit in: $($conflicts -join ', ')" }
         throw "PokeDinner 2.0 batch could not apply $commit"
     }
 }
 
-# High-value regression needles before we pay for the long Windows compile.
 $checks = @{
     'src/video_core/renderer_vulkan/vk_pipeline_cache.cpp' = @('EDEN_NX2_SHADER_REUSE', 'EDEN_NX2_ASYNC_TRANSLATION')
     'src/video_core/renderer_vulkan/vk_rasterizer.cpp' = @('EDEN_NX2_RESETFIX', 'buffer_cache.NoteCpuRead', 'PendingSemaphoreRelease')
@@ -329,7 +301,7 @@ $checks = @{
     'src/video_core/dma_pusher.cpp' = @('EDEN_NX2_PBFLUSH')
     'src/video_core/buffer_cache/buffer_cache.h' = @('void BufferCache<P>::NoteCpuRead', 'QueueDownload(new_base_address, size)', 'QueueDownload(device_addr, size)')
     'src/video_core/buffer_cache/buffer_cache_base.h' = @('Common::RangeSet<DAddr> cpu_read_ranges', 'void QueueDownload(DAddr addr, u64 size)')
-    'src/video_core/renderer_vulkan/vk_texture_cache.cpp' = @('EDEN_NX2_VRAM_LIMIT_MIB')
+    'src/video_core/vulkan_common/vulkan_device.cpp' = @('EDEN_NX2_VRAM_LIMIT_MIB', 'heap_size_limit', 'main_heap')
     'src/video_core/renderer_vulkan/pipeline_stats.h' = @('EDEN_NX2_PIPELINE_STATS')
     'src/video_core/shader_environment.cpp' = @('const bool native_geometry = program == Maxwell::ShaderType::Geometry;', 'Vulkan::PipelineStats')
     'src/core/hle/service/nvdrv/nvdrv.cpp' = @('Tegra::Nx2ClearSparseRegions();')
