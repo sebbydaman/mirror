@@ -13,6 +13,18 @@ function Require-Text([string]$Path, [string]$Needle, [string]$Name) {
     Write-Host "[PASS] $Name"
 }
 
+function Require-AnyText([string]$Path, [string[]]$Needles, [string]$Name) {
+    Require-File $Path
+    $text = Get-Content $Path -Raw
+    foreach ($needle in $Needles) {
+        if ($text.Contains($needle)) {
+            Write-Host "[PASS] $Name"
+            return
+        }
+    }
+    throw "NS2 regression: $Name missing from $Path (no accepted source form found)"
+}
+
 # The integration script deliberately switches the workflow's bootstrap checkout to
 # the newer nx2-experimental source before local and PokeDinner patches are layered on top.
 # PokeDinner conflict resolution now creates ephemeral CI checkpoint commits, so HEAD is
@@ -67,12 +79,23 @@ Require-Text $f2i 'case DestFormat::I8:' '8-bit F2I destination decoding'
 Require-Text $f2i 'std::numeric_limits<s8>::max' 'signed 8-bit F2I clamp bounds'
 Require-Text $f2i 'std::numeric_limits<u8>::max' 'unsigned 8-bit F2I clamp bounds'
 
-# Bananza post-menu and blue-world runtime surfaces captured from the user's logs.
+# Bananza post-menu and blue-world runtime surfaces. Accept both the older explicit guards and
+# PokeDinner 2.0's broader equivalent implementations instead of pinning tests to source spelling.
 Require-Text $bufferBase 'constexpr u32 NUM_STORAGE_BUFFERS = 32;' '32 native storage-buffer slots'
-Require-Text $ampere '(width != 0 && width != 4 && width != 5)' 'B82 32-bit indexed constant load'
-Require-Text $ampere '(target >= 28 && target != 63)' 'VOTEU extended uniform target range'
+Require-AnyText $ampere @(
+    '(width != 0 && width != 4 && width != 5)',
+    'if (width > 5 || insn.Bits(78, 2) || insn.Bits(91, 1) ||'
+) 'B82 32-bit indexed constant load'
+Require-AnyText $ampere @(
+    '(target >= 28 && target != 63)',
+    'if (uniform_register(target) == ~0U || insn.words[1] ||'
+) 'VOTEU extended uniform target range'
 Require-Text $ampere 'const bool word = (mode & ~0x1c100U) == 0x00203000;' 'F2I 32-bit rounding family'
-Require-Text $ampere 'case 0x308: case 0xb08: case 0xd08: { // MUFU' 'D08 uniform-source MUFU lowering'
+Require-AnyText $ampere @(
+    'case 0x308: case 0xb08: case 0xd08: { // MUFU',
+    'case 0x308: case 0x908: case 0xb08: case 0xd08: { // MUFU'
+) 'D08 uniform-source MUFU lowering'
+Require-Text $ampere 'operation > 9 || (operation == 9 && insn.Bits(73, 1))' 'MUFU operation-9 compatibility'
 
 # #71+ generalized compatibility batch.
 Require-Text $drawManager 'bool Maxwell3D::DrawManager::IsInstanceLoopMethod' 'PR51 instance-loop method classification'
