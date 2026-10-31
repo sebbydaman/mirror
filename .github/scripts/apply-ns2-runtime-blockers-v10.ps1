@@ -1,8 +1,8 @@
 $ErrorActionPreference = 'Stop'
 
-# Task/Mesh layer C: the GLASM EmitContext still has one exhaustive legacy-stage switch.
-# GLASM has no Task/Mesh execution model, so acknowledge the enum values for /we4062 but
-# reject them explicitly rather than assigning a bogus legacy attribute namespace.
+# Task/Mesh layer C: legacy GLASM/GLSL backends share the Stage enum but do not implement
+# native Task/Mesh execution. Keep their switches exhaustive for /we4062 while rejecting the
+# unsupported stages explicitly. Vulkan remains the native Task/Mesh path.
 function Read-Lf([string]$Path) {
     if (-not (Test-Path $Path)) { throw "Missing required source file: $Path" }
     return (Get-Content $Path -Raw).Replace("`r`n", "`n")
@@ -19,19 +19,19 @@ function Replace-Once([string]$Text, [string]$Old, [string]$New, [string]$Label)
     return $Text.Substring(0, $at) + $New + $Text.Substring($at + $Old.Length)
 }
 
-$path = 'src/shader_recompiler/backend/glasm/glasm_emit_context.cpp'
-$text = Read-Lf $path
-$marker = 'throw InvalidArgument("GLASM does not support shader stage {}", program.stage);'
+$glasmPath = 'src/shader_recompiler/backend/glasm/glasm_emit_context.cpp'
+$glasm = Read-Lf $glasmPath
+$glasmMarker = 'throw InvalidArgument("GLASM does not support shader stage {}", program.stage);'
 
-if (-not $text.Contains($marker)) {
-    $old = @'
+if (-not $glasm.Contains($glasmMarker)) {
+    $glasmOld = @'
     case Stage::Compute:
         stage_name = "invocation";
         break;
     }
     const std::string_view attr_stage{stage == Stage::Fragment ? "fragment" : "vertex"};
 '@
-    $new = @'
+    $glasmNew = @'
     case Stage::Compute:
         stage_name = "invocation";
         break;
@@ -41,18 +41,65 @@ if (-not $text.Contains($marker)) {
     }
     const std::string_view attr_stage{stage == Stage::Fragment ? "fragment" : "vertex"};
 '@
-    $text = Replace-Once $text $old $new 'GLASM EmitContext Task/Mesh exhaustive stage guard'
-    Write-Utf8 $path $text
+    $glasm = Replace-Once $glasm $glasmOld $glasmNew 'GLASM EmitContext Task/Mesh exhaustive stage guard'
+    Write-Utf8 $glasmPath $glasm
 }
 
-$check = Read-Lf $path
+$glasmCheck = Read-Lf $glasmPath
 foreach ($needle in @(
     'case Stage::Task:',
     'case Stage::Mesh:',
-    $marker
+    $glasmMarker
 )) {
-    if (-not $check.Contains($needle)) { throw "Runtime-v10 GLASM EmitContext regression: missing $needle" }
+    if (-not $glasmCheck.Contains($needle)) { throw "Runtime-v10 GLASM EmitContext regression: missing $needle" }
 }
 
-Write-Host 'Added explicit Task/Mesh rejection to the legacy GLASM EmitContext stage switch.'
-git diff -- $path
+# GLSL's Compute case declares local_x/local_y/local_z. Braces are required before adding later
+# case labels, otherwise MSVC C2360 rejects a jump across those initialized declarations.
+$glslPath = 'src/shader_recompiler/backend/glsl/glsl_emit_context.cpp'
+$glsl = Read-Lf $glslPath
+$glslMarker = 'throw InvalidArgument("GLSL does not support shader stage {}", program.stage);'
+
+if (-not $glsl.Contains($glslMarker)) {
+    $glslOld = @'
+    case Stage::Compute:
+        stage_name = "cs";
+        const u32 local_x{(std::max)(program.workgroup_size[0], 1u)};
+        const u32 local_y{(std::max)(program.workgroup_size[1], 1u)};
+        const u32 local_z{(std::max)(program.workgroup_size[2], 1u)};
+        header += fmt::format("layout(local_size_x={},local_size_y={},local_size_z={}) in;",
+                              local_x, local_y, local_z);
+        break;
+    }
+'@
+    $glslNew = @'
+    case Stage::Compute: {
+        stage_name = "cs";
+        const u32 local_x{(std::max)(program.workgroup_size[0], 1u)};
+        const u32 local_y{(std::max)(program.workgroup_size[1], 1u)};
+        const u32 local_z{(std::max)(program.workgroup_size[2], 1u)};
+        header += fmt::format("layout(local_size_x={},local_size_y={},local_size_z={}) in;",
+                              local_x, local_y, local_z);
+        break;
+    }
+    case Stage::Task:
+    case Stage::Mesh:
+        throw InvalidArgument("GLSL does not support shader stage {}", program.stage);
+    }
+'@
+    $glsl = Replace-Once $glsl $glslOld $glslNew 'GLSL EmitContext Task/Mesh exhaustive stage guard'
+    Write-Utf8 $glslPath $glsl
+}
+
+$glslCheck = Read-Lf $glslPath
+foreach ($needle in @(
+    'case Stage::Compute: {',
+    'case Stage::Task:',
+    'case Stage::Mesh:',
+    $glslMarker
+)) {
+    if (-not $glslCheck.Contains($needle)) { throw "Runtime-v10 GLSL EmitContext regression: missing $needle" }
+}
+
+Write-Host 'Added explicit Task/Mesh rejection to legacy GLASM and GLSL EmitContext stage switches.'
+git diff -- $glasmPath $glslPath
