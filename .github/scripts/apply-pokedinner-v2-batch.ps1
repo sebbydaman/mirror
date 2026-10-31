@@ -129,6 +129,32 @@ foreach ($commit in $commits) {
         continue
     }
 
+    # 2d53aac only widens the uniform-arithmetic execution predicate check to support UPn/!UPn.
+    # Our native-lowering file carries additional Switch 2 opcode work in other regions, so port
+    # this small semantic edit directly instead of resolving the entire header as one side.
+    if ($commit -eq '2d53aac0a1e1a6de56b9c27903149340b10e9a9f') {
+        $amperePath = 'src/shader_recompiler/frontend/ampere/lower_to_maxwell.h'
+        $ampereText = Get-Content $amperePath -Raw
+        if (-not $ampereText.Contains('native inverted uniform true predicate')) {
+            $predicatePattern = '(?m)^            if \(insn\.Bits\(12, 4\) != 7 && opcode != 0x292 && (?:opcode != 0x092 && )?opcode != 0x892\)\r?\n                return fail\(index, "native uniform arithmetic predication"\);'
+            $predicateReplacement = @'
+            // Any UPn/!UPn execution predicate, including the inverted ones (0xd = !UP5): the
+            // guard machinery below swaps UPn into P(6-n). Only !UPT has no slot.
+            if (opcode != 0x292 && opcode != 0x092 && opcode != 0x892 &&
+                (insn.Bits(12, 4) & 7) == 7 && insn.Bits(12, 4) != 7)
+                return fail(index, "native inverted uniform true predicate");
+'@
+            $newAmpereText = [regex]::Replace(
+                $ampereText, $predicatePattern, $predicateReplacement.TrimEnd("`r", "`n"), 1)
+            if ($newAmpereText -eq $ampereText) {
+                throw 'Could not locate uniform arithmetic predicate gate for 2d53aac'
+            }
+            Set-Content -Path $amperePath -Value $newAmpereText -Encoding utf8 -NoNewline
+        }
+        Write-Host 'Ported 2d53aac inverted uniform predicate support without replacing native lowering.'
+        continue
+    }
+
     git cherry-pick --no-commit $commit
     if ($LASTEXITCODE -ne 0) {
         $conflicts = @(git diff --name-only --diff-filter=U)
@@ -148,7 +174,7 @@ $checks = @{
     'src/video_core/renderer_vulkan/vk_texture_cache.cpp' = @('EDEN_NX2_VRAM_LIMIT_MIB')
     'src/video_core/renderer_vulkan/pipeline_stats.h' = @('EDEN_NX2_PIPELINE_STATS')
     'src/video_core/shader_environment.cpp' = @('const bool native_geometry = program == Maxwell::ShaderType::Geometry;', 'Vulkan::PipelineStats')
-    'src/shader_recompiler/frontend/ampere/lower_to_maxwell.h' = @('UISETP', 'IMAD.X')
+    'src/shader_recompiler/frontend/ampere/lower_to_maxwell.h' = @('UISETP', 'IMAD.X', 'native inverted uniform true predicate')
 }
 foreach ($path in $checks.Keys) {
     if (-not (Test-Path $path)) { throw "PokeDinner 2.0 regression: missing $path" }
