@@ -51,7 +51,8 @@ if (-not $shaderCacheHeader.Contains('std::shared_ptr<const LoweredNativeCode> l
     if ($shaderInfoStart -lt 0) {
         throw 'Could not locate ShaderInfo start for PokeDinner native-lowering reuse prerequisite'
     }
-    $shaderInfoEnd = $shaderCacheHeader.IndexOf('};', $shaderInfoStart)
+    # Do not search for plain '};': members such as unique_hash{}; contain those characters too.
+    $shaderInfoEnd = $shaderCacheHeader.IndexOf("`n};", $shaderInfoStart)
     if ($shaderInfoEnd -lt 0) {
         throw 'Could not locate ShaderInfo end for PokeDinner native-lowering reuse prerequisite'
     }
