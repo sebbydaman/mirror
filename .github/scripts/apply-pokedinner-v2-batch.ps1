@@ -88,9 +88,7 @@ foreach ($commit in $commits) {
         continue
     }
 
-    # Eglantine 01effa already removed the guessed preference[6]*preference[7] image-size
-    # multiplier that ba11b6d removes. Detect the desired end state and skip the redundant
-    # donor cherry-pick instead of treating an already-fixed newer base as a merge failure.
+    # Eglantine 01effa already has the desired Mario Kart image-size behavior.
     if ($commit -eq 'ba11b6d3990920c63cca4dbe1b95e2b08cca22bd') {
         $gsvPath = 'src/core/hle/service/nx2_gsv.h'
         $gsvText = Get-Content $gsvPath -Raw
@@ -98,6 +96,78 @@ foreach ($commit in $commits) {
             Write-Host 'ba11b6d semantics already present: guessed NX2 image-size multiplier is absent.'
             continue
         }
+    }
+
+    # c404060 is instrumentation-only. Its Vulkan files apply cleanly, but its shader environment
+    # hunks overlap our native-geometry integration. Let Git apply every clean file, retain our two
+    # shader-environment files, then splice only the timing hooks into them. This keeps both feature
+    # sets and leaves a clean temporary checkpoint so the shader-reuse commit can follow normally.
+    if ($commit -eq 'c404060104d2fcc3e4e17bd89c1d964cddf03348') {
+        git cherry-pick --no-commit $commit
+        if ($LASTEXITCODE -ne 0) {
+            $conflicts = @(git diff --name-only --diff-filter=U)
+            $expected = @('src/video_core/shader_environment.cpp', 'src/video_core/shader_environment.h')
+            $unexpected = @($conflicts | Where-Object { $_ -notin $expected })
+            if ($unexpected.Count -gt 0) {
+                git cherry-pick --abort 2>$null
+                throw "Unexpected c404060 pipeline-stats conflicts in: $($unexpected -join ', ')"
+            }
+            if ($conflicts.Count -eq 0) {
+                git cherry-pick --abort 2>$null
+                throw 'c404060 failed without a resolvable shader-environment conflict'
+            }
+
+            git checkout --ours -- src/video_core/shader_environment.cpp src/video_core/shader_environment.h
+            if ($LASTEXITCODE -ne 0) { throw 'Could not preserve integrated shader environment while resolving c404060' }
+
+            $cppPath = 'src/video_core/shader_environment.cpp'
+            $cppText = Get-Content $cppPath -Raw
+            $statsInclude = '#include "video_core/renderer_vulkan/pipeline_stats.h"'
+            if (-not $cppText.Contains($statsInclude)) {
+                $memoryInclude = '#include "video_core/memory_manager.h"'
+                if (-not $cppText.Contains($memoryInclude)) { throw 'Could not locate shader environment include point for PipelineStats' }
+                $cppText = $cppText.Replace($memoryInclude, "$memoryInclude`n$statsInclude")
+            }
+
+            $initPattern = '(?s)void GenericEnvironment::InitializeNativeCode\(std::shared_ptr<const LoweredNativeCode> lowered,\s*u32 source_header_size\)\s*\{\s*if \(!lowered\) \{\s*lowered = LowerNativeCode\(source_header_size\);\s*\}'
+            $initReplacement = @'
+void GenericEnvironment::InitializeNativeCode(std::shared_ptr<const LoweredNativeCode> lowered,
+                                              u32 source_header_size, bool is_compute) {
+    if (!lowered) {
+        const Vulkan::PipelineStats::ScopedTimer timer{
+            is_compute ? Vulkan::PipelineStats::Kind::Compute
+                       : Vulkan::PipelineStats::Kind::Graphics,
+            Vulkan::PipelineStats::Stage::Lower};
+        lowered = LowerNativeCode(source_header_size);
+    }
+'@
+            $newCpp = [regex]::Replace($cppText, $initPattern, $initReplacement.TrimEnd("`r", "`n"), 1)
+            if ($newCpp -eq $cppText) { throw 'Could not splice PipelineStats native-lowering timer into shader_environment.cpp' }
+            $cppText = $newCpp
+
+            $computeOld = 'InitializeNativeCode(std::move(lowered_native_), 0);'
+            $computeNew = 'InitializeNativeCode(std::move(lowered_native_), 0, true);'
+            if ($cppText.Contains($computeOld)) {
+                $cppText = $cppText.Replace($computeOld, $computeNew)
+            } elseif (-not $cppText.Contains($computeNew)) {
+                throw 'Could not mark native compute lowering for PipelineStats'
+            }
+            Set-Content -Path $cppPath -Value $cppText -Encoding utf8 -NoNewline
+
+            $headerPath = 'src/video_core/shader_environment.h'
+            $headerText = Get-Content $headerPath -Raw
+            $headerPattern = 'void InitializeNativeCode\(std::shared_ptr<const LoweredNativeCode> lowered,\s*u32 source_header_size = 128\);'
+            $headerReplacement = "void InitializeNativeCode(std::shared_ptr<const LoweredNativeCode> lowered,`n                              u32 source_header_size = 128, bool is_compute = false);"
+            $newHeader = [regex]::Replace($headerText, $headerPattern, $headerReplacement, 1)
+            if ($newHeader -eq $headerText) { throw 'Could not splice PipelineStats signature into shader_environment.h' }
+            Set-Content -Path $headerPath -Value $newHeader -Encoding utf8 -NoNewline
+
+            git add -A
+            git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'CI checkpoint PokeDinner pipeline stats' --no-verify
+            if ($LASTEXITCODE -ne 0) { throw 'Could not finalize c404060 PipelineStats conflict resolution' }
+            Write-Host 'Integrated c404060 PipelineStats while preserving native geometry and local shader-environment changes.'
+        }
+        continue
     }
 
     git cherry-pick --no-commit $commit
@@ -116,6 +186,7 @@ $checks = @{
     'src/video_core/renderer_vulkan/vk_rasterizer.cpp' = @('EDEN_NX2_RESETFIX')
     'src/video_core/dma_pusher.cpp' = @('EDEN_NX2_PBFLUSH')
     'src/video_core/renderer_vulkan/vk_texture_cache.cpp' = @('EDEN_NX2_VRAM_LIMIT_MIB')
+    'src/video_core/renderer_vulkan/pipeline_stats.h' = @('EDEN_NX2_PIPELINE_STATS')
     'src/shader_recompiler/frontend/ampere/lower_to_maxwell.h' = @('UISETP', 'IMAD.X')
 }
 foreach ($path in $checks.Keys) {
