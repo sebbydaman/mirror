@@ -140,11 +140,38 @@ if (-not $translate.Contains('case Stage::Task: // Task/Mesh have no legacy NVN 
     Write-Utf8 $translatePath $translate
 }
 
+# GLASM has no task/mesh program header in Eden's legacy NV assembly backend. The backend is
+# still compiled into video_core, so /we4062 requires these enum values to be acknowledged even
+# though they must not be emitted. Route them to the existing InvalidArgument instead of making
+# up a header and accidentally treating an unsupported stage as valid.
+$glasmPath = 'src/shader_recompiler/backend/glasm/emit_glasm.cpp'
+$glasm = Read-Lf $glasmPath
+if (-not $glasm.Contains('case Stage::Task: // GLASM has no Task/Mesh program header.')) {
+    $old = @'
+    case Stage::Compute:
+        return "!!NVcp5.0\n";
+    }
+    throw InvalidArgument("Invalid stage {}", stage);
+'@
+    $new = @'
+    case Stage::Compute:
+        return "!!NVcp5.0\n";
+    case Stage::Task: // GLASM has no Task/Mesh program header.
+    case Stage::Mesh:
+        break;
+    }
+    throw InvalidArgument("Invalid stage {}", stage);
+'@
+    $glasm = Replace-Once $glasm $old $new 'GLASM Task/Mesh exhaustive stage handling'
+    Write-Utf8 $glasmPath $glasm
+}
+
 $stageCheck = Read-Lf $stagePath
 $vkCheck = Read-Lf $vkPath
 $spirvCheck = Read-Lf $spirvPath
 $collectCheck = Read-Lf $collectPath
 $translateCheck = Read-Lf $translatePath
+$glasmCheck = Read-Lf $glasmPath
 foreach ($needle in @(
     '    Task,',
     '    Mesh,',
@@ -183,6 +210,13 @@ foreach ($needle in @(
 )) {
     if (-not $translateCheck.Contains($needle)) { throw "Runtime-v9 translate-program exhaustive-stage regression: missing $needle" }
 }
+foreach ($needle in @(
+    'case Stage::Task: // GLASM has no Task/Mesh program header.',
+    'case Stage::Mesh:',
+    'throw InvalidArgument("Invalid stage {}", stage);'
+)) {
+    if (-not $glasmCheck.Contains($needle)) { throw "Runtime-v9 GLASM exhaustive-stage regression: missing $needle" }
+}
 
 Write-Host 'Added isolated Task/Mesh identities, Vulkan/SPIR-V mappings, and exhaustive legacy-stage guards; legacy stage indexing remains unchanged.'
-git diff -- $stagePath $vkPath $spirvPath $collectPath $translatePath
+git diff -- $stagePath $vkPath $spirvPath $collectPath $translatePath $glasmPath
