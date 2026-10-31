@@ -58,9 +58,9 @@ if (-not $text.Contains($eligibilityMarker)) {
         'std::ranges::find_if(requirements, [sparse_aspect](const auto& r) {' `
         'InitSparseLayers requirement lambda capture'
     $oldAspectPredicate = '        return (r.formatProperties.aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) != 0;'
-    $newAspectPredicate =
-        '        return (r.formatProperties.flags & VK_SPARSE_IMAGE_FORMAT_METADATA_BIT) == 0 &&' + "`n" +
-        '               (r.formatProperties.aspectMask & sparse_aspect) != 0;'
+    # VkSparseImageFormatProperties identifies metadata through aspectMask, not a format flag.
+    # Matching the requested image aspect already excludes a metadata-only requirement.
+    $newAspectPredicate = '        return (r.formatProperties.aspectMask & sparse_aspect) != 0;'
     $init = Replace-Once $init $oldAspectPredicate $newAspectPredicate 'InitSparseLayers aspect predicate'
     $text = $text.Substring(0, $initStart) + $init + $text.Substring($initEnd)
 
@@ -90,7 +90,6 @@ foreach ($needle in @(
     '!sparse_layer_format) {',
     'const VkImageAspectFlags sparse_aspect = ImageAspectMask(info.format);',
     'std::ranges::find_if(requirements, [sparse_aspect](const auto& r) {',
-    'VK_SPARSE_IMAGE_FORMAT_METADATA_BIT',
     '(r.formatProperties.aspectMask & sparse_aspect) != 0;',
     '.aspectMask = s.sparse.formatProperties.aspectMask,',
     'std::vector<u32> Image::BindLayers(std::span<const u32> layers)'
