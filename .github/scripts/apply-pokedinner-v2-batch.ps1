@@ -185,6 +185,105 @@ foreach ($commit in $commits) {
         continue
     }
 
+    # c3be47d fixes Pokopia's GPU-computed sky/fog/exposure without restoring expensive full
+    # per-fence buffer downloads. Every other file in this donor commit merges cleanly; only
+    # buffer_cache.h overlaps Eglantine's newer cache hot-path work. Preserve that file and port
+    # the three implementation-side semantics that match the already-auto-merged declarations:
+    # selective QueueDownload, NoteCpuRead, and selective queuing from MarkWrittenBuffer.
+    if ($commit -eq 'c3be47da94e4916dd02454b2d8f86b78301bbde0') {
+        git add -A
+        if (git status --porcelain) {
+            git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'CI checkpoint before selective CPU-read copyback' --no-verify
+            if ($LASTEXITCODE -ne 0) { throw 'Could not checkpoint state before selective CPU-read copyback' }
+        }
+
+        git cherry-pick --no-commit $commit
+        if ($LASTEXITCODE -ne 0) {
+            $conflicts = @(git diff --name-only --diff-filter=U)
+            $expected = @('src/video_core/buffer_cache/buffer_cache.h')
+            $unexpected = @($conflicts | Where-Object { $_ -notin $expected })
+            if ($unexpected.Count -gt 0 -or $conflicts.Count -eq 0) {
+                git cherry-pick --abort 2>$null
+                throw "Unexpected c3be47d buffer-coherency conflict surface: $($conflicts -join ', ')"
+            }
+            git checkout --ours -- src/video_core/buffer_cache/buffer_cache.h
+            if ($LASTEXITCODE -ne 0) { throw 'Could not preserve Eglantine buffer_cache.h for c3be47d merge' }
+
+            $bufferPath = 'src/video_core/buffer_cache/buffer_cache.h'
+            $bufferText = Get-Content $bufferPath -Raw
+
+            $dmaOld = @'
+        if (AsyncBufferDownloads()) {
+            uncommitted_gpu_modified_ranges.Add(new_base_address, size);
+        }
+'@
+            $dmaNew = '        QueueDownload(new_base_address, size);'
+            $dmaOldText = $dmaOld.TrimEnd("`r", "`n")
+            if ($bufferText.Contains($dmaOldText)) {
+                $bufferText = $bufferText.Replace($dmaOldText, $dmaNew)
+            } elseif (-not $bufferText.Contains($dmaNew)) {
+                throw 'Could not port selective DMACopy QueueDownload from c3be47d'
+            }
+
+            if (-not $bufferText.Contains('void BufferCache<P>::NoteCpuRead(DAddr addr, size_t size)')) {
+                $registeredNeedle = @'
+template <class P>
+bool BufferCache<P>::IsRegionRegistered(DAddr addr, size_t size) {
+'@
+                $registeredNeedle = $registeredNeedle.TrimEnd("`r", "`n")
+                if (-not $bufferText.Contains($registeredNeedle)) {
+                    throw 'Could not locate NoteCpuRead insertion point in buffer_cache.h'
+                }
+                $noteBlock = @'
+template <class P>
+void BufferCache<P>::NoteCpuRead(DAddr addr, size_t size) {
+    if (AsyncBufferDownloads()) {
+        return;
+    }
+    size_t covered = 0;
+    cpu_read_ranges.ForEachInRange(addr, size,
+                                   [&](DAddr start, DAddr end) { covered += end - start; });
+    if (covered >= size) {
+        return;
+    }
+    cpu_read_ranges.Add(addr, size);
+    if (Nx2Profile::Enabled()) {
+        static u64 noted{};
+        if ((++noted & 255) == 1) {
+            LOG_INFO(HW_GPU, "CPU-read buffer pages noted: {} (latest {:#x})", noted, addr);
+        }
+    }
+}
+
+'@
+                $bufferText = $bufferText.Replace(
+                    $registeredNeedle,
+                    $noteBlock.TrimEnd("`r", "`n") + "`n`n" + $registeredNeedle)
+            }
+
+            $markOld = @'
+    if (AsyncBufferDownloads()) {
+        uncommitted_gpu_modified_ranges.Add(device_addr, size);
+    }
+'@
+            $markNew = '    QueueDownload(device_addr, size);'
+            $markOldText = $markOld.TrimEnd("`r", "`n")
+            if ($bufferText.Contains($markOldText)) {
+                $bufferText = $bufferText.Replace($markOldText, $markNew)
+            } elseif (-not $bufferText.Contains($markNew)) {
+                throw 'Could not port MarkWrittenBuffer QueueDownload from c3be47d'
+            }
+
+            Set-Content -Path $bufferPath -Value $bufferText -Encoding utf8 -NoNewline
+        }
+
+        git add -A
+        git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'CI checkpoint PokeDinner selective CPU-read buffer copyback' --no-verify
+        if ($LASTEXITCODE -ne 0) { throw 'Could not finalize c3be47d selective CPU-read copyback merge' }
+        Write-Host 'Integrated selective CPU-read buffer copyback while preserving Eglantine buffer-cache hot paths.'
+        continue
+    }
+
     git cherry-pick --no-commit $commit
     if ($LASTEXITCODE -ne 0) {
         $conflicts = @(git diff --name-only --diff-filter=U)
@@ -199,8 +298,10 @@ foreach ($commit in $commits) {
 # High-value regression needles before we pay for the long Windows compile.
 $checks = @{
     'src/video_core/renderer_vulkan/vk_pipeline_cache.cpp' = @('EDEN_NX2_SHADER_REUSE', 'EDEN_NX2_ASYNC_TRANSLATION')
-    'src/video_core/renderer_vulkan/vk_rasterizer.cpp' = @('EDEN_NX2_RESETFIX')
+    'src/video_core/renderer_vulkan/vk_rasterizer.cpp' = @('EDEN_NX2_RESETFIX', 'buffer_cache.NoteCpuRead', 'PendingSemaphoreRelease')
     'src/video_core/dma_pusher.cpp' = @('EDEN_NX2_PBFLUSH')
+    'src/video_core/buffer_cache/buffer_cache.h' = @('void BufferCache<P>::NoteCpuRead', 'QueueDownload(new_base_address, size)', 'QueueDownload(device_addr, size)')
+    'src/video_core/buffer_cache/buffer_cache_base.h' = @('Common::RangeSet<DAddr> cpu_read_ranges', 'void QueueDownload(DAddr addr, u64 size)')
     'src/video_core/renderer_vulkan/vk_texture_cache.cpp' = @('EDEN_NX2_VRAM_LIMIT_MIB')
     'src/video_core/renderer_vulkan/pipeline_stats.h' = @('EDEN_NX2_PIPELINE_STATS')
     'src/video_core/shader_environment.cpp' = @('const bool native_geometry = program == Maxwell::ShaderType::Geometry;', 'Vulkan::PipelineStats')
