@@ -1,5 +1,11 @@
 $ErrorActionPreference = "Stop"
 
+# Apply the curated PokeDinner 2.0 correctness/performance batch as one CI unit before
+# the local positive shader cache. This deliberately batches many source-proven donor
+# improvements into the same long Windows build.
+$pokedinnerV2Script = Join-Path $PSScriptRoot "apply-pokedinner-v2-batch.ps1"
+& $pokedinnerV2Script
+
 $path = "src/video_core/shader_environment.cpp"
 $text = Get-Content $path -Raw
 
