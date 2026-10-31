@@ -78,33 +78,31 @@ bool DmaPusher::FlushGpuWrittenCommands(GPUVAddr address, size_t size) {
 # Current Step() intentionally re-reads a resumed entry after a semaphore acquire. Preserve that:
 # use a submission snapshot only on the first pass and only for pages that have never been marked
 # GPU-written. GPU-written or resumed entries continue through the existing safe/unsafe wrappers.
-if (-not $dma.Contains('const bool gpu_written = FlushGpuWrittenCommands')) {
-    $old = @'
-        // A resumed entry is read again: the words after the acquire may be new by now.
-        // A safe read flushes the caches, which belong to the split's back thread while it runs
-        // (the split only starts with unsafe reads; the settings can change mid-game).
-        const bool use_safe = !VideoCommon::GpuSplit::Get().Active() &&
-                              (Settings::IsDMALevelDefault() ? Settings::IsGPULevelHigh() : Settings::IsDMALevelSafe());
-        if (use_safe) {
-            Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::SafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
-            const std::span<const CommandHeader> commands{headers.data(), headers.size()};
-            RecordParsedEntry(header, commands);
-            command_resume_offset +=
-                ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
-        } else {
-            Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::UnsafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
-            const std::span<const CommandHeader> commands{headers.data(), headers.size()};
-            RecordParsedEntry(header, commands);
-            command_resume_offset +=
-                ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
-        }
-'@
-    $new = @'
-        // A resumed entry is read again: the words after the acquire may be new by now.
-        // Prefer the CPU-visible submission snapshot only for first-pass entries that have never
-        // been GPU-written. GPU-written pages are drained/flushed and read from current memory.
+# Locate the read policy by function boundaries instead of matching comments/formatting exactly;
+# PokeDinner has changed this block several times (PBFLUSH, split-thread comments, extra flushes).
+if (-not $dma.Contains('const bool gpu_written =')) {
+    $stepStart = $dma.IndexOf('bool DmaPusher::Step() {')
+    if ($stepStart -lt 0) { throw 'Could not locate DmaPusher::Step for PR28/PR52 preparation' }
+
+    $readStart = $dma.IndexOf('        const bool use_safe =', $stepStart)
+    if ($readStart -lt 0) {
+        throw 'Could not locate DmaPusher use_safe command-read policy for PR28/PR52 preparation'
+    }
+    $readEnd = $dma.IndexOf('        if (puller.HasPendingAcquire()) {', $readStart)
+    if ($readEnd -lt 0) {
+        throw 'Could not locate end of DmaPusher command-read policy for PR28/PR52 preparation'
+    }
+
+    $currentRead = $dma.Substring($readStart, $readEnd - $readStart)
+    if (-not $currentRead.Contains('GpuGuestMemory<Tegra::CommandHeader') -or
+        -not $currentRead.Contains('GuestMemoryFlags::SafeRead') -or
+        -not $currentRead.Contains('GuestMemoryFlags::UnsafeRead')) {
+        throw 'Unexpected DmaPusher command-read policy: safe/unsafe GpuGuestMemory paths are missing'
+    }
+
+    $newRead = @'
         const bool gpu_written =
-            FlushGpuWrittenCommands(dma_state.dma_get, header.size * sizeof(CommandHeader));
+            FlushGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(CommandHeader));
         const bool has_snapshot =
             command_resume_offset == 0 && !gpu_written &&
             dma_pushbuffer_subindex < command_list.submitted_offsets.size() &&
@@ -113,11 +111,11 @@ if (-not $dma.Contains('const bool gpu_written = FlushGpuWrittenCommands')) {
         const bool use_safe = !VideoCommon::GpuSplit::Get().Active() &&
                               (Settings::IsDMALevelDefault() ? Settings::IsGPULevelHigh() : Settings::IsDMALevelSafe());
         if (has_snapshot) {
-            const std::span<const CommandHeader> commands{command_list.submitted_words};
-            const auto entry = commands.subspan(command_list.submitted_offsets[dma_pushbuffer_subindex],
-                                                header.size);
-            RecordParsedEntry(header, entry);
-            command_resume_offset += ProcessCommands(entry, 0);
+            const std::span<const CommandHeader> submitted{command_list.submitted_words};
+            const auto commands = submitted.subspan(
+                command_list.submitted_offsets[dma_pushbuffer_subindex], header.size);
+            RecordParsedEntry(header, commands);
+            command_resume_offset += ProcessCommands(commands, 0);
         } else if (use_safe) {
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::SafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
             const std::span<const CommandHeader> commands{headers.data(), headers.size()};
@@ -132,11 +130,20 @@ if (-not $dma.Contains('const bool gpu_written = FlushGpuWrittenCommands')) {
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
         }
 '@
-    $oldText = $old.TrimEnd("`r", "`n")
-    if (-not $dma.Contains($oldText)) {
-        throw 'Could not locate current GpuGuestMemory command fetch block for PR28/PR52 preparation'
-    }
-    $dma = $dma.Replace($oldText, $new.TrimEnd("`r", "`n"))
+    $dma = $dma.Substring(0, $readStart) + $newRead.TrimEnd("`r", "`n") + "`n" + $dma.Substring($readEnd)
+}
+
+# Keep this preparation strict enough to catch accidental partial application before the legacy
+# compatibility script runs. The header snapshot fields themselves are still added by that script.
+foreach ($needle in @(
+    'bool DmaPusher::FlushGpuWrittenCommands(',
+    'const bool gpu_written =',
+    'command_list.submitted_offsets',
+    'command_list.submitted_words',
+    'GuestMemoryFlags::SafeRead',
+    'GuestMemoryFlags::UnsafeRead'
+)) {
+    if (-not $dma.Contains($needle)) { throw "PR28/PR52 preparation regression: missing $needle" }
 }
 Set-Content -Path $dmaPath -Value $dma -Encoding utf8 -NoNewline
 Write-Host 'Prepared PR28/PR52 snapshot-vs-current command fetch for current DmaPusher.'
