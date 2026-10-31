@@ -109,6 +109,9 @@ constexpr std::array<char, 8> MAGIC_NUMBER
 '@
 $text = $text.Replace($namespaceNeedle, $cacheBlock.TrimEnd("`r", "`n"))
 
+# PokeDinner 2.0 still lowers through this exact call inside LowerNativeCode(), beneath its
+# detached-environment / async-translation / shared-module pipeline. Cache the lowering result
+# here without interfering with those higher-level reuse layers.
 $lowerNeedle = '    auto lowered = Shader::Ampere::LowerToMaxwell(native);'
 if (-not $text.Contains($lowerNeedle)) { throw "Could not locate native lowering call" }
 $lowerReplacement = @'
@@ -122,17 +125,21 @@ $lowerReplacement = @'
 '@
 $text = $text.Replace($lowerNeedle, $lowerReplacement.TrimEnd("`r", "`n"))
 
-# Eglantine changed this diagnostic from INFO to DEBUG after the original integration.
-# Match either spelling so the functional cache patch remains source-version tolerant.
-$logInfoNeedle = @'
+# The diagnostic around LowerNativeCode has changed across Eglantine/PokeDinner revisions.
+# It is observability only, not part of the cache semantics. Upgrade a known legacy diagnostic
+# when present, but never reject a valid newer source tree merely because its log now reports
+# result->source_size or otherwise changed wording.
+$legacyLogs = @(
+@'
     LOG_INFO(Shader, "Lowered native shader at {:#x}: {} source bytes, {} instructions",
              program_base, native_source_size, lowered.instructions.size());
-'@
-$logDebugNeedle = @'
+'@,
+@'
     LOG_DEBUG(Shader, "Lowered native shader at {:#x}: {} source bytes, {} instructions",
              program_base, native_source_size, lowered.instructions.size());
 '@
-$logReplacement = @'
+)
+$legacyLogReplacement = @'
     if (lowered_from_positive_cache) {
         LOG_DEBUG(Shader, "Reused positive native shader cache at {:#x}: {} source bytes, {} instructions",
                   program_base, native_source_size, lowered.instructions.size());
@@ -141,18 +148,18 @@ $logReplacement = @'
                   program_base, native_source_size, lowered.instructions.size());
     }
 '@
-$matchedLog = $null
-foreach ($candidate in @($logInfoNeedle, $logDebugNeedle)) {
+$diagnosticUpgraded = $false
+foreach ($candidate in $legacyLogs) {
     $candidate = $candidate.TrimEnd("`r", "`n")
     if ($text.Contains($candidate)) {
-        $matchedLog = $candidate
+        $text = $text.Replace($candidate, $legacyLogReplacement.TrimEnd("`r", "`n"))
+        $diagnosticUpgraded = $true
         break
     }
 }
-if (-not $matchedLog) {
-    throw "Could not locate native shader lowering log"
+if (-not $diagnosticUpgraded) {
+    Write-Host "Native lowering diagnostic uses newer PokeDinner form; leaving observability text unchanged."
 }
-$text = $text.Replace($matchedLog, $logReplacement.TrimEnd("`r", "`n"))
 
 Set-Content -Path $path -Value $text -Encoding utf8 -NoNewline
 Write-Host "Enabled collision-safe positive native shader lowering cache."
