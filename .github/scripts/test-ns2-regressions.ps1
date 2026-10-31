@@ -25,6 +25,15 @@ function Require-AnyText([string]$Path, [string[]]$Needles, [string]$Name) {
     throw "NS2 regression: $Name missing from $Path (no accepted source form found)"
 }
 
+function Require-Regex([string]$Path, [string]$Pattern, [string]$Name) {
+    Require-File $Path
+    $text = Get-Content $Path -Raw
+    if (-not [regex]::IsMatch($text, $Pattern)) {
+        throw "NS2 regression: $Name missing from $Path (semantic pattern not found)"
+    }
+    Write-Host "[PASS] $Name"
+}
+
 # The integration script deliberately switches the workflow's bootstrap checkout to
 # the newer nx2-experimental source before local and PokeDinner patches are layered on top.
 # PokeDinner conflict resolution now creates ephemeral CI checkpoint commits, so HEAD is
@@ -62,11 +71,17 @@ Require-Text $vkTexture 'SparseLayers' 'Vulkan sparse layered-image support'
 Require-Text $vkTexture 'BindLayers' 'Vulkan per-layer sparse binding'
 Require-Text $textureCache 'UploadsByLayer' 'per-layer large texture upload path'
 
-# sebbydaman/mirror shader/control-flow improvements.
+# sebbydaman/mirror shader/control-flow improvements. Match geometry OUT by opcode identity because
+# PokeDinner donor revisions may group switch labels or use a different comment/source layout.
 Require-Text $ampere 'case 0x361: { // TEX.B, scalar bindless 2D/cube implicit-LOD sample' 'bindless 2D/cube TEX.B lowering'
 Require-Text $ampere 'case 0xb6f: { // TXQ texture dimensions, packed X/Y/Z/mip-count outputs.' 'extended TXQ lowering'
 Require-Text $ampere 'case 0x949: case 0x958: { // Captured BRX / BRXU with native-PC jump-table values' 'generalized BRX/BRXU lowering'
-Require-Text $ampere 'case 0x924: { // OUT, immediate geometry stream: EMIT / EMIT_THEN_CUT' 'geometry OUT lowering'
+Require-Regex $ampere '\bcase\s+0x924\s*:' 'geometry OUT opcode lowering'
+Require-AnyText $ampere @(
+    'OUT, immediate geometry stream: EMIT / EMIT_THEN_CUT',
+    'native geometry OUT immediate mode',
+    '0xfbe0000000000000ULL'
+) 'geometry OUT lowering semantics'
 Require-Text $shaderEnv 'Shader::Stage::Geometry' 'native geometry-stage admission'
 
 # Generic overlap imported from the newer Bananza work.
