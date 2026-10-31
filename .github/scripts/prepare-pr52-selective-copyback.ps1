@@ -44,15 +44,36 @@ if (-not $text.Contains($marker)) {
 # -----------------------------------------------------------------------------
 $dmaHeaderPath = 'src/video_core/dma_pusher.h'
 $dmaHeader = (Get-Content $dmaHeaderPath -Raw).Replace("`r`n", "`n")
-$voidDecl = '    void FlushGpuWrittenCommands(GPUVAddr address, size_t size);'
 $boolDecl = '    [[nodiscard]] bool FlushGpuWrittenCommands(GPUVAddr address, size_t size);'
-if ($dmaHeader.Contains($voidDecl)) {
-    $dmaHeader = $dmaHeader.Replace($voidDecl, $boolDecl)
-    Set-Content -Path $dmaHeaderPath -Value $dmaHeader -Encoding utf8 -NoNewline
-    Write-Host 'Promoted PokeDinner command coherency helper to report GPU-write history.'
-} elseif (-not $dmaHeader.Contains('bool FlushGpuWrittenCommands(GPUVAddr address, size_t size);')) {
-    throw 'Could not locate PokeDinner FlushGpuWrittenCommands declaration'
+$declName = 'FlushGpuWrittenCommands('
+$declAt = $dmaHeader.IndexOf($declName)
+if ($declAt -ge 0) {
+    $lineStart = $dmaHeader.LastIndexOf("`n", $declAt)
+    $lineStart = if ($lineStart -lt 0) { 0 } else { $lineStart + 1 }
+    $lineEnd = $dmaHeader.IndexOf("`n", $declAt)
+    if ($lineEnd -lt 0) { $lineEnd = $dmaHeader.Length }
+    $declLine = $dmaHeader.Substring($lineStart, $lineEnd - $lineStart)
+    if (-not $declLine.Contains(';')) {
+        throw "Unexpected FlushGpuWrittenCommands header occurrence: $declLine"
+    }
+    if (-not $declLine.Contains('bool FlushGpuWrittenCommands')) {
+        $dmaHeader = $dmaHeader.Substring(0, $lineStart) + $boolDecl + $dmaHeader.Substring($lineEnd)
+        Write-Host 'Promoted existing PokeDinner command coherency declaration to bool.'
+    } else {
+        Write-Host 'PokeDinner command coherency declaration already reports GPU-write history.'
+    }
+} else {
+    # Some intermediate PokeDinner/Eglantine shapes carry the cpp helper but not its declaration.
+    # Insert it next to the other public DmaPusher diagnostics rather than failing an exact anchor.
+    $recordAt = $dmaHeader.IndexOf('void RecordParsedEntry(')
+    if ($recordAt -lt 0) { throw 'Could not locate RecordParsedEntry declaration for PR52 helper insertion' }
+    $recordEnd = $dmaHeader.IndexOf(';', $recordAt)
+    if ($recordEnd -lt 0) { throw 'Could not locate end of RecordParsedEntry declaration' }
+    $insertAt = $recordEnd + 1
+    $dmaHeader = $dmaHeader.Substring(0, $insertAt) + "`n" + $boolDecl + $dmaHeader.Substring($insertAt)
+    Write-Host 'Inserted missing PokeDinner command coherency declaration beside RecordParsedEntry.'
 }
+Set-Content -Path $dmaHeaderPath -Value $dmaHeader -Encoding utf8 -NoNewline
 
 $dmaPath = 'src/video_core/dma_pusher.cpp'
 $dma = (Get-Content $dmaPath -Raw).Replace("`r`n", "`n")
