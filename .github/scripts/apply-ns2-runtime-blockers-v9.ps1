@@ -21,16 +21,10 @@ function Replace-Once([string]$Text, [string]$Old, [string]$New, [string]$Label)
 $stagePath = 'src/shader_recompiler/stage.h'
 $stage = Read-Lf $stagePath
 if (-not $stage.Contains('    Task,')) {
-    $old = @'
-    Compute,
-
-    VertexA,
-};
-constexpr u32 MaxStageTypes = 6;
-'@
+    # Use VertexA/end-of-enum as the stable anchor. Earlier NS2 patches do not alter this
+    # boundary, while whitespace around Compute has varied between Eglantine snapshots.
+    $old = "    VertexA,`n};"
     $new = @'
-    Compute,
-
     VertexA,
 
     // Switch 2 native pre-raster stages. These deliberately live outside the legacy
@@ -38,9 +32,8 @@ constexpr u32 MaxStageTypes = 6;
     Task,
     Mesh,
 };
-constexpr u32 MaxStageTypes = 6;
 '@
-    $stage = Replace-Once $stage $old $new 'isolated Task/Mesh shader identities'
+    $stage = Replace-Once $stage $old $new.TrimEnd("`r", "`n") 'isolated Task/Mesh shader identities'
     Write-Utf8 $stagePath $stage
 }
 
