@@ -63,6 +63,7 @@ jobs:
         working-directory: eden
         run: |
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-ns2-regressions.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-pokedinner-performance.ps1"
 
       - name: Restore CPM dependency cache
         uses: actions/cache@v4
@@ -148,10 +149,43 @@ jobs:
           '@ | Set-Content -Path "$bin\POKOPIA_CONFIG.txt" -Encoding UTF8
 
           @'
+          PokeDinner / Eglantine Switch 2 performance controls
+          ====================================================
+          Normal use: leave these variables UNSET. The optimized behavior is the default.
+
+          EDEN_NX2_SPLIT=0
+            Disable split GPU front/back threads. Default is mode 2 when the runtime safety
+            conditions allow it; mode 1 keeps macros on the back thread.
+
+          EDEN_NX2_MME_JIT=0
+            Disable the x86-64 Turing MME JIT and fall back to memo/interpreter execution.
+
+          EDEN_NX2_BUFFER_DOWNLOADS=1
+            Re-enable per-fence GPU-written buffer downloads. This is a correctness/debug fallback;
+            Switch 2 native-tiled memory normally leaves them off for performance.
+
+          EDEN_NX2_FENCE_BATCH=0
+            Disable batching of already-signaled fences.
+
+          EDEN_NX2_SKIP_SAME=0
+            Disable same-value state-register write elimination.
+
+          EDEN_NX2_INLINE_DEFER=0
+            Disable deferred inline invalidation.
+
+          Additional preserved donor optimizations include empty-fence skipping, per-thread device
+          translation caches, stack macro parameters, CNTPCT pause mitigation, reduced Vulkan worker
+          wakeups, macro-memo compaction, FastHash/RangeSet fast paths, Switch 2 buffer-only garbage
+          collection, native-compute direct register writes, async-present scheduler safety, and
+          GPU-split session reset.
+          '@ | Set-Content -Path "$bin\POKEDINNER_PERFORMANCE.txt" -Encoding UTF8
+
+          @'
           NS2 source: Djihads80/Eglantine
           Workflow bootstrap commit: f362528c0447c491bfe00c0bdd5d8c245396a24c
           Effective build base: 01effa81ab0e151f8cfd674bf4da952d24645943 (nx2-experimental sparse/ASTC merge)
           Integration: Eglantine broad NS2 platform/GPU support + sebbydaman/mirror shader improvements.
+          PokeDinner performance parity: validated before compilation; GPU split, MME JIT, fence/buffer/inline hot paths, worker scheduling, buffer collector, FastHash/RangeSet, macro memo, translation-cache safety, async-present safety, and split session reset are preserved.
           Preserved improvements: bindless 2D/cube TEX, extended TXQ, generalized BRX/BRXU, native geometry OUT, validated geometry stage admission.
           Positive native shader cache: enabled with exact-source verification (4096 entries).
           Eglantine negative shader cache and ARMv8.1 LSE atomic support: preserved.
