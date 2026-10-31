@@ -28,7 +28,12 @@ if (-not $text.Contains($marker)) {
         $text = Replace-Once $text '#include <cstring>' "#include <cstring>`n#include <cstdlib>" 'cstdlib include'
     }
     if (-not $text.Contains('#include "video_core/nx2.h"')) {
-        $text = Replace-Once $text '#include "video_core/gpu.h"' "#include \"video_core/gpu.h\"`n#include \"video_core/nx2.h\"" 'NX2 include'
+        $oldInclude = '#include "video_core/gpu.h"'
+        $newInclude = @'
+#include "video_core/gpu.h"
+#include "video_core/nx2.h"
+'@
+        $text = Replace-Once $text $oldInclude $newInclude.TrimEnd("`r", "`n") 'NX2 include'
     }
 
     $anchor = @'
