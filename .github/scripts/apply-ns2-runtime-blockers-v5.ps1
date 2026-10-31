@@ -98,9 +98,10 @@ foreach ($needle in @(
     if (-not $check.Contains($needle)) { throw "Runtime-v5 sparse-depth regression: missing $needle" }
 }
 
-# Keep the join guard intact. If a GPU-modified image reaches this path for some other reason,
-# silently deleting it is still data loss and should remain visible during development.
-if (-not $check.Contains('if (True(overlap.flags & ImageFlagBits::GpuModified)) {')) {
+# Keep the generic join guard intact in the texture-cache core. If a GPU-modified image reaches
+# this path for some other reason, silently deleting it is still data loss and should stay visible.
+$textureCacheCore = Read-Lf 'src/video_core/texture_cache/texture_cache.h'
+if (-not $textureCacheCore.Contains('if (True(overlap.flags & ImageFlagBits::GpuModified)) {')) {
     throw 'Runtime-v5 regression: JoinImages GPU-modified data-loss guard disappeared'
 }
 
