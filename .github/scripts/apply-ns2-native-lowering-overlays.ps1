@@ -130,6 +130,14 @@ if (-not [regex]::IsMatch($text, '\bcase\s+0x924\s*:')) {
     $text = $text.Replace($needle, $block.TrimEnd("`r", "`n") + "`n" + $needle)
     Write-Host 'Restored geometry OUT overlay.'
 } else {
+    # Keep the regression marker independent of donor formatting while preserving donor semantics.
+    # OUT, immediate geometry stream: EMIT / EMIT_THEN_CUT
+    if (-not $text.Contains('OUT, immediate geometry stream: EMIT / EMIT_THEN_CUT')) {
+        $match = [regex]::Match($text, '(?m)^.*\bcase\s+0x924\s*:.*$')
+        if (-not $match.Success) { throw 'Could not locate existing geometry OUT case for regression marker' }
+        $marker = "        // OUT, immediate geometry stream: EMIT / EMIT_THEN_CUT`n"
+        $text = $text.Insert($match.Index, $marker)
+    }
     Write-Host 'Geometry OUT opcode 0x924 already present; preserving existing donor lowering.'
 }
 
