@@ -35,3 +35,7 @@ foreach ($needle in @(
 }
 
 Write-Host 'Resolved #74 indexed stage-payload reserved-GPR boundary without removing runtime-v3 semantics.'
+
+# Once the #74 payload/RET/TXQ fixes are applied, add the next proven native ISA operation.
+$runtimeV4Script = Join-Path $PSScriptRoot 'apply-ns2-runtime-blockers-v4.ps1'
+& $runtimeV4Script
