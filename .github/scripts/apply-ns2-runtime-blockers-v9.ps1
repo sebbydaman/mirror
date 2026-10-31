@@ -92,9 +92,59 @@ if (-not $spirv.Contains('case Stage::Task:')) {
     Write-Utf8 $spirvPath $spirv
 }
 
+# The legacy NVN driver-buffer tables below have descriptor bases only for the original
+# Vertex/Tessellation/Geometry/Fragment/Compute stages. Task/Mesh do not own entries in those
+# tables yet. Handle the new enum values explicitly so /we4062 remains useful, but fall through
+# to the existing InvalidArgument instead of guessing a descriptor base and risking corruption.
+$collectPath = 'src/shader_recompiler/ir_opt/collect_shader_info_pass.cpp'
+$collect = Read-Lf $collectPath
+if (-not $collect.Contains('case Stage::Task: // Task/Mesh have no legacy NVN buffer base.')) {
+    $old = @'
+        case Stage::Compute:
+            return 0x310u;
+        }
+        throw InvalidArgument("Invalid stage {}", program.stage);
+'@
+    $new = @'
+        case Stage::Compute:
+            return 0x310u;
+        case Stage::Task: // Task/Mesh have no legacy NVN buffer base.
+        case Stage::Mesh:
+            break;
+        }
+        throw InvalidArgument("Invalid stage {}", program.stage);
+'@
+    $collect = Replace-Once $collect $old $new 'CollectShaderInfo Task/Mesh exhaustive stage handling'
+    Write-Utf8 $collectPath $collect
+}
+
+$translatePath = 'src/shader_recompiler/frontend/maxwell/translate_program.cpp'
+$translate = Read-Lf $translatePath
+if (-not $translate.Contains('case Stage::Task: // Task/Mesh have no legacy NVN storage-buffer base.')) {
+    $old = @'
+        case Stage::Compute:
+            return 0x310u;
+        }
+        throw InvalidArgument("Invalid stage {}", program.stage);
+'@
+    $new = @'
+        case Stage::Compute:
+            return 0x310u;
+        case Stage::Task: // Task/Mesh have no legacy NVN storage-buffer base.
+        case Stage::Mesh:
+            break;
+        }
+        throw InvalidArgument("Invalid stage {}", program.stage);
+'@
+    $translate = Replace-Once $translate $old $new 'AddNVNStorageBuffers Task/Mesh exhaustive stage handling'
+    Write-Utf8 $translatePath $translate
+}
+
 $stageCheck = Read-Lf $stagePath
 $vkCheck = Read-Lf $vkPath
 $spirvCheck = Read-Lf $spirvPath
+$collectCheck = Read-Lf $collectPath
+$translateCheck = Read-Lf $translatePath
 foreach ($needle in @(
     '    Task,',
     '    Mesh,',
@@ -119,6 +169,20 @@ foreach ($needle in @(
 )) {
     if (-not $spirvCheck.Contains($needle)) { throw "Runtime-v9 SPIR-V stage-name regression: missing $needle" }
 }
+foreach ($needle in @(
+    'case Stage::Task: // Task/Mesh have no legacy NVN buffer base.',
+    'case Stage::Mesh:',
+    'throw InvalidArgument("Invalid stage {}", program.stage);'
+)) {
+    if (-not $collectCheck.Contains($needle)) { throw "Runtime-v9 shader-info exhaustive-stage regression: missing $needle" }
+}
+foreach ($needle in @(
+    'case Stage::Task: // Task/Mesh have no legacy NVN storage-buffer base.',
+    'case Stage::Mesh:',
+    'throw InvalidArgument("Invalid stage {}", program.stage);'
+)) {
+    if (-not $translateCheck.Contains($needle)) { throw "Runtime-v9 translate-program exhaustive-stage regression: missing $needle" }
+}
 
-Write-Host 'Added isolated Task/Mesh shader identities, Vulkan mapping, and SPIR-V stage names; legacy stage indexing remains unchanged.'
-git diff -- $stagePath $vkPath $spirvPath
+Write-Host 'Added isolated Task/Mesh identities, Vulkan/SPIR-V mappings, and exhaustive legacy-stage guards; legacy stage indexing remains unchanged.'
+git diff -- $stagePath $vkPath $spirvPath $collectPath $translatePath
