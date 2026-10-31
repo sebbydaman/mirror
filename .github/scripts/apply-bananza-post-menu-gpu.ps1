@@ -101,6 +101,13 @@ $deviceMemoryScript = Join-Path $PSScriptRoot "apply-eglantine-pr48-device-memor
 $batchAnchorScript = Join-Path $PSScriptRoot "prepare-ns2-big-batch-anchors.ps1"
 & $batchAnchorScript
 
+# PokeDinner 2.0 uses selective QueueDownload() in MarkWrittenBuffer. Seed PR52's GPU-written
+# page-history marker on that current source shape before the legacy combined patch runs; the
+# combined patch then adds the tracker declarations/session reset/snapshot machinery and skips its
+# obsolete inline-download anchor without undoing selective copyback.
+$pr52PrepareScript = Join-Path $PSScriptRoot "prepare-pr52-selective-copyback.ps1"
+& $pr52PrepareScript
+
 # Post-#71 generalized batch: PR51 deferred instancing, combined PR52+PR28 command coherency,
 # Bananza 0x224/0x234 semantics, and the newer Vulkan image-view safety fix.
 $generalCompatScript = Join-Path $PSScriptRoot "apply-ns2-general-compat-batch-v2.ps1"
