@@ -16,6 +16,128 @@ if (git status --porcelain) {
 $pokedinnerV2Script = Join-Path $PSScriptRoot "apply-pokedinner-v2-batch.ps1"
 & $pokedinnerV2Script
 
+# PokeDinner's async-translation/reuse commits assume bebdff8c ("lower each native program once"),
+# which predates the curated 31-commit batch. Eglantine 01effa does not have that prerequisite.
+# The later c404 conflict resolution already restores the donor's LoweredNativeCode environment
+# machinery, so layer the remaining cache/pipeline pieces here instead of cherry-picking the old
+# commit wholesale over our geometry-stage edits.
+function Read-NativeReuseFile([string]$Path) {
+    if (-not (Test-Path $Path)) { throw "Missing PokeDinner native-reuse prerequisite file: $Path" }
+    return (Get-Content $Path -Raw).Replace("`r`n", "`n")
+}
+function Write-NativeReuseFile([string]$Path, [string]$Text) {
+    Set-Content -Path $Path -Value $Text -Encoding utf8 -NoNewline
+}
+
+$environmentHeaderPath = 'src/video_core/shader_environment.h'
+$environmentHeader = Read-NativeReuseFile $environmentHeaderPath
+foreach ($needle in @(
+    'struct LoweredNativeCode {',
+    'LoweredNative() const noexcept',
+    'std::shared_ptr<const LoweredNativeCode> lowered_native;',
+    'std::shared_ptr<const LoweredNativeCode> lowered_native_ = {}'
+)) {
+    if (-not $environmentHeader.Contains($needle)) {
+        throw "PokeDinner native-reuse prerequisite missing environment support: $needle"
+    }
+}
+
+$shaderCacheHeaderPath = 'src/video_core/shader_cache.h'
+$shaderCacheHeader = Read-NativeReuseFile $shaderCacheHeaderPath
+if (-not $shaderCacheHeader.Contains('std::shared_ptr<const LoweredNativeCode> lowered_native;')) {
+    $old = @'
+struct ShaderInfo {
+    u64 unique_hash{};
+    size_t size_bytes{};
+};
+'@
+    $new = @'
+struct ShaderInfo {
+    u64 unique_hash{};
+    size_t size_bytes{};
+    /// Lowered code of a native program, reused when its pipelines are built.
+    std::shared_ptr<const LoweredNativeCode> lowered_native;
+};
+'@
+    $old = $old.TrimEnd("`r", "`n")
+    $new = $new.TrimEnd("`r", "`n")
+    if (-not $shaderCacheHeader.Contains($old)) {
+        throw 'Could not locate ShaderInfo for PokeDinner native-lowering reuse prerequisite'
+    }
+    $shaderCacheHeader = $shaderCacheHeader.Replace($old, $new)
+    Write-NativeReuseFile $shaderCacheHeaderPath $shaderCacheHeader
+}
+
+$shaderCachePath = 'src/video_core/shader_cache.cpp'
+$shaderCache = Read-NativeReuseFile $shaderCachePath
+if (-not $shaderCache.Contains('shader_infos[index]->lowered_native')) {
+    $old = '        env = GraphicsEnvironment{*maxwell3d, *gpu_memory, program, address, start_address};'
+    $new = @'
+        env = GraphicsEnvironment{*maxwell3d, *gpu_memory, program, address, start_address,
+                                  shader_infos[index]->lowered_native};
+'@
+    $new = $new.TrimEnd("`r", "`n")
+    if (-not $shaderCache.Contains($old)) {
+        throw 'Could not locate graphics environment construction for PokeDinner native reuse'
+    }
+    $shaderCache = $shaderCache.Replace($old, $new)
+}
+if (-not $shaderCache.Contains('info->lowered_native = env.LoweredNative();')) {
+    $old = '    const size_t size_bytes{env.SourceSizeBytes() ? env.SourceSizeBytes() : info->size_bytes};'
+    $new = "    info->lowered_native = env.LoweredNative();`n$old"
+    if (-not $shaderCache.Contains($old)) {
+        throw 'Could not locate ShaderInfo finalization for PokeDinner native reuse'
+    }
+    $shaderCache = $shaderCache.Replace($old, $new)
+}
+Write-NativeReuseFile $shaderCachePath $shaderCache
+
+$vkPath = 'src/video_core/renderer_vulkan/vk_pipeline_cache.cpp'
+$vk = Read-NativeReuseFile $vkPath
+if (-not $vk.Contains('shader->lowered_native};')) {
+    $old = '    ComputeEnvironment env{*kepler_compute, *gpu_memory, program_base, qmd.program_start};'
+    $new = @'
+    ComputeEnvironment env{*kepler_compute, *gpu_memory, program_base, qmd.program_start,
+                           shader->lowered_native};
+'@
+    $new = $new.TrimEnd("`r", "`n")
+    if (-not $vk.Contains($old)) {
+        throw 'Could not locate Vulkan compute environment for PokeDinner native reuse'
+    }
+    $vk = $vk.Replace($old, $new)
+    Write-NativeReuseFile $vkPath $vk
+}
+
+$glPath = 'src/video_core/renderer_opengl/gl_shader_cache.cpp'
+$gl = Read-NativeReuseFile $glPath
+if (-not $gl.Contains('shader->lowered_native};')) {
+    $old = '    ComputeEnvironment env{*kepler_compute, *gpu_memory, program_base, qmd.program_start};'
+    $new = @'
+    ComputeEnvironment env{*kepler_compute, *gpu_memory, program_base, qmd.program_start,
+                           shader->lowered_native};
+'@
+    $new = $new.TrimEnd("`r", "`n")
+    if (-not $gl.Contains($old)) {
+        throw 'Could not locate OpenGL compute environment for PokeDinner native reuse'
+    }
+    $gl = $gl.Replace($old, $new)
+    Write-NativeReuseFile $glPath $gl
+}
+
+$reuseChecks = @(
+    @($shaderCacheHeaderPath, 'std::shared_ptr<const LoweredNativeCode> lowered_native;'),
+    @($shaderCachePath, 'shader_infos[index]->lowered_native'),
+    @($shaderCachePath, 'info->lowered_native = env.LoweredNative();'),
+    @($vkPath, 'shader->lowered_native};'),
+    @($glPath, 'shader->lowered_native};')
+)
+foreach ($check in $reuseChecks) {
+    if (-not (Read-NativeReuseFile $check[0]).Contains($check[1])) {
+        throw "PokeDinner native-lowering reuse regression: missing $($check[1]) in $($check[0])"
+    }
+}
+Write-Host 'Restored PokeDinner pre-batch native-lowering reuse prerequisite (bebdff8c semantics).'
+
 $path = "src/video_core/shader_environment.cpp"
 $text = Get-Content $path -Raw
 
@@ -163,4 +285,4 @@ if (-not $diagnosticUpgraded) {
 
 Set-Content -Path $path -Value $text -Encoding utf8 -NoNewline
 Write-Host "Enabled collision-safe positive native shader lowering cache."
-git diff -- src/video_core/shader_environment.cpp
+git diff -- src/video_core/shader_environment.cpp src/video_core/shader_cache.h src/video_core/shader_cache.cpp src/video_core/renderer_vulkan/vk_pipeline_cache.cpp src/video_core/renderer_opengl/gl_shader_cache.cpp
