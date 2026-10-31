@@ -1,0 +1,61 @@
+name: Capture Eden NS2 Integrated Baseline
+
+on:
+  push:
+    branches:
+      - ns2-pokopia
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  capture-integrated-source:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - name: Checkout build automation
+        uses: actions/checkout@v5
+        with:
+          path: automation
+          fetch-depth: 1
+
+      - name: Checkout Eglantine NS2 source
+        uses: actions/checkout@v5
+        with:
+          repository: Djihads80/Eglantine
+          ref: f362528c0447c491bfe00c0bdd5d8c245396a24c
+          path: eden
+          fetch-depth: 1
+
+      - name: Apply proven NS2 integration stack
+        shell: pwsh
+        working-directory: eden
+        run: |
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-integration.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-positive-shader-cache.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-bananza-generic-overlap.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-draw-state-cache.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-nso-loader.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-nx2-memory-layout.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-bananza-post-menu-gpu.ps1"
+
+      - name: Validate proven regression surface
+        shell: pwsh
+        working-directory: eden
+        run: |
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-ns2-regressions.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-pokedinner-performance.ps1"
+
+      - name: Capture exact integrated source state
+        shell: pwsh
+        working-directory: eden
+        run: '& "$env:GITHUB_WORKSPACE\automation\.github\scripts\capture-ns2-baseline.ps1"'
+
+      - name: Upload integrated baseline capture
+        uses: actions/upload-artifact@v6
+        with:
+          name: Eden-NS2-Integrated-Baseline-Capture
+          path: eden/baseline-capture/**
+          if-no-files-found: error
+          retention-days: 30
