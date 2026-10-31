@@ -59,6 +59,47 @@ $commits = @(
 
 foreach ($commit in $commits) {
     Write-Host "Applying PokeDinner 2.0 commit $commit"
+
+    # f285120 overlaps Eglantine's newer sparse/per-layer ASTC util.cpp. The donor change itself
+    # is small and independent, so port the three semantic edits directly instead of accepting
+    # either side of a whole-file cherry-pick conflict. This preserves both the Eglantine ASTC
+    # work and PokeDinner's native-tiling view-size correctness.
+    if ($commit -eq 'f2851204978e2cd66123fef27487fe5718f587fa') {
+        $utilPath = 'src/video_core/texture_cache/util.cpp'
+        $utilText = Get-Content $utilPath -Raw
+        $includeNeedle = '#include "video_core/texture_cache/formatter.h"'
+        $includeLine = '#include "video_core/texture_cache/image_info.h"'
+        if (-not $utilText.Contains($includeLine)) {
+            if (-not $utilText.Contains($includeNeedle)) { throw 'Could not locate texture-cache image_info include point' }
+            $utilText = $utilText.Replace($includeNeedle, "$includeNeedle`n$includeLine")
+        }
+
+        $oldInfo = 'const ImageInfo info{config};'
+        $newInfo = 'const ImageInfo info{TextureViewHeader(config, gpu_memory.UsesNativeTiling())};'
+        if ($utilText.Contains($oldInfo)) {
+            $utilText = $utilText.Replace($oldInfo, $newInfo)
+        } elseif (-not $utilText.Contains($newInfo)) {
+            throw 'Could not locate IsValidEntry ImageInfo construction for native tiling fix'
+        }
+
+        $oldLayer = 'const u64 segment_begin = u64{layer} * layer_stride + level_offset;'
+        $newLayer = 'const u64 segment_begin = static_cast<u64>(layer) * layer_stride + level_offset;'
+        if ($utilText.Contains($oldLayer)) {
+            $utilText = $utilText.Replace($oldLayer, $newLayer)
+        } elseif (-not $utilText.Contains($newLayer)) {
+            throw 'Could not locate per-layer segment offset cast for native tiling fix'
+        }
+        Set-Content -Path $utilPath -Value $utilText -Encoding utf8 -NoNewline
+
+        $cmakePath = 'src/CMakeLists.txt'
+        $cmakeText = Get-Content $cmakePath -Raw
+        $cmakeText = [regex]::Replace($cmakeText, '(?m)^\s*/we4388.*\r?\n', '')
+        $cmakeText = [regex]::Replace($cmakeText, '(?m)^\s*/we4389.*\r?\n', '')
+        Set-Content -Path $cmakePath -Value $cmakeText -Encoding utf8 -NoNewline
+        Write-Host 'Ported f285120 native-tiling view header semantics over Eglantine sparse/ASTC util.cpp.'
+        continue
+    }
+
     git cherry-pick --no-commit $commit
     if ($LASTEXITCODE -ne 0) {
         $conflicts = @(git diff --name-only --diff-filter=U)
