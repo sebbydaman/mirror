@@ -151,7 +151,14 @@ foreach ($commit in $commits) {
             }
             Set-Content -Path $amperePath -Value $newAmpereText -Encoding utf8 -NoNewline
         }
-        Write-Host 'Ported 2d53aac inverted uniform predicate support without replacing native lowering.'
+
+        # The following donor commits touch the same native-lowering header. Commit the accumulated
+        # shader-reuse/LEA/predicate state now so Git sees a clean base instead of refusing the next
+        # cherry-pick because our semantic port is intentionally uncommitted.
+        git add -A
+        git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'CI checkpoint PokeDinner shader reuse and uniform predicates' --no-verify
+        if ($LASTEXITCODE -ne 0) { throw 'Could not checkpoint shader state after 2d53aac' }
+        Write-Host 'Ported 2d53aac inverted uniform predicate support and checkpointed shader state.'
         continue
     }
 
