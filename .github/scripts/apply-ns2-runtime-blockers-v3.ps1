@@ -39,9 +39,3 @@ Write-Host 'Resolved #74 indexed stage-payload reserved-GPR boundary without rem
 # Once the #74 payload/RET/TXQ fixes are applied, add the next proven native ISA operation.
 $runtimeV4Script = Join-Path $PSScriptRoot 'apply-ns2-runtime-blockers-v4.ps1'
 & $runtimeV4Script
-
-# The workflow compiles a separate Eglantine checkout under eden/, not this automation
-# repository's src/ tree. Keep the shared Stage enum exhaustive there as well, while explicitly
-# rejecting Task/Mesh on GLASM instead of pretending the legacy backend supports those stages.
-$glasmGuardScript = Join-Path $PSScriptRoot 'apply-glasm-task-mesh-guard.ps1'
-& $glasmGuardScript
