@@ -21,9 +21,9 @@ function Replace-Once([string]$Text, [string]$Old, [string]$New, [string]$Label)
 
 $path = 'src/video_core/renderer_vulkan/renderer_vulkan.cpp'
 $text = Read-Lf $path
-$marker = 'Switch 2 program with {} MiB of video memory: ASTC textures are re-compressed to BC3 for this session'
+$policyMarker = 'Settings::values.astc_recompression.SetValue(Settings::AstcRecompression::Bc3);'
 
-if (-not $text.Contains($marker)) {
+if (-not $text.Contains($policyMarker)) {
     if (-not $text.Contains('#include <cstdlib>')) {
         $text = Replace-Once $text '#include <cstring>' "#include <cstring>`n#include <cstdlib>" 'cstdlib include'
     }
@@ -43,11 +43,12 @@ if (-not $text.Contains($marker)) {
     // loop. Keep explicit user BC choices intact; EDEN_NX2_KEEP_ASTC=1 also opts out.
     const char* keep_astc = std::getenv("EDEN_NX2_KEEP_ASTC");
     const bool keep_uncompressed_astc = keep_astc != nullptr && keep_astc[0] == '1';
+    constexpr u64 Nx2UncompressedAstcMinimumVram = 12ULL * 1024ULL * 1024ULL * 1024ULL;
     if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed) &&
         !device.IsOptimalAstcSupported() && !keep_uncompressed_astc &&
         Settings::values.astc_recompression.GetValue() ==
             Settings::AstcRecompression::Uncompressed &&
-        device.GetDeviceLocalMemory() < 12_GiB) {
+        device.GetDeviceLocalMemory() < Nx2UncompressedAstcMinimumVram) {
         LOG_INFO(Render_Vulkan,
                  "Switch 2 program with {} MiB of video memory: ASTC textures are re-compressed "
                  "to BC3 for this session (uncompressed ASTC needs 12 GiB or more). Set "
@@ -67,10 +68,10 @@ foreach ($needle in @(
     '#include "video_core/nx2.h"',
     'Tegra::g_nx2_ampere.load(std::memory_order_relaxed)',
     '!device.IsOptimalAstcSupported()',
-    'device.GetDeviceLocalMemory() < 12_GiB',
+    'constexpr u64 Nx2UncompressedAstcMinimumVram = 12ULL * 1024ULL * 1024ULL * 1024ULL;',
+    'device.GetDeviceLocalMemory() < Nx2UncompressedAstcMinimumVram',
     'EDEN_NX2_KEEP_ASTC',
-    'Settings::values.astc_recompression.SetValue(Settings::AstcRecompression::Bc3);',
-    $marker
+    $policyMarker
 )) {
     if (-not $check.Contains($needle)) { throw "Runtime-v8 ASTC policy regression: missing $needle" }
 }
