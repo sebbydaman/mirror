@@ -36,14 +36,8 @@ if (-not $text.Contains($marker)) {
         $text = Replace-Once $text $oldInclude $newInclude.TrimEnd("`r", "`n") 'NX2 include'
     }
 
-    $anchor = @'
-{
-
-    if (Settings::values.renderer_force_max_clock.GetValue() && device.ShouldBoostClocks()) {
-'@
-    $replacement = @'
-{
-
+    $anchor = '    if (Settings::values.renderer_force_max_clock.GetValue() && device.ShouldBoostClocks()) {'
+    $policy = @'
     // Switch 2 titles can create hundreds of ASTC textures. On sub-12-GiB cards, decoding
     // those to uncompressed RGBA8 can force the texture collector into an eviction/redecode
     // loop. Keep explicit user BC choices intact; EDEN_NX2_KEEP_ASTC=1 also opts out.
@@ -62,9 +56,8 @@ if (-not $text.Contains($marker)) {
         Settings::values.astc_recompression.SetValue(Settings::AstcRecompression::Bc3);
     }
 
-    if (Settings::values.renderer_force_max_clock.GetValue() && device.ShouldBoostClocks()) {
 '@
-    $text = Replace-Once $text $anchor $replacement 'RendererVulkan constructor body'
+    $text = Replace-Once $text $anchor ($policy + $anchor) 'RendererVulkan max-clock anchor'
     Write-Utf8 $path $text
 }
 
