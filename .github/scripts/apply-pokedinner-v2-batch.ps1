@@ -61,9 +61,9 @@ foreach ($commit in $commits) {
     Write-Host "Applying PokeDinner 2.0 commit $commit"
 
     # f285120 overlaps Eglantine's newer sparse/per-layer ASTC util.cpp. The donor change itself
-    # is small and independent, so port the three semantic edits directly instead of accepting
-    # either side of a whole-file cherry-pick conflict. This preserves both the Eglantine ASTC
-    # work and PokeDinner's native-tiling view-size correctness.
+    # is small and independent, so port the semantic edits directly instead of accepting either
+    # side of a whole-file cherry-pick conflict. This preserves both Eglantine ASTC work and
+    # PokeDinner's native-tiling view-size correctness.
     if ($commit -eq 'f2851204978e2cd66123fef27487fe5718f587fa') {
         $utilPath = 'src/video_core/texture_cache/util.cpp'
         $utilText = Get-Content $utilPath -Raw
@@ -82,12 +82,17 @@ foreach ($commit in $commits) {
             throw 'Could not locate IsValidEntry ImageInfo construction for native tiling fix'
         }
 
+        # The donor's final change is only a signed/unsigned-warning cleanup in a loop that
+        # Eglantine's newer ASTC implementation may have rewritten entirely. Apply it when the
+        # exact legacy expression exists; otherwise do not reject an already-divergent ASTC path.
         $oldLayer = 'const u64 segment_begin = u64{layer} * layer_stride + level_offset;'
         $newLayer = 'const u64 segment_begin = static_cast<u64>(layer) * layer_stride + level_offset;'
         if ($utilText.Contains($oldLayer)) {
             $utilText = $utilText.Replace($oldLayer, $newLayer)
-        } elseif (-not $utilText.Contains($newLayer)) {
-            throw 'Could not locate per-layer segment offset cast for native tiling fix'
+        } elseif ($utilText.Contains($newLayer)) {
+            Write-Host 'Per-layer offset cast from f285120 is already present.'
+        } else {
+            Write-Host 'Eglantine ASTC path no longer uses f285120 legacy layer-offset expression; preserving newer implementation.'
         }
         Set-Content -Path $utilPath -Value $utilText -Encoding utf8 -NoNewline
 
