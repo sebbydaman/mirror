@@ -1,18 +1,13 @@
 $ErrorActionPreference = 'Stop'
 
-# PokeDinner 2.0 source batch (release commit 70ecb39ef0).
-# Apply a deliberately curated set of correctness + measured shader-performance changes
-# in one integration pass so CI validates them together instead of spending one long Windows
-# build per tiny upstream fix. FSR3/frame-generation is intentionally excluded from this batch:
-# it is a large presentation feature and should not be mixed with core emulation correctness.
-
+# PokeDinner 2.0 source batch (release commit 70ecb39ef0). Keep the large correctness/performance
+# group together so one expensive Windows compile validates the whole runtime set. FSR3/frame-gen
+# remains deliberately separate from core emulation correctness.
 $donorUrl = 'https://github.com/Apollo422/PokeDinner.git'
 $donorRemote = 'pokedinner-v2'
-
 if (-not (git remote | Select-String -SimpleMatch $donorRemote)) {
     git remote add $donorRemote $donorUrl
 }
-
 git fetch --no-tags --depth=96 $donorRemote master
 if ($LASTEXITCODE -ne 0) { throw 'Could not fetch PokeDinner 2.0 donor history' }
 
@@ -53,6 +48,8 @@ $commits = @(
 foreach ($commit in $commits) {
     Write-Host "Applying PokeDinner 2.0 commit $commit"
 
+    # Eglantine's sparse/per-layer ASTC util.cpp diverges from f285120. Port only the donor's
+    # native-tiling semantics instead of choosing one whole-file implementation over the other.
     if ($commit -eq 'f2851204978e2cd66123fef27487fe5718f587fa') {
         $utilPath = 'src/video_core/texture_cache/util.cpp'
         $utilText = Get-Content $utilPath -Raw
@@ -73,10 +70,8 @@ foreach ($commit in $commits) {
         $newLayer = 'const u64 segment_begin = static_cast<u64>(layer) * layer_stride + level_offset;'
         if ($utilText.Contains($oldLayer)) {
             $utilText = $utilText.Replace($oldLayer, $newLayer)
-        } elseif ($utilText.Contains($newLayer)) {
-            Write-Host 'Per-layer offset cast from f285120 is already present.'
-        } else {
-            Write-Host 'Eglantine ASTC path no longer uses f285120 legacy layer-offset expression; preserving newer implementation.'
+        } elseif (-not $utilText.Contains($newLayer)) {
+            Write-Host 'Eglantine ASTC path no longer uses the donor legacy layer-offset expression; preserving newer implementation.'
         }
         Set-Content -Path $utilPath -Value $utilText -Encoding utf8 -NoNewline
         $cmakePath = 'src/CMakeLists.txt'
@@ -84,23 +79,23 @@ foreach ($commit in $commits) {
         $cmakeText = [regex]::Replace($cmakeText, '(?m)^\s*/we4388.*\r?\n', '')
         $cmakeText = [regex]::Replace($cmakeText, '(?m)^\s*/we4389.*\r?\n', '')
         Set-Content -Path $cmakePath -Value $cmakeText -Encoding utf8 -NoNewline
-        Write-Host 'Ported f285120 native-tiling view header semantics over Eglantine sparse/ASTC util.cpp.'
+        Write-Host 'Ported f285120 native-tiling semantics over Eglantine ASTC.'
         continue
     }
 
+    # 01effa already removed the guessed Switch 2 image-size multiplier.
     if ($commit -eq 'ba11b6d3990920c63cca4dbe1b95e2b08cca22bd') {
-        $gsvPath = 'src/core/hle/service/nx2_gsv.h'
-        $gsvText = Get-Content $gsvPath -Raw
+        $gsvText = Get-Content 'src/core/hle/service/nx2_gsv.h' -Raw
         if (-not $gsvText.Contains('layout.size *= u64{preference[6]} * preference[7];')) {
-            Write-Host 'ba11b6d semantics already present: guessed NX2 image-size multiplier is absent.'
+            Write-Host 'ba11b6d semantics already present on Eglantine.'
             continue
         }
     }
 
-    # PipelineStats overlaps our shader_environment changes. First checkpoint every preceding
-    # no-commit donor change so Git's conflict "ours" is the actual async/shared-module state,
-    # not the old pre-batch HEAD. Then retain that modern integrated side and splice only the
-    # instrumentation hooks while allowing all non-conflicting c404 Vulkan files through.
+    # PipelineStats overlaps our geometry-enabled shader environment. Commit all preceding
+    # no-commit donor work first so the conflict's "ours" side includes detached environments,
+    # async translation and shared shader modules. Resolve only the two expected files and splice
+    # the instrumentation by symbol/position, not whitespace-sensitive regexes.
     if ($commit -eq 'c404060104d2fcc3e4e17bd89c1d964cddf03348') {
         git add -A
         if (git status --porcelain) {
@@ -113,42 +108,52 @@ foreach ($commit in $commits) {
             $conflicts = @(git diff --name-only --diff-filter=U)
             $expected = @('src/video_core/shader_environment.cpp', 'src/video_core/shader_environment.h')
             $unexpected = @($conflicts | Where-Object { $_ -notin $expected })
-            if ($unexpected.Count -gt 0) {
+            if ($unexpected.Count -gt 0 -or $conflicts.Count -eq 0) {
                 git cherry-pick --abort 2>$null
-                throw "Unexpected c404060 pipeline-stats conflicts in: $($unexpected -join ', ')"
+                throw "Unexpected c404060 conflict surface: $($conflicts -join ', ')"
             }
-            if ($conflicts.Count -eq 0) {
-                git cherry-pick --abort 2>$null
-                throw 'c404060 failed without a resolvable shader-environment conflict'
-            }
-
             git checkout --ours -- src/video_core/shader_environment.cpp src/video_core/shader_environment.h
-            if ($LASTEXITCODE -ne 0) { throw 'Could not preserve integrated shader environment while resolving c404060' }
+            if ($LASTEXITCODE -ne 0) { throw 'Could not preserve integrated shader environment for c404060' }
 
             $cppPath = 'src/video_core/shader_environment.cpp'
             $cppText = Get-Content $cppPath -Raw
             $statsInclude = '#include "video_core/renderer_vulkan/pipeline_stats.h"'
             if (-not $cppText.Contains($statsInclude)) {
                 $memoryInclude = '#include "video_core/memory_manager.h"'
-                if (-not $cppText.Contains($memoryInclude)) { throw 'Could not locate shader environment include point for PipelineStats' }
+                if (-not $cppText.Contains($memoryInclude)) { throw 'Could not locate PipelineStats include point' }
                 $cppText = $cppText.Replace($memoryInclude, "$memoryInclude`n$statsInclude")
             }
 
-            $initPattern = '(?s)void GenericEnvironment::InitializeNativeCode\(std::shared_ptr<const LoweredNativeCode> lowered,\s*u32 source_header_size\)\s*\{\s*if \(!lowered\) \{\s*lowered = LowerNativeCode\(source_header_size\);\s*\}'
-            $initReplacement = @'
-void GenericEnvironment::InitializeNativeCode(std::shared_ptr<const LoweredNativeCode> lowered,
-                                              u32 source_header_size, bool is_compute) {
-    if (!lowered) {
+            $fnMarker = 'GenericEnvironment::InitializeNativeCode'
+            $fnStart = $cppText.IndexOf($fnMarker)
+            if ($fnStart -lt 0) { throw 'InitializeNativeCode symbol missing after pre-c404 checkpoint' }
+            $fnOpen = $cppText.IndexOf('{', $fnStart)
+            if ($fnOpen -lt 0) { throw 'InitializeNativeCode opening brace missing' }
+            $signature = $cppText.Substring($fnStart, $fnOpen - $fnStart)
+            if (-not $signature.Contains('bool is_compute')) {
+                $sigClose = $cppText.LastIndexOf(')', $fnOpen)
+                if ($sigClose -lt $fnStart) { throw 'InitializeNativeCode signature terminator missing' }
+                $cppText = $cppText.Insert($sigClose, ', bool is_compute')
+                $fnOpen = $cppText.IndexOf('{', $fnStart)
+            }
+
+            $lowerNeedle = 'lowered = LowerNativeCode(source_header_size);'
+            $lowerPos = $cppText.IndexOf($lowerNeedle, $fnOpen)
+            if ($lowerPos -lt 0) { throw 'InitializeNativeCode lowering call missing' }
+            $timerNeedle = 'Vulkan::PipelineStats::ScopedTimer timer'
+            $nextFunction = $cppText.IndexOf('std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode', $fnOpen)
+            if ($nextFunction -lt 0) { $nextFunction = $cppText.Length }
+            if ($cppText.IndexOf($timerNeedle, $fnOpen, $nextFunction - $fnOpen) -lt 0) {
+                $lineStart = $cppText.LastIndexOf("`n", $lowerPos)
+                if ($lineStart -lt 0) { $lineStart = 0 } else { ++$lineStart }
+                $timerBlock = @'
         const Vulkan::PipelineStats::ScopedTimer timer{
             is_compute ? Vulkan::PipelineStats::Kind::Compute
                        : Vulkan::PipelineStats::Kind::Graphics,
             Vulkan::PipelineStats::Stage::Lower};
-        lowered = LowerNativeCode(source_header_size);
-    }
 '@
-            $newCpp = [regex]::Replace($cppText, $initPattern, $initReplacement.TrimEnd("`r", "`n"))
-            if ($newCpp -eq $cppText) { throw 'Could not splice PipelineStats native-lowering timer into shader_environment.cpp' }
-            $cppText = $newCpp
+                $cppText = $cppText.Insert($lineStart, $timerBlock.TrimEnd("`r", "`n") + "`n")
+            }
 
             $computeOld = 'InitializeNativeCode(std::move(lowered_native_), 0);'
             $computeNew = 'InitializeNativeCode(std::move(lowered_native_), 0, true);'
@@ -161,16 +166,23 @@ void GenericEnvironment::InitializeNativeCode(std::shared_ptr<const LoweredNativ
 
             $headerPath = 'src/video_core/shader_environment.h'
             $headerText = Get-Content $headerPath -Raw
-            $headerPattern = 'void InitializeNativeCode\(std::shared_ptr<const LoweredNativeCode> lowered,\s*u32 source_header_size = 128\);'
-            $headerReplacement = "void InitializeNativeCode(std::shared_ptr<const LoweredNativeCode> lowered,`n                              u32 source_header_size = 128, bool is_compute = false);"
-            $newHeader = [regex]::Replace($headerText, $headerPattern, $headerReplacement)
-            if ($newHeader -eq $headerText) { throw 'Could not splice PipelineStats signature into shader_environment.h' }
-            Set-Content -Path $headerPath -Value $newHeader -Encoding utf8 -NoNewline
+            $headerMarker = 'InitializeNativeCode'
+            $headerStart = $headerText.IndexOf($headerMarker)
+            if ($headerStart -lt 0) { throw 'InitializeNativeCode declaration missing' }
+            $headerEnd = $headerText.IndexOf(';', $headerStart)
+            if ($headerEnd -lt 0) { throw 'InitializeNativeCode declaration terminator missing' }
+            $headerDecl = $headerText.Substring($headerStart, $headerEnd - $headerStart)
+            if (-not $headerDecl.Contains('bool is_compute')) {
+                $headerClose = $headerText.LastIndexOf(')', $headerEnd)
+                if ($headerClose -lt $headerStart) { throw 'InitializeNativeCode declaration closing parenthesis missing' }
+                $headerText = $headerText.Insert($headerClose, ', bool is_compute = false')
+            }
+            Set-Content -Path $headerPath -Value $headerText -Encoding utf8 -NoNewline
 
             git add -A
             git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'CI checkpoint PokeDinner pipeline stats' --no-verify
-            if ($LASTEXITCODE -ne 0) { throw 'Could not finalize c404060 PipelineStats conflict resolution' }
-            Write-Host 'Integrated c404060 PipelineStats while preserving native geometry and async shader state.'
+            if ($LASTEXITCODE -ne 0) { throw 'Could not finalize c404060 PipelineStats merge' }
+            Write-Host 'Integrated PipelineStats over geometry + async shader state.'
         }
         continue
     }
@@ -201,5 +213,4 @@ foreach ($path in $checks.Keys) {
         if (-not $text.Contains($needle)) { throw "PokeDinner 2.0 regression: $path missing $needle" }
     }
 }
-
 Write-Host "PokeDinner 2.0 batch applied: $($commits.Count) commits in one runtime integration pass."
