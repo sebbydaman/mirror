@@ -80,7 +80,7 @@ bool DmaPusher::FlushGpuWrittenCommands(GPUVAddr address, size_t size) {
 # GPU-written. GPU-written or resumed entries continue through the existing safe/unsafe wrappers.
 # Locate the read policy by function boundaries instead of matching comments/formatting exactly;
 # PokeDinner has changed this block several times (PBFLUSH, split-thread comments, extra flushes).
-if (-not $dma.Contains('const bool gpu_written =')) {
+if (-not $dma.Contains('const bool gpu_written = FlushGpuWrittenCommands')) {
     $stepStart = $dma.IndexOf('bool DmaPusher::Step() {')
     if ($stepStart -lt 0) { throw 'Could not locate DmaPusher::Step for PR28/PR52 preparation' }
 
@@ -101,8 +101,8 @@ if (-not $dma.Contains('const bool gpu_written =')) {
     }
 
     $newRead = @'
-        const bool gpu_written =
-            FlushGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(CommandHeader));
+        const bool gpu_written = FlushGpuWrittenCommands(
+            dma_state.dma_get, size_t{header.size} * sizeof(CommandHeader));
         const bool has_snapshot =
             command_resume_offset == 0 && !gpu_written &&
             dma_pushbuffer_subindex < command_list.submitted_offsets.size() &&
@@ -137,7 +137,7 @@ if (-not $dma.Contains('const bool gpu_written =')) {
 # compatibility script runs. The header snapshot fields themselves are still added by that script.
 foreach ($needle in @(
     'bool DmaPusher::FlushGpuWrittenCommands(',
-    'const bool gpu_written =',
+    'const bool gpu_written = FlushGpuWrittenCommands',
     'command_list.submitted_offsets',
     'command_list.submitted_words',
     'GuestMemoryFlags::SafeRead',
