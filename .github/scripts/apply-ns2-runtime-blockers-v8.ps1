@@ -77,4 +77,9 @@ foreach ($needle in @(
 }
 
 Write-Host 'Added Switch 2 low-VRAM ASTC policy: sub-12-GiB Vulkan cards use BC3 unless explicitly overridden.'
+
+# Task/Mesh layer B: stage identities and Vulkan flags, deliberately outside legacy indexing.
+$runtimeV9Script = Join-Path $PSScriptRoot 'apply-ns2-runtime-blockers-v9.ps1'
+& $runtimeV9Script
+
 git diff -- $path
