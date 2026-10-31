@@ -105,8 +105,11 @@ if (-not $text.Contains('case 0x949: case 0x958: { // Captured BRX / BRXU with n
     Write-Host 'Restored generalized BRX/BRXU overlay.'
 }
 
-# Geometry OUT immediate stream form: EMIT / EMIT_THEN_CUT.
-if (-not $text.Contains('case 0x924: { // OUT, immediate geometry stream')) {
+# Geometry OUT immediate stream form: EMIT / EMIT_THEN_CUT. Newer donor lowerings may already
+# provide opcode 0x924 with a different comment/source shape; opcode identity, not comment text,
+# is the idempotence boundary. Preserve the donor implementation rather than adding a duplicate
+# switch label, while still supplying our validated lowering when the opcode is genuinely absent.
+if (-not [regex]::IsMatch($text, '(?m)^\s*case 0x924:\s*\{')) {
     $needle = '        case 0x949: case 0x958: { // Captured BRX / BRXU with native-PC jump-table values'
     if (-not $text.Contains($needle)) { throw 'Could not locate geometry OUT overlay insertion point' }
     $block = @'
@@ -126,6 +129,8 @@ if (-not $text.Contains('case 0x924: { // OUT, immediate geometry stream')) {
 '@
     $text = $text.Replace($needle, $block.TrimEnd("`r", "`n") + "`n" + $needle)
     Write-Host 'Restored geometry OUT overlay.'
+} else {
+    Write-Host 'Geometry OUT opcode 0x924 already present; preserving existing donor lowering.'
 }
 
 Set-Content -Path $path -Value $text -Encoding utf8 -NoNewline
