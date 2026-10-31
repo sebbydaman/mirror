@@ -6,7 +6,8 @@ $ErrorActionPreference = 'Stop'
 # - allow scalar TXQ results in odd GPRs
 # - lower the observed task/mesh ISBERD/ISBEWR indexed attribute payload forms
 #   through Eden's existing Maxwell ALD/AST IR path.
-# Unknown opcode 0x59f remains rejected until its semantics are proven.
+# Opcode 0x59f SURED may already be present from the newer validated compatibility stack;
+# runtime-v3 must preserve it rather than reassert the older "unknown opcode" assumption.
 
 function Read-Lf([string]$Path) {
     if (-not (Test-Path $Path)) { throw "Missing required source file: $Path" }
@@ -180,7 +181,8 @@ if ($attr.Contains('throw NotImplementedException("Indexed store");')) {
 }
 Write-Utf8 $attrPath $attr
 
-# Regression markers for the exact #73 failures. Do not allow 0x59f through here.
+# Regression markers for the exact #73 failures. SURED 0x59f is intentionally not rejected here:
+# the newer validated compatibility path may already contain its proven lowering before v4 runs.
 $ampereCheck = Read-Lf $amperePath
 $attrCheck = Read-Lf $attrPath
 foreach ($needle in @(
@@ -198,7 +200,7 @@ if ($attrCheck.Contains('throw NotImplementedException("Indexed store");')) {
     throw 'Runtime-v3 regression: indexed AST is still rejected'
 }
 if ($ampereCheck.Contains('case 0x59f:')) {
-    throw 'Runtime-v3 regression: unknown 0x59f must remain rejected'
+    Write-Host 'Runtime-v3 preserving already-proven 0x59f SURED lowering from newer compatibility stack.'
 }
 
 Write-Host 'Applied post-#73 runtime shader fixes: RET, S2R SR29, scalar TXQ, ISBERD/ISBEWR indexed payloads.'
