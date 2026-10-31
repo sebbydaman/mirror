@@ -25,8 +25,8 @@ $text = Read-Lf $path
 $eligibilityMarker = 'const bool sparse_layer_format ='
 
 if (-not $text.Contains($eligibilityMarker)) {
-    # Patch small semantic anchors rather than an entire formatted if-block. Earlier scripts can
-    # normalize whitespace/line endings without changing this condition's meaning.
+    # Patch small semantic anchors rather than entire formatted blocks. Earlier scripts can
+    # normalize whitespace/line endings without changing these conditions' meaning.
     $usesSparseSignature =
         '[[nodiscard]] bool UsesSparseLayers(const Device& device, const ImageInfo& info, GPUVAddr gpu_addr) {'
     $newUsesSparseSignature = @'
@@ -42,19 +42,27 @@ if (-not $text.Contains($eligibilityMarker)) {
         'VideoCore::Surface::GetFormatType(info.format) != VideoCore::Surface::SurfaceType::ColorTexture) {'
     $text = Replace-Once $text $colorOnlyCondition '!sparse_layer_format) {' 'SparseLayers color-only condition'
 
-    $requirementsLambda = @'
-    const auto it = std::ranges::find_if(requirements, [](const auto& r) {
-        return (r.formatProperties.aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) != 0;
-    });
-'@
-    $aspectLambda = @'
-    const VkImageAspectFlags sparse_aspect = ImageAspectMask(info.format);
-    const auto it = std::ranges::find_if(requirements, [sparse_aspect](const auto& r) {
-        return (r.formatProperties.flags & VK_SPARSE_IMAGE_FORMAT_METADATA_BIT) == 0 &&
-               (r.formatProperties.aspectMask & sparse_aspect) != 0;
-    });
-'@
-    $text = Replace-Once $text $requirementsLambda $aspectLambda 'SparseLayers aspect requirement'
+    # Scope the sparse-requirement edits to InitSparseLayers so identical lambdas elsewhere cannot
+    # become accidental anchors.
+    $initStart = $text.IndexOf('bool Image::InitSparseLayers() {')
+    if ($initStart -lt 0) { throw 'Could not locate InitSparseLayers implementation' }
+    $initEnd = $text.IndexOf('std::vector<u32> Image::BindLayers(std::span<const u32> layers) {', $initStart)
+    if ($initEnd -lt 0) { throw 'Could not locate end of InitSparseLayers implementation' }
+    $init = $text.Substring($initStart, $initEnd - $initStart)
+
+    $requirementsLine = '    const auto requirements = device.GetLogical().GetImageSparseMemoryRequirements(handle);'
+    $requirementsWithAspect = $requirementsLine + "`n" +
+        '    const VkImageAspectFlags sparse_aspect = ImageAspectMask(info.format);'
+    $init = Replace-Once $init $requirementsLine $requirementsWithAspect 'InitSparseLayers requirements line'
+    $init = Replace-Once $init 'std::ranges::find_if(requirements, [](const auto& r) {' `
+        'std::ranges::find_if(requirements, [sparse_aspect](const auto& r) {' `
+        'InitSparseLayers requirement lambda capture'
+    $oldAspectPredicate = '        return (r.formatProperties.aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) != 0;'
+    $newAspectPredicate =
+        '        return (r.formatProperties.flags & VK_SPARSE_IMAGE_FORMAT_METADATA_BIT) == 0 &&' + "`n" +
+        '               (r.formatProperties.aspectMask & sparse_aspect) != 0;'
+    $init = Replace-Once $init $oldAspectPredicate $newAspectPredicate 'InitSparseLayers aspect predicate'
+    $text = $text.Substring(0, $initStart) + $init + $text.Substring($initEnd)
 
     $bindStart = $text.IndexOf('std::vector<u32> Image::BindLayers(std::span<const u32> layers) {')
     if ($bindStart -lt 0) { throw 'Could not locate BindLayers implementation' }
@@ -81,7 +89,9 @@ foreach ($needle in @(
     'info.resources.layers <= 1 || info.num_samples != 1 ||',
     '!sparse_layer_format) {',
     'const VkImageAspectFlags sparse_aspect = ImageAspectMask(info.format);',
+    'std::ranges::find_if(requirements, [sparse_aspect](const auto& r) {',
     'VK_SPARSE_IMAGE_FORMAT_METADATA_BIT',
+    '(r.formatProperties.aspectMask & sparse_aspect) != 0;',
     '.aspectMask = s.sparse.formatProperties.aspectMask,',
     'std::vector<u32> Image::BindLayers(std::span<const u32> layers)'
 )) {
