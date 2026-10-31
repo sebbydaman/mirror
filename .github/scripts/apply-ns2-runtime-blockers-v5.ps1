@@ -105,3 +105,8 @@ if (-not $textureCacheCore.Contains('if (True(overlap.flags & ImageFlagBits::Gpu
 }
 
 Write-Host 'Generalized sparse-layer backing to depth arrays; first D16 render-target writes now have resident Vulkan memory.'
+
+# #85 runtime logs expose a native program in slot 3 before its instructions can be analyzed.
+# Admit only a matching Tessellation-evaluation SPH, then keep the existing Ampere semantic guards.
+$runtimeV6Script = Join-Path $PSScriptRoot 'apply-ns2-runtime-blockers-v6.ps1'
+& $runtimeV6Script
