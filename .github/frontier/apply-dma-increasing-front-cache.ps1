@@ -5,7 +5,8 @@ $ErrorActionPreference = 'Stop'
 # same subchannel/type/front-macro dispatch checks inside DmaPusher::CallMethod for every word.
 # Cache that decision once per pure Increasing run and call the same existing FrontCallMethod
 # implementation directly for Maxwell3D native Turing and Kepler compute front-macro paths.
-# All other engines/states fall back to CallMethod unchanged.
+# All other engines/states fall back to CallMethod unchanged. Preserve EDEN_NX2_SEM_WATCH by
+# disabling the shortcut while that diagnostic is requested.
 
 function Write-PatchedText([string]$Path, [string]$Text) {
     $normalized = $Text.Replace("`r`n", "`n").TrimEnd("`r", "`n") + "`n"
@@ -55,7 +56,7 @@ if (-not $text.Contains($marker)) {
                 const bool run_profile_enabled = Profile::Enabled();
                 Engines::Maxwell3D* front_run_maxwell = nullptr;
                 Engines::KeplerCompute* front_run_compute = nullptr;
-                if (run_split_active && run_split.FrontMacros()) {
+                if (g_semaphore_watch == 0 && run_split_active && run_split.FrontMacros()) {
                     if (auto* const run_engine = subchannels[dma_state.subchannel];
                         run_engine != nullptr) {
                         const auto run_type = subchannel_type[dma_state.subchannel];
@@ -110,6 +111,7 @@ $final = (Get-Content $path -Raw).Replace("`r`n", "`n")
 foreach ($needle in @(
     'Engines::Maxwell3D* front_run_maxwell = nullptr;',
     'Engines::KeplerCompute* front_run_compute = nullptr;',
+    'g_semaphore_watch == 0 && run_split_active && run_split.FrontMacros()',
     'maxwell3d->GetNativeMacroEngine().native_turing',
     'compute->FrontRunsMacros()',
     'front_run_maxwell->FrontCallMethod(system, run_split, dma_state.method,',
