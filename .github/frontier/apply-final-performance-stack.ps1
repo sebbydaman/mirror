@@ -6,6 +6,7 @@ $ErrorActionPreference = 'Stop'
 # meta-wrapper are applied individually below so they are composed exactly once.
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$experiments = Join-Path (Split-Path $root -Parent) 'experiments'
 $scripts = @(
     'apply-zortos-build31-perf.ps1',
     'apply-zortos-build31-partial-write.ps1',
@@ -23,29 +24,41 @@ $scripts = @(
     'apply-pushbuffer-mapgen-hardening.ps1'
 )
 
-foreach ($script in $scripts) {
-    $path = Join-Path $root $script
-    if (-not (Test-Path $path -PathType Leaf)) {
-        throw "Final NS2 performance stack: missing $path"
+$previousSkipPostBuild31 = $env:EDEN_SKIP_POST_BUILD31_FRONTIER
+$env:EDEN_SKIP_POST_BUILD31_FRONTIER = '1'
+
+try {
+    foreach ($script in $scripts) {
+        $path = Join-Path $root $script
+        if (-not (Test-Path $path -PathType Leaf)) {
+            throw "Final NS2 performance stack: missing $path"
+        }
+
+        Write-Host "[FINAL PERF] Applying $script"
+        try {
+            & $path
+        } catch {
+            throw "Final NS2 performance stack failed in ${script}: $($_.Exception.Message)"
+        }
+        Write-Host "[FINAL PERF] Completed $script"
     }
 
-    Write-Host "[FINAL PERF] Applying $script"
-    try {
-        & $path
-    } catch {
-        throw "Final NS2 performance stack failed in ${script}: $($_.Exception.Message)"
+    # The user log showed three repeated 20-30 second loose-RomFS construction gaps before boot.
+    # Keep this isolated loader optimization outside the older frontier chain but include it in the
+    # final candidate so the same source path is packed once and reused during frontend probing.
+    $romfsMemo = Join-Path $experiments 'apply-loose-romfs-memoization.ps1'
+    if (-not (Test-Path $romfsMemo -PathType Leaf)) {
+        throw "Final NS2 performance stack: missing $romfsMemo"
+    }
+    Write-Host '[FINAL PERF] Applying loose RomFS memoization'
+    & $romfsMemo
+
+    git diff --check
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Final NS2 performance stack introduced diff/whitespace errors'
     }
 
-    # Do not inspect $LASTEXITCODE here. A PowerShell child script may invoke native tools
-    # internally and leave a stale non-zero value even when the script itself completed
-    # successfully. With ErrorActionPreference=Stop, real PowerShell failures propagate via
-    # exceptions; native commands that matter are validated inside each patch script.
-    Write-Host "[FINAL PERF] Completed $script"
+    Write-Host '[PASS] Final NS2 production performance stack applied cleanly exactly once.'
+} finally {
+    $env:EDEN_SKIP_POST_BUILD31_FRONTIER = $previousSkipPostBuild31
 }
-
-git diff --check
-if ($LASTEXITCODE -ne 0) {
-    throw 'Final NS2 performance stack introduced diff/whitespace errors'
-}
-
-Write-Host '[PASS] Final NS2 production performance stack applied cleanly exactly once.'
