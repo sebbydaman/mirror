@@ -19,7 +19,8 @@ function Write-PatchedText([string]$Path, [string]$Text) {
 $profilePath = 'src/video_core/nx2_profile.h'
 $macroPath = 'src/video_core/macro.cpp'
 $bufferPath = 'src/video_core/buffer_cache/buffer_cache.h'
-foreach ($path in @($profilePath, $macroPath, $bufferPath)) {
+$textureProfilePath = 'src/video_core/texture_cache/texture_cache.h'
+foreach ($path in @($profilePath, $macroPath, $bufferPath, $textureProfilePath)) {
     if (-not (Test-Path $path -PathType Leaf)) { throw "NX2 profiler hardening: missing $path" }
 }
 
@@ -37,9 +38,12 @@ inline bool Enabled() {
 '@
     $newProfile = @'
 inline const bool g_enabled = std::getenv("EDEN_NX2_GPU_PROFILE") != nullptr;
-// Per-page MME DMA history is intentionally separate from normal gameplay profiling.
-inline const bool g_track_dma_pages =
-    std::getenv("EDEN_NX2_GPU_PROFILE_PAGES") != nullptr;
+// Per-page MME DMA history is intentionally separate from normal gameplay profiling. Treat an
+// explicit 0 as disabled so the profile launcher can document the switch without enabling it.
+inline const bool g_track_dma_pages = [] {
+    const char* value = std::getenv("EDEN_NX2_GPU_PROFILE_PAGES");
+    return value != nullptr && value[0] != '0';
+}();
 
 inline bool Enabled() {
     return g_enabled;
@@ -55,6 +59,40 @@ inline bool TrackDmaPages() {
         throw 'NX2 profiler hardening: enable anchor changed in nx2_profile.h'
     }
     Write-PatchedText $profilePath ($profile.Replace($oldProfile, $newProfile))
+} else {
+    # Older captures of this hardening treated any present value, including "0", as enabled.
+    $profile = (Get-Content $profilePath -Raw).Replace("`r`n", "`n")
+    $oldPages = @'
+inline const bool g_track_dma_pages =
+    std::getenv("EDEN_NX2_GPU_PROFILE_PAGES") != nullptr;
+'@
+    $oldPages = $oldPages.Replace("`r`n", "`n").TrimEnd("`r", "`n")
+    if ($profile.Contains($oldPages)) {
+        $newPages = @'
+inline const bool g_track_dma_pages = [] {
+    const char* value = std::getenv("EDEN_NX2_GPU_PROFILE_PAGES");
+    return value != nullptr && value[0] != '0';
+}();
+'@
+        Write-PatchedText $profilePath ($profile.Replace(
+            $oldPages, $newPages.Replace("`r`n", "`n").TrimEnd("`r", "`n")))
+    }
+}
+
+# The packaged profile launcher sets EDEN_NX2_TC_LOG=0. Presence-only parsing made that turn the
+# expensive periodic texture-cache inventory/sort on. Keep the debug switch available, but make 0
+# actually mean off so profiling does not manufacture its own CPU load.
+$textureProfile = (Get-Content $textureProfilePath -Raw).Replace("`r`n", "`n")
+$oldTcFlag = 'static const bool log_tc = std::getenv("EDEN_NX2_TC_LOG") != nullptr;'
+if ($textureProfile.Contains($oldTcFlag)) {
+    $newTcFlag = @'
+static const bool log_tc = [] {
+        const char* value = std::getenv("EDEN_NX2_TC_LOG");
+        return value != nullptr && value[0] != '0';
+    }();
+'@
+    Write-PatchedText $textureProfilePath ($textureProfile.Replace(
+        $oldTcFlag, $newTcFlag.Replace("`r`n", "`n").TrimEnd("`r", "`n")))
 }
 
 $macro = Get-Content $macroPath -Raw
@@ -96,9 +134,12 @@ if (-not $buffer.Contains('Nx2Profile::TrackDmaPages()')) {
 }
 
 Require-Text $profilePath 'EDEN_NX2_GPU_PROFILE_PAGES' 'profiler DMA-page history opt-in'
+Require-Text $profilePath 'const char* value = std::getenv("EDEN_NX2_GPU_PROFILE_PAGES");' 'profiler page-history zero-value parsing'
+Require-Text $profilePath "return value != nullptr && value[0] != '0';" 'profiler zero-valued debug switch disable path'
 Require-Text $profilePath 'inline bool TrackDmaPages()' 'profiler DMA-page history gate'
 Require-Text $macroPath 'Nx2Profile::TrackDmaPages()' 'MME DMA page-history gate'
 Require-Text $bufferPath 'Nx2Profile::TrackDmaPages()' 'buffer-download page-history gate'
+Require-Text $textureProfilePath 'const char* value = std::getenv("EDEN_NX2_TC_LOG");' 'texture-cache log zero-value parsing'
 
 # Wael3rd/Eglantine-MKW post-release fix 5fdcbff: guest subgroup width is observable only when a
 # compute shader actually uses warp/subgroup operations. Keep SIMD32 for those shaders, but avoid
@@ -180,5 +221,6 @@ git diff --check
 if ($LASTEXITCODE -ne 0) { throw 'NX2 profiler/MKW subgroup hardening introduced diff errors' }
 
 Write-Host '[PASS] NX2 gameplay profiler keeps per-page DMA history opt-in'
+Write-Host '[PASS] profiler launcher zero-valued debug switches are actually disabled'
 Write-Host '[PASS] MKW non-warp compute pipelines can use the driver-native subgroup size'
 Write-Host 'Targeted PR #142 RAM/stutter regression validation passed.'
