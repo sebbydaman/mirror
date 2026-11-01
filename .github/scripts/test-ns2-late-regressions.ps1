@@ -54,6 +54,14 @@ Require-Text $vkTexture 'bool IsUnwrittenSparse' 'unwritten sparse Vulkan image 
 Require-Text $textureBase 'UnwrittenSparse = 1 << 21' 'unwritten sparse image lifetime flag'
 Require-Text $textureCache 'True(image.flags & ImageFlagBits::UnwrittenSparse)' 'unwritten sparse first-write replacement path'
 
+# Texture-churn performance: unmapped GPU images reuse a stable stand-in address instead of being
+# recreated every lookup, and opaque ASTC uses half-sized BC1 rather than BC3 when recompression is
+# active. These were a large VRAM/collector win on the donor title-1 attract loop.
+Require-Text $textureBase 'The CPU address an image at gpu_addr is keyed by: its backing, or a fixed stand-in.' 'stable unmapped-image stand-in addressing'
+Require-Text $textureCache 'fixed by the GPU address' 'unmapped-image reuse implementation'
+Require-Text $vkTexture 'EDEN_NX2_ASTC_BC1' 'opaque ASTC-to-BC1 policy and rollback switch'
+Require-Text $vkTexture 'IsOpaqueBc1Astc' 'opaque ASTC BC1 Vulkan path'
+
 # Late sparse-memory deadlock fix and precise VRAM accounting.
 Require-Text $gsv 'struct MappedBacking {' 'GPU/guest mapping deadlock separation'
 Require-Text $gsv 'BlockPending = 3' 'sparse backing pending-state arbitration'
