@@ -45,6 +45,71 @@ foreach ($note in 'POKOPIA_CONFIG.txt', 'NX2_PERFORMANCE_NOTES.txt') {
     }
 }
 
+# The MSVC build can be mostly static while still importing ICU and the Visual C++ runtime. The
+# previous package accepted zero DLLs and therefore produced an archive that could compile cleanly
+# yet fail to launch on a clean Windows machine. Stage the directly imported non-system runtime
+# dependencies when they are available in the build/dependency tree or Visual Studio redist tree.
+function Find-RuntimeDependency([string]$name) {
+    $roots = @(
+        (Join-Path (Get-Location) 'build'),
+        (Join-Path (Get-Location) '.cache')
+    )
+    foreach ($root in $roots) {
+        if (Test-Path $root -PathType Container) {
+            $hit = Get-ChildItem $root -Recurse -Filter $name -File -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+            if ($hit) { return $hit.FullName }
+        }
+    }
+
+    foreach ($dir in ($env:PATH -split ';')) {
+        if (-not [string]::IsNullOrWhiteSpace($dir)) {
+            $candidate = Join-Path $dir $name
+            if (Test-Path $candidate -PathType Leaf) { return $candidate }
+        }
+    }
+
+    $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path $vswhere -PathType Leaf) {
+        $vs = & $vswhere -latest -products * -property installationPath
+        if ($vs) {
+            $redist = Join-Path $vs 'VC\Redist\MSVC'
+            if (Test-Path $redist -PathType Container) {
+                $hit = Get-ChildItem $redist -Recurse -Filter $name -File -ErrorAction SilentlyContinue |
+                    Select-Object -First 1
+                if ($hit) { return $hit.FullName }
+            }
+        }
+    }
+    return $null
+}
+
+$portableImports = @(
+    'icuuc.dll',
+    'MSVCP140.dll',
+    'MSVCP140_ATOMIC_WAIT.dll',
+    'MSVCP140_CODECVT_IDS.dll',
+    'MSVCP140_1.dll',
+    'VCRUNTIME140.dll',
+    'VCRUNTIME140_1.dll'
+)
+$missingPortableImports = [System.Collections.Generic.List[string]]::new()
+foreach ($name in $portableImports) {
+    $already = Get-ChildItem $destination -Recurse -Filter $name -File -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($already) { continue }
+    $dependency = Find-RuntimeDependency $name
+    if ($dependency) {
+        Copy-Item $dependency (Join-Path $destination $name) -Force
+        Write-Host "Staged runtime dependency: $name from $dependency"
+    } else {
+        $missingPortableImports.Add($name)
+    }
+}
+if ($missingPortableImports.Count -gt 0) {
+    throw "Portable Windows runtime is missing imported dependency/dependencies: $($missingPortableImports -join ', ')"
+}
+
 # If this is a dynamically-linked Qt build, the Windows platform plugin is mandatory. Accept the
 # two layouts windeployqt has used in Eden-family builds: plugins/platforms and platforms.
 $qtDlls = @(Get-ChildItem $destination -Filter 'Qt6*.dll' -File -ErrorAction SilentlyContinue)
@@ -58,8 +123,6 @@ if ($qtDlls.Count -gt 0) {
     }
 }
 
-# Catch the common failure where a build directory contains only an EXE and none of its deployed
-# runtime libraries. Static builds are allowed to have zero DLLs; dynamic Qt builds are not.
 $dlls = @(Get-ChildItem $destination -Filter '*.dll' -File -Recurse -ErrorAction SilentlyContinue)
 if ($qtDlls.Count -gt 0 -and $dlls.Count -lt 5) {
     throw "Dynamic Qt runtime appears incomplete: only $($dlls.Count) DLL(s) were packaged."
