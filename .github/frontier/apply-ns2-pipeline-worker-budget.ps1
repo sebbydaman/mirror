@@ -9,6 +9,10 @@ $ErrorActionPreference = 'Stop'
 # cores (logical_threads / 4, minimum 2). Translation workers remain PokeDinner's half-builder count.
 # Switch 1 keeps Eden's original policy. EDEN_NX2_PIPELINE_WORKERS=<N> overrides the Switch 2 budget
 # for A/B testing without another rebuild.
+#
+# Match the worker function structurally rather than pinning its exact whitespace. Several donor
+# layers legitimately edit nearby pipeline-cache code; formatting-only drift must not block the
+# cheap capture/regression pass before a long Windows compile.
 
 function Write-PatchedText([string]$Path, [string]$Text) {
     $normalized = $Text.TrimEnd("`r", "`n") + "`n"
@@ -57,35 +61,37 @@ if (-not $text.Contains('#include <cstdlib>')) {
     $text = $text.Replace($includeAnchor, "$includeAnchor`n#include <cstdlib>")
 }
 
-$oldHead = @'
-size_t GetTotalPipelineWorkers() {
-    const size_t max_core_threads =
-        std::max<size_t>(static_cast<size_t>(std::thread::hardware_concurrency()), 2ULL) - 1ULL;
-'@
-$oldHead = $oldHead.TrimEnd("`r", "`n")
-$newHead = @'
-size_t GetTotalPipelineWorkers() {
+$functionStart = $text.IndexOf('size_t GetTotalPipelineWorkers() {', [StringComparison]::Ordinal)
+if ($functionStart -lt 0) {
+    throw 'NX2 pipeline-worker budget: GetTotalPipelineWorkers function is unavailable'
+}
+$functionEndMarker = "`n// EDEN_NX2_ASYNC_TRANSLATION"
+$functionEnd = $text.IndexOf($functionEndMarker, $functionStart, [StringComparison]::Ordinal)
+if ($functionEnd -lt 0 -or $functionEnd - $functionStart -gt 2600) {
+    throw 'NX2 pipeline-worker budget: could not isolate GetTotalPipelineWorkers safely'
+}
+$function = $text.Substring($functionStart, $functionEnd - $functionStart)
+
+# Accept the same hardware_concurrency()-1 policy across whitespace/wrapping variants, but refuse a
+# semantically different worker calculation. That keeps this adapter resilient without silently
+# replacing a future donor policy we have not reviewed.
+$maxPattern = '(?ms)    const size_t max_core_threads\s*=\s*std::max<size_t>\(\s*(?:static_cast<size_t>\(\s*)?std::thread::hardware_concurrency\(\)\s*\)?\s*,\s*2ULL\s*\)\s*-\s*1ULL\s*;'
+$maxMatch = [regex]::Match($function, $maxPattern)
+if (-not $maxMatch.Success) {
+    throw 'NX2 pipeline-worker budget: GetTotalPipelineWorkers worker-count semantics changed'
+}
+$newWorkerCount = @'
     const size_t hardware_threads =
         std::max<size_t>(static_cast<size_t>(std::thread::hardware_concurrency()), 2ULL);
     const size_t max_core_threads = hardware_threads - 1ULL;
 '@
-$newHead = $newHead.TrimEnd("`r", "`n")
-if (-not $text.Contains($oldHead)) {
-    throw 'NX2 pipeline-worker budget: GetTotalPipelineWorkers header changed'
-}
-$text = $text.Replace($oldHead, $newHead)
+$newWorkerCount = $newWorkerCount.TrimEnd("`r", "`n")
+$function = $function.Remove($maxMatch.Index, $maxMatch.Length).Insert($maxMatch.Index, $newWorkerCount)
 
-$functionStart = $text.IndexOf('size_t GetTotalPipelineWorkers() {')
-$desktopOld = @'
-#else
-    return max_core_threads;
-#endif
-}
-'@
-$desktopOld = $desktopOld.TrimEnd("`r", "`n")
-$desktopAt = $text.IndexOf($desktopOld, $functionStart)
-if ($functionStart -lt 0 -or $desktopAt -lt 0 -or $desktopAt - $functionStart -gt 1600) {
-    throw 'NX2 pipeline-worker budget: desktop worker-policy branch changed'
+$desktopPattern = '(?ms)#else\s*\n\s*return max_core_threads;\s*\n#endif'
+$desktopMatch = [regex]::Match($function, $desktopPattern)
+if (-not $desktopMatch.Success) {
+    throw 'NX2 pipeline-worker budget: desktop worker-policy semantics changed'
 }
 $desktopNew = @'
 #else
@@ -110,10 +116,10 @@ $desktopNew = @'
     }
     return max_core_threads;
 #endif
-}
 '@
 $desktopNew = $desktopNew.TrimEnd("`r", "`n")
-$text = $text.Remove($desktopAt, $desktopOld.Length).Insert($desktopAt, $desktopNew)
+$function = $function.Remove($desktopMatch.Index, $desktopMatch.Length).Insert($desktopMatch.Index, $desktopNew)
+$text = $text.Remove($functionStart, $functionEnd - $functionStart).Insert($functionStart, $function)
 Write-PatchedText $path $text
 
 $final = Get-Content $path -Raw
