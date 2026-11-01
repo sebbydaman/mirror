@@ -2,6 +2,11 @@ name: Build Eden NS2 Final Zen4 PGO
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - ns2-pokopia-final-perf
+    paths:
+      - '.github/triggers/run-final-zen4.txt'
 
 permissions:
   contents: read
