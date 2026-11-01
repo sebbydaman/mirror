@@ -5,8 +5,9 @@ $ErrorActionPreference = 'Stop'
 # compressed patches while still making the normal, PGO and capture paths build the same source.
 $rangeNotify = Join-Path $PSScriptRoot 'apply-memory-manager-range-notify.ps1'
 $jitTelemetry = Join-Path $PSScriptRoot 'apply-cpu-jit-telemetry.ps1'
+$legacyCleanup = Join-Path $PSScriptRoot 'apply-ns2-legacy-hotpath-cleanup.ps1'
 
-foreach ($path in @($rangeNotify, $jitTelemetry)) {
+foreach ($path in @($rangeNotify, $jitTelemetry, $legacyCleanup)) {
     if (-not (Test-Path $path -PathType Leaf)) {
         throw "Post-Build31 CPU frontier: missing $path"
     }
@@ -14,5 +15,6 @@ foreach ($path in @($rangeNotify, $jitTelemetry)) {
 
 & $rangeNotify
 & $jitTelemetry
+& $legacyCleanup
 
-Write-Host '[APPLIED] Post-Build31 CPU frontier: range-batched GMMU notifications + opt-in Dynarmic duplicate-compile telemetry'
+Write-Host '[APPLIED] Post-Build31 CPU frontier: range-batched GMMU notifications + opt-in Dynarmic duplicate-compile telemetry + stale reactive-read diagnostic cleanup'
