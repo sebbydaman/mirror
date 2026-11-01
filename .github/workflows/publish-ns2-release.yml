@@ -1,6 +1,13 @@
 name: Publish Eden NS2 Pokopia Release
 
 on:
+  workflow_run:
+    workflows:
+      - Build Eden NS2 Pokopia
+    types:
+      - completed
+    branches:
+      - ns2-pokopia
   push:
     branches:
       - ns2-pokopia
@@ -14,35 +21,73 @@ permissions:
 
 jobs:
   publish:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: windows-2025
     steps:
-      - name: Download validated Windows artifact from run 42
+      - name: Select validated NS2 build
+        shell: pwsh
+        env:
+          EVENT_RUN_ID: ${{ github.event.workflow_run.id }}
+          EVENT_RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
+          EVENT_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if ($env:GITHUB_EVENT_NAME -eq "workflow_run") {
+            $runId = $env:EVENT_RUN_ID
+            $runNumber = $env:EVENT_RUN_NUMBER
+            $sha = $env:EVENT_HEAD_SHA
+          } else {
+            # Immediate validated baseline requested on 2026-10-31.
+            $runId = "41253371704"
+            $runNumber = "162"
+            $sha = "a7d567bbd52fc321156cdf4684b9684e66dbc2ab"
+          }
+
+          if (-not $runId -or -not $sha) { throw "Unable to identify validated NS2 build metadata" }
+          $shortSha = $sha.Substring(0, 8)
+          "VALIDATED_RUN_ID=$runId" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VALIDATED_RUN_NUMBER=$runNumber" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VALIDATED_SHA=$sha" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VALIDATED_SHORT_SHA=$shortSha" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Download validated Windows artifact
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh run download 40990726615 --repo $env:GITHUB_REPOSITORY --name Eden-NS2-Pokopia-Windows --dir package
+          gh run download $env:VALIDATED_RUN_ID --repo $env:GITHUB_REPOSITORY --name Eden-NS2-Pokopia-Windows --dir package
+          if (-not (Test-Path "package")) { throw "Validated Windows artifact was not downloaded" }
 
       - name: Package release ZIP
         shell: pwsh
         run: |
-          Compress-Archive -Path package\* -DestinationPath Eden-NS2-Pokopia-faa2bcd1-Windows.zip -CompressionLevel Optimal
-          Get-Item Eden-NS2-Pokopia-faa2bcd1-Windows.zip | Format-List Name,Length
+          $zip = "Eden-NS2-Pokopia-$env:VALIDATED_SHORT_SHA-Windows.zip"
+          Compress-Archive -Path package\* -DestinationPath $zip -CompressionLevel Optimal
+          Get-Item $zip | Format-List Name,Length
+          "RELEASE_ZIP=$zip" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Publish GitHub Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "ns2-pokopia-faa2bcd1"
+          $tag = "ns2-pokopia-$env:VALIDATED_SHORT_SHA"
+          $title = "Eden NS2 Pokopia validated build $env:VALIDATED_SHORT_SHA"
           $notes = @"
-          Experimental Switch 2 Eden build from validated CI run #42.
+          Validated Eden Switch 2 / Pokopia Windows build from CI run #$env:VALIDATED_RUN_NUMBER.
 
-          Source baseline: Djihads80/Eglantine 50c9fd3471d5f0170a7495ee10fd8b0b2f0298e1
-          Integration commit: faa2bcd128ddf151fcac8592acb70da2be29ba98
+          Integration commit: $env:VALIDATED_SHA
+          Artifact source run: $env:VALIDATED_RUN_ID
 
-          Includes Eglantine NS2 platform/GPU work plus the sebbydaman/mirror TXQ, BRX/BRXU, bindless TEX, geometry OUT/stage admission, positive shader cache, and selected generic 0x2593 Bananza shader/backend improvements.
+          This package includes the current ns2-pokopia integration, PokeDinner/Eglantine GPU performance work, shader/runtime compatibility improvements, NS2 memory/loader work, regression validation, and portable Windows runtime dependency packaging present in the validated build.
 
           Experimental software; compatibility and performance are still in development.
           "@
-          gh release create $tag Eden-NS2-Pokopia-faa2bcd1-Windows.zip --repo $env:GITHUB_REPOSITORY --target faa2bcd128ddf151fcac8592acb70da2be29ba98 --title "Eden NS2 Pokopia experimental build faa2bcd1" --notes $notes
+
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $env:RELEASE_ZIP --repo $env:GITHUB_REPOSITORY --clobber
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            gh release edit $tag --repo $env:GITHUB_REPOSITORY --target $env:VALIDATED_SHA --title $title --notes $notes
+          } else {
+            gh release create $tag $env:RELEASE_ZIP --repo $env:GITHUB_REPOSITORY --target $env:VALIDATED_SHA --title $title --notes $notes
+          }
