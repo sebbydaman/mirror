@@ -57,6 +57,7 @@ jobs:
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-nso-loader.ps1"
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-nx2-memory-layout.ps1"
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-bananza-post-menu-gpu.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-late-runtime.ps1"
 
       - name: Validate combined NS2 regression surface
         shell: pwsh
@@ -178,38 +179,18 @@ jobs:
           wakeups, macro-memo compaction, FastHash/RangeSet fast paths, Switch 2 buffer-only garbage
           collection, native-compute direct register writes, async-present scheduler safety, and
           GPU-split session reset.
-          '@ | Set-Content -Path "$bin\POKEDINNER_PERFORMANCE.txt" -Encoding UTF8
-
-          @'
-          NS2 source: Djihads80/Eglantine
-          Workflow bootstrap commit: f362528c0447c491bfe00c0bdd5d8c245396a24c
-          Effective build base: 01effa81ab0e151f8cfd674bf4da952d24645943 (nx2-experimental sparse/ASTC merge)
-          Integration: Eglantine broad NS2 platform/GPU support + sebbydaman/mirror shader improvements.
-          PokeDinner performance parity: validated before compilation; GPU split, MME JIT, fence/buffer/inline hot paths, worker scheduling, buffer collector, FastHash/RangeSet, macro memo, translation-cache safety, async-present safety, and split session reset are preserved.
-          Preserved improvements: bindless 2D/cube TEX, extended TXQ, generalized BRX/BRXU, native geometry OUT, validated geometry stage admission.
-          Positive native shader cache: enabled with exact-source verification (4096 entries).
-          Eglantine negative shader cache and ARMv8.1 LSE atomic support: preserved.
-          Generic Bananza overlap: Maxwell PRMT, 8-bit F2I, native geometry ISBERD/LEPC/prologue lowering.
-          Vulkan draw-state optimization: exact-payload push descriptors are reused within a valid command-buffer pipeline context.
-          NS2 loader hardening: ZBIC magic detection, LZ4 fallback, alternate 0x100/0x108 first-segment recovery, and no silent corrupted-segment copy.
-          NS2 memory layout: 39-bit heap/alias regions scale with intended guest memory; 12 GiB guests expose a 12 GiB heap and SetHeapSize validates against the process region.
-          Bananza post-menu GPU path: native F2I byte/short destination lowering and 32 compute storage-buffer slots.
-          Bananza blue-world path: B82 32-bit indexed constant loads, UR16+ VOTEU, 32-bit F2I rounding forms, and D08 uniform-source MUFU.
-          Mario Kart World path: sparse GPU write backing, sparse layered Vulkan images, and per-layer large ASTC uploads from the 01effa base.
-          Combined regression validation: enabled before compilation.
-          Portable Windows packaging: dependency-audited; non-system DLL imports bundled recursively.
-          '@ | Set-Content -Path "$bin\BUILD_SOURCE.txt" -Encoding UTF8
+          '@ | Set-Content -Path "$bin\NX2_PERFORMANCE_NOTES.txt" -Encoding UTF8
 
       - name: Package portable Windows runtime
         shell: pwsh
         working-directory: eden
         run: |
-          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\package-windows-runtime.ps1" -BinDir "build/bin"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\package-ns2-runtime.ps1"
 
       - name: Upload Windows build
         uses: actions/upload-artifact@v6
         with:
           name: Eden-NS2-Pokopia-Windows
-          path: eden/build/bin/**
+          path: eden/dist/Eden-NS2-Pokopia-Windows/**
           if-no-files-found: error
-          compression-level: 6
+          retention-days: 14
