@@ -13,10 +13,11 @@ $descriptorScratch = Join-Path $PSScriptRoot 'apply-vulkan-descriptor-scratch-re
 $samplerIdVector = Join-Path $PSScriptRoot 'apply-texture-sampler-id-vector-cache.ps1'
 $imageViewIdVector = Join-Path $PSScriptRoot 'apply-texture-image-view-id-vector-cache.ps1'
 $dmaDownloadState = Join-Path $PSScriptRoot 'apply-texture-dma-download-state-inheritance.ps1'
+$plainRemapGpuPath = Join-Path $PSScriptRoot 'apply-maxwell-dma-plain-remap-gpu-path.ps1'
 
 foreach ($path in @($rangeNotify, $jitTelemetry, $legacyCleanup, $dispatchTelemetry,
                     $increasingRunFastPath, $increasingFrontCache, $descriptorScratch,
-                    $samplerIdVector, $imageViewIdVector, $dmaDownloadState)) {
+                    $samplerIdVector, $imageViewIdVector, $dmaDownloadState, $plainRemapGpuPath)) {
     if (-not (Test-Path $path -PathType Leaf)) {
         throw "Post-Build31 CPU frontier: missing $path"
     }
@@ -32,5 +33,6 @@ foreach ($path in @($rangeNotify, $jitTelemetry, $legacyCleanup, $dispatchTeleme
 & $samplerIdVector
 & $imageViewIdVector
 & $dmaDownloadState
+& $plainRemapGpuPath
 
-Write-Host '[APPLIED] Post-Build31 CPU frontier: range-batched GMMU notifications + opt-in Dynarmic duplicate-compile telemetry + stale reactive-read diagnostic cleanup + opt-in DmaDispatch traffic-shape telemetry + tight pure-Increasing engine-run dispatch + cached split routing + reusable Vulkan descriptor scratch + direct indexed sampler/image-view IDs + inherited first DMA-download state'
+Write-Host '[APPLIED] Post-Build31 CPU frontier: range-batched GMMU notifications + opt-in Dynarmic duplicate-compile telemetry + stale reactive-read diagnostic cleanup + opt-in DmaDispatch traffic-shape telemetry + tight pure-Increasing engine-run dispatch + cached split routing + reusable Vulkan descriptor scratch + direct indexed sampler/image-view IDs + inherited first DMA-download state + plain-remap Maxwell DMA GPU fast path'
