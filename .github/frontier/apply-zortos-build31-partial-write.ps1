@@ -4,10 +4,9 @@ $ErrorActionPreference = 'Stop'
 #
 # zortos293/Eglantine commit 11a110898fcfe16a5b9aee98c4346265825c3178 ("Small
 # optimizations based on latest profiling data") still retains the per-page MarkPartialWrite loop.
-# The fully integrated NS2 tree also carries newer read-trap/selective-copyback/coherency work, so
-# forcing an unverified coalesced rewrite here would mix architectures and can change cache-count
-# semantics. Keep the donor-backed Build31 CPU optimizations, but do not make this speculative
-# texture rewrite a build requirement.
+# The fully integrated NS2 tree carries a different texture/readback architecture and currently has
+# no MarkPartialWrite/partial_dirty_pages path at all. Do not force an unverified rewrite into that
+# architecture. If the old path exists, preserve it; if it is absent, this frontier is inapplicable.
 
 $path = 'src/video_core/texture_cache/texture_cache.h'
 if (-not (Test-Path $path -PathType Leaf)) {
@@ -28,9 +27,17 @@ if ($text.Contains($newMarker)) {
 
 $functionMarker = 'void TextureCache<P>::MarkPartialWrite'
 $pagesMarker = 'image.partial_dirty_pages'
-if ($text.Contains($functionMarker) -and $text.Contains($pagesMarker)) {
+$hasFunction = $text.Contains($functionMarker)
+$hasPages = $text.Contains($pagesMarker)
+
+if ($hasFunction -and $hasPages) {
     Write-Host '[SKIP] coalesced texture partial-write tracking is not donor-backed by zortos 11a110898; preserving integrated MarkPartialWrite semantics'
     exit 0
 }
 
-throw 'Build31 partial-write frontier: MarkPartialWrite feature is absent; refusing to guess at texture-cache semantics'
+if ($hasFunction -xor $hasPages) {
+    throw 'Build31 partial-write frontier: inconsistent partial-write feature markers detected'
+}
+
+Write-Host '[INAPPLICABLE] integrated texture cache has no MarkPartialWrite/partial_dirty_pages path; skipping speculative optimization'
+exit 0
