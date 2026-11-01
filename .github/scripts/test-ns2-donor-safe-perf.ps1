@@ -1,5 +1,14 @@
 $ErrorActionPreference = 'Stop'
 
+# The span-cache hardening depends on PR157, so apply it after the complete integration stack has
+# been assembled (this regression script runs after apply-eglantine-late-stability). Keeping the
+# layer outside the donor patch makes the bisect boundary explicit.
+$frontierHardening = Join-Path $PSScriptRoot '..\frontier\apply-pushbuffer-mapgen-hardening.ps1'
+if (-not (Test-Path $frontierHardening -PathType Leaf)) {
+    throw "Safe donor regression: missing frontier hardening layer $frontierHardening"
+}
+& $frontierHardening
+
 function Require-Text([string]$Path, [string]$Needle, [string]$Name) {
     if (-not (Test-Path $Path -PathType Leaf)) {
         throw "Safe donor regression: missing required file $Path"
@@ -36,9 +45,12 @@ if ($textureText.Contains('EDEN_NX2_TC_LOG')) {
 $bufferCache = 'src/video_core/buffer_cache/buffer_cache.h'
 $bufferBase = 'src/video_core/buffer_cache/buffer_cache_base.h'
 $memoryManager = 'src/video_core/memory_manager.cpp'
+$memoryManagerHeader = 'src/video_core/memory_manager.h'
 $rasterizerInterface = 'src/video_core/rasterizer_interface.h'
 $vkRasterizer = 'src/video_core/renderer_vulkan/vk_rasterizer.cpp'
 $vkRasterizerHeader = 'src/video_core/renderer_vulkan/vk_rasterizer.h'
+$dmaPusher = 'src/video_core/dma_pusher.cpp'
+$dmaPusherHeader = 'src/video_core/dma_pusher.h'
 
 Require-Text $bufferBase 'void BeginDownloadBatch();' 'buffer download batch public entry'
 Require-Text $bufferBase 'void FinishDownloadBatch();' 'buffer download batch completion helper'
@@ -129,5 +141,33 @@ Require-Text $vkBufferCache 'LastStreamUniformRef() const noexcept' 'latest stre
 Require-Text $vkBufferCache 'void RebindStreamUniform(const StreamUniformRef& ref, u32 size)' 'descriptor rebind without stream copy'
 Require-Text $vkBufferCache 'StreamUniformRef last_stream_uniform{};' 'stored latest Vulkan stream reference'
 Write-Host '[PASS] PR162 uniform stream reuse is byte/tick bounded and reset-safe'
+
+# Our #157 hardening: the raw host pointer cache must never survive a GMMU mapping epoch. Map,
+# sparse-map and unmap keep the generation odd while mutating and even when stable; DmaPusher only
+# reuses an old pointer in the same stable generation and only caches a new span when the generation
+# is unchanged across address translation.
+Require-Text $memoryManagerHeader 'u64 MappingGeneration() const noexcept' 'GMMU mapping generation reader'
+Require-Text $memoryManagerHeader 'std::atomic<u64> mapping_generation{0};' 'GMMU mapping epoch storage'
+Require-Text $memoryManager 'class MappingGenerationWrite' 'RAII GMMU mapping write epoch'
+Require-Text $memoryManager 'generation.fetch_add(1, std::memory_order_acq_rel);' 'odd epoch at mapping mutation begin'
+Require-Text $memoryManager 'generation.fetch_add(1, std::memory_order_release);' 'even epoch at mapping mutation end'
+Require-Text $dmaPusherHeader 'u64 pb_cached_mapping_generation{~u64{0}};' 'cached pushbuffer mapping epoch'
+Require-Text $dmaPusher 'const bool mapping_stable = (mapping_generation & 1) == 0;' 'stable-even mapping requirement'
+Require-Text $dmaPusher 'pb_cached_mapping_generation == mapping_generation' 'cached pointer epoch match'
+Require-Text $dmaPusher 'const u64 after_translation = memory_manager.MappingGeneration();' 'post-translation epoch check'
+Require-Text $dmaPusher 'if (after_translation == mapping_generation)' 'same-epoch span retention'
+Require-Text $dmaPusher 'pb_cached_mapping_generation = ~u64{0};' 'mapping epoch cache invalidation'
+
+$dmaText = Get-Content $dmaPusher -Raw
+$stablePos = $dmaText.IndexOf('const bool mapping_stable = (mapping_generation & 1) == 0;')
+$cacheGenPos = $dmaText.IndexOf('pb_cached_mapping_generation == mapping_generation', $stablePos)
+$getSpanPos = $dmaText.IndexOf('memory_manager.GetSpan(dma_state.dma_get, req_bytes)', $cacheGenPos)
+$afterPos = $dmaText.IndexOf('const u64 after_translation = memory_manager.MappingGeneration();', $getSpanPos)
+$retainPos = $dmaText.IndexOf('pb_cached_mapping_generation = mapping_generation;', $afterPos)
+if ($stablePos -lt 0 -or $cacheGenPos -lt 0 -or $getSpanPos -lt 0 -or $afterPos -lt 0 -or $retainPos -lt 0 -or
+    -not ($stablePos -lt $cacheGenPos -and $cacheGenPos -lt $getSpanPos -and $getSpanPos -lt $afterPos -and $afterPos -lt $retainPos)) {
+    throw 'Safe donor regression: pushbuffer span-cache mapping epoch ordering is incomplete'
+}
+Write-Host '[PASS] pushbuffer raw-pointer cache is bounded by stable GMMU mapping epochs'
 
 Write-Host 'Safe NX2 donor performance regression validation passed.'
