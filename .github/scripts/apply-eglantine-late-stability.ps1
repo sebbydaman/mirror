@@ -25,6 +25,7 @@ if ($present -eq $markers.Count) {
     & "$PSScriptRoot\apply-ns2-donor-20261101.ps1"
     & "$PSScriptRoot\apply-ns2-donor-safe-perf.ps1"
     & "$PSScriptRoot\prep-pr142-kmemory-reset.ps1"
+    & "$PSScriptRoot\prep-pr142-vma-budget.ps1"
     & "$PSScriptRoot\apply-eglantine-pr142-memory-stutter.ps1"
     exit 0
 }
@@ -89,4 +90,5 @@ Write-Host 'Applied late NS2 stability batch: AMD undefined-register zeroing + s
 & "$PSScriptRoot\apply-ns2-donor-20261101.ps1"
 & "$PSScriptRoot\apply-ns2-donor-safe-perf.ps1"
 & "$PSScriptRoot\prep-pr142-kmemory-reset.ps1"
+& "$PSScriptRoot\prep-pr142-vma-budget.ps1"
 & "$PSScriptRoot\apply-eglantine-pr142-memory-stutter.ps1"
