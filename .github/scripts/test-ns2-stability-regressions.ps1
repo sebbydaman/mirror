@@ -53,6 +53,84 @@ Write-Host 'Late NS2 stability regression validation passed.'
 & "$PSScriptRoot\test-ns2-donor-safe-perf.ps1"
 & "$PSScriptRoot\test-ns2-pr142-memory-stutter.ps1"
 
+# Frontier performance/profiling batch. These guards validate the final semantic shape rather than
+# only checking donor commit names; several paths are intentionally adapted around our newer
+# submitted-command snapshot and GPU-written-page coherency layers.
+$attribute = 'src/shader_recompiler/frontend/ir/attribute.h'
+$textureCache = 'src/video_core/texture_cache/texture_cache.h'
+$dmaCpp = 'src/video_core/dma_pusher.cpp'
+$dmaHeader = 'src/video_core/dma_pusher.h'
+$maxwell = 'src/video_core/engines/maxwell_3d.cpp'
+$profile = 'src/video_core/nx2_profile.h'
+$pipelineCache = 'src/video_core/renderer_vulkan/vk_pipeline_cache.cpp'
+$rasterizer = 'src/video_core/renderer_vulkan/vk_rasterizer.cpp'
+$shaderCache = 'src/video_core/shader_cache.cpp'
+$gpuSplit = 'src/video_core/gpu_split.cpp'
+$bufferCache = 'src/video_core/buffer_cache/buffer_cache.h'
+$graphicsPipeline = 'src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp'
+$scheduler = 'src/video_core/control/scheduler.cpp'
+
+Require-Text $attribute 'attribute <= Attribute::Generic31W' 'Generic31 full XYZW shader attribute range'
+$attributeText = Get-Content $attribute -Raw
+if ($attributeText.Contains('attribute <= Attribute::Generic31X;')) {
+    throw 'NS2 frontier regression: old Generic31X upper bound returned'
+}
+
+Require-Text $textureCache 'constexpr size_t MaxBatchBytes = 64_MiB;' 'bounded batched image readback'
+Require-Text $textureCache 'boost::container::small_vector<Pending, 16> pending;' 'batched image download queue'
+Require-Text $textureCache 'NativeDrawDiagnostics()' 'cached native-draw diagnostics switch'
+$textureText = Get-Content $textureCache -Raw
+$downloadStart = $textureText.IndexOf('void TextureCache<P>::DownloadMemory(')
+$downloadEnd = $textureText.IndexOf('std::optional<VideoCore::RasterizerDownloadArea>', $downloadStart)
+if ($downloadStart -lt 0 -or $downloadEnd -lt 0) { throw 'NS2 frontier regression: could not isolate TextureCache::DownloadMemory' }
+$downloadSection = $textureText.Substring($downloadStart, $downloadEnd - $downloadStart)
+$finishCount = ([regex]::Matches($downloadSection, [regex]::Escape('runtime.Finish();'))).Count
+if ($finishCount -ne 1) {
+    throw "NS2 frontier regression: batched DownloadMemory should have exactly one Finish site, found $finishCount"
+}
+
+Require-Text $dmaHeader 'GPUVAddr pb_cached_gpu_addr{0};' 'pushbuffer span-cache address'
+Require-Text $dmaHeader 'const CommandHeader* pb_cached_ptr{nullptr};' 'pushbuffer span-cache host pointer'
+Require-Text $dmaHeader 'u32 skip_words;' 'invalid command-block discard state'
+Require-Text $dmaCpp 'memory_manager.GetSpan(dma_state.dma_get, req_bytes)' 'O(1) contiguous pushbuffer span fast-path'
+Require-Text $dmaCpp 'dma_state.method += static_cast<u32>(!dma_state.non_incrementing);' 'branchless DMA method increment'
+Require-Text $dmaCpp 'curr_method < non_puller_methods && puller.HasPendingAcquire()' 'semaphore polling short-circuit'
+Require-Text $dmaCpp 'dma_state.skip_words = remaining;' 'illegal host-method block discard'
+Require-Text $dmaCpp 'pb_cached_ptr = nullptr;' 'safe pushbuffer span cache invalidation'
+
+# Snapshot/coherency must remain ahead of the new live-memory fast path: GPU-written command pages
+# are flushed first, submitted snapshots are preferred when valid, and only then may live memory be
+# served from the span cache.
+$dmaText = Get-Content $dmaCpp -Raw
+$flushPos = $dmaText.IndexOf('FlushGpuWrittenCommands(')
+$snapshotPos = $dmaText.IndexOf('const bool has_snapshot', $flushPos)
+$snapshotBranch = $dmaText.IndexOf('if (has_snapshot)', $snapshotPos)
+$spanPos = $dmaText.IndexOf('memory_manager.GetSpan(dma_state.dma_get, req_bytes)', $snapshotBranch)
+if ($flushPos -lt 0 -or $snapshotPos -lt 0 -or $snapshotBranch -lt 0 -or $spanPos -lt 0 -or
+    -not ($flushPos -lt $snapshotPos -and $snapshotPos -lt $snapshotBranch -and $snapshotBranch -lt $spanPos)) {
+    throw 'NS2 frontier regression: DMA span fast-path no longer preserves GPU-written flush -> snapshot -> live-memory ordering'
+}
+
+Require-Text $maxwell 'Rejecting out-of-range macro bind' 'bounded MME macro position writes'
+Require-Text 'src/video_core/macro_turing_jit.h' 'offsetof(State, fail_pc)' 'MME JIT failing-PC capture'
+Require-Text 'src/video_core/macro.cpp' 'pc={:#x}' 'MME JIT failing-PC diagnostic'
+
+foreach ($zone in @('DmaFetch', 'DmaDispatch', 'ChannelSwitch', 'SplitCall', 'BindGeometry', 'UpdateVertex', 'UpdateUniform', 'CacheLockWait')) {
+    Require-Text $profile $zone "granular GPU profiler zone $zone"
+}
+Require-Text $profile 'SkippedDraws' 'rejected-draw profiler counter'
+Require-Text $profile 'PipelineMisses' 'pipeline-miss profiler counter'
+Require-Text $pipelineCache 'Counter::PipelineMisses' 'Vulkan pipeline-miss accounting'
+Require-Text $shaderCache 'Counter::SkippedDraws' 'rejected native draw accounting'
+Require-Text $rasterizer 'Profile::Zone::CacheLockWait' 'buffer/texture cache lock-wait timing'
+Require-Text $gpuSplit 'Nx2Profile::Zone::SplitCall' 'split back-thread deferred-call timing'
+Require-Text $bufferCache 'Nx2Profile::Zone::UpdateVertex' 'vertex-buffer resolution timing'
+Require-Text $bufferCache 'Nx2Profile::Zone::UpdateUniform' 'uniform-buffer resolution timing'
+Require-Text $graphicsPipeline 'Profile::Zone::BindGeometry' 'host geometry bind timing'
+Require-Text $scheduler 'Nx2Profile::Zone::ChannelSwitch' 'channel-switch timing'
+
+Write-Host 'NS2 frontier performance/profiling regression validation passed.'
+
 # Finally reject superseded runtime shapes and dormant automation generations. Keeping this last
 # means the positive regression tests explain any missing modern feature before the legacy audit
 # checks for an old form that may have replaced it.
