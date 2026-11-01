@@ -79,4 +79,11 @@ if (-not $incCheck.Contains('entry.continuity_tracker = 0;')) { throw "PR48 regr
 if (-not $incCheck.Contains('void DeviceMemoryManager<Traits>::CutContinuityAt(size_t page)')) { throw "PR48 regression: helper implementation missing" }
 
 Write-Host "Applied generalized device-memory continuity fix from Eglantine PR #48."
+
+# Prepare PokeDinner's selective QueueDownload by function shape before the late-Eglantine
+# read-trap merge runs later in apply-bananza-post-menu-gpu.ps1. This removes the brittle exact
+# text dependency that #167 exposed while preserving the fast full-download fallback.
+$readTrapPrepareScript = Join-Path $PSScriptRoot "prepare-eglantine-read-trap-selective-copyback.ps1"
+& $readTrapPrepareScript
+
 git diff -- $hdrPath $incPath
