@@ -61,13 +61,15 @@ $oldHead = @'
 size_t GetTotalPipelineWorkers() {
     const size_t max_core_threads =
         std::max<size_t>(static_cast<size_t>(std::thread::hardware_concurrency()), 2ULL) - 1ULL;
-'@.TrimEnd("`r", "`n")
+'@
+$oldHead = $oldHead.TrimEnd("`r", "`n")
 $newHead = @'
 size_t GetTotalPipelineWorkers() {
     const size_t hardware_threads =
         std::max<size_t>(static_cast<size_t>(std::thread::hardware_concurrency()), 2ULL);
     const size_t max_core_threads = hardware_threads - 1ULL;
-'@.TrimEnd("`r", "`n")
+'@
+$newHead = $newHead.TrimEnd("`r", "`n")
 if (-not $text.Contains($oldHead)) {
     throw 'NX2 pipeline-worker budget: GetTotalPipelineWorkers header changed'
 }
@@ -79,7 +81,8 @@ $desktopOld = @'
     return max_core_threads;
 #endif
 }
-'@.TrimEnd("`r", "`n")
+'@
+$desktopOld = $desktopOld.TrimEnd("`r", "`n")
 $desktopAt = $text.IndexOf($desktopOld, $functionStart)
 if ($functionStart -lt 0 -or $desktopAt -lt 0 -or $desktopAt - $functionStart -gt 1600) {
     throw 'NX2 pipeline-worker budget: desktop worker-policy branch changed'
@@ -108,7 +111,8 @@ $desktopNew = @'
     return max_core_threads;
 #endif
 }
-'@.TrimEnd("`r", "`n")
+'@
+$desktopNew = $desktopNew.TrimEnd("`r", "`n")
 $text = $text.Remove($desktopAt, $desktopOld.Length).Insert($desktopAt, $desktopNew)
 Write-PatchedText $path $text
 
