@@ -16,6 +16,7 @@ $vkTexture = 'src/video_core/renderer_vulkan/vk_texture_cache.cpp'
 $vkTextureHeader = 'src/video_core/renderer_vulkan/vk_texture_cache.h'
 $textureCache = 'src/video_core/texture_cache/texture_cache.h'
 $textureBase = 'src/video_core/texture_cache/texture_cache_base.h'
+$imageBase = 'src/video_core/texture_cache/image_base.h'
 $textureWorkers = 'src/video_core/textures/workers.cpp'
 $nx2 = 'src/video_core/nx2.h'
 $gsv = 'src/core/hle/service/nx2_gsv.h'
@@ -52,7 +53,7 @@ Require-Text $vkRasterizer 'if (buffer_cache.FlushesOnCpuRead())' 'Vulkan CPU-re
 # then get replaced. This is distinct from merely accounting their memory correctly.
 Require-Text $nx2 'inline bool Nx2SparseUnwritten' 'unwritten sparse-region query'
 Require-Text $vkTexture 'bool IsUnwrittenSparse' 'unwritten sparse Vulkan image selection'
-Require-Text $textureBase 'UnwrittenSparse = 1 << 21' 'unwritten sparse image lifetime flag'
+Require-Text $imageBase 'UnwrittenSparse = 1 << 21' 'unwritten sparse image lifetime flag'
 Require-Text $textureCache 'True(image.flags & ImageFlagBits::UnwrittenSparse)' 'unwritten sparse first-write replacement path'
 
 # Texture-churn performance: unmapped GPU images reuse a stable stand-in address instead of being
