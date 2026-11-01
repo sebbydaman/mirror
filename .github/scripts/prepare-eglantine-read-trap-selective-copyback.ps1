@@ -25,7 +25,9 @@ $body = $text.Substring($start, $end - $start)
 # Keep the existing AsyncBufferDownloads() fast path untouched. Replace only the selective
 # cpu_read_ranges callback. Regex is intentionally whitespace-tolerant so PokeDinner/PR52
 # formatting or comments can change without breaking the integration gate.
+# PowerShell single-quoted strings preserve backslashes, so regex escapes are written once.
 $pattern = 'cpu_read_ranges\.ForEachInRange\(addr\s*,\s*size\s*,\s*\[this\]\s*\(DAddr\s+start\s*,\s*DAddr\s+end\)\s*\{\s*uncommitted_gpu_modified_ranges\.Add\(start\s*,\s*end\s*-\s*start\);\s*\}\);'
+$pattern = $pattern.Replace('\\', '\')
 $match = [regex]::Match($body, $pattern, [System.Text.RegularExpressions.RegexOptions]::Singleline)
 if (-not $match.Success) {
     throw 'Could not locate selective cpu_read_ranges callback inside QueueDownload'
