@@ -16,6 +16,7 @@ $vkTexture = 'src/video_core/renderer_vulkan/vk_texture_cache.cpp'
 $vkTextureHeader = 'src/video_core/renderer_vulkan/vk_texture_cache.h'
 $textureCache = 'src/video_core/texture_cache/texture_cache.h'
 $textureBase = 'src/video_core/texture_cache/texture_cache_base.h'
+$textureWorkers = 'src/video_core/textures/workers.cpp'
 $nx2 = 'src/video_core/nx2.h'
 $gsv = 'src/core/hle/service/nx2_gsv.h'
 $core = 'src/core/core.cpp'
@@ -61,6 +62,14 @@ Require-Text $textureBase 'The CPU address an image at gpu_addr is keyed by: its
 Require-Text $textureCache 'fixed by the GPU address' 'unmapped-image reuse implementation'
 Require-Text $vkTexture 'EDEN_NX2_ASTC_BC1' 'opaque ASTC-to-BC1 policy and rollback switch'
 Require-Text $vkTexture 'IsOpaqueBc1Astc' 'opaque ASTC BC1 Vulkan path'
+
+# Async ASTC decode performance/stability: reserve CPU for the emulated CPU/GPU threads, allow an
+# explicit override, never erase a decode while its mutex lock still owns freed storage, and cancel
+# decodes whose image is being deleted so stale data cannot land in a reused slot.
+Require-Text $textureWorkers 'EDEN_NX2_TRANSCODE_THREADS' 'ASTC transcode-thread override'
+Require-Text $textureWorkers 'std::thread::hardware_concurrency() / 4' 'quarter-thread ASTC transcode default'
+Require-Text $textureCache 'Release the lock before the context is erased below' 'async decode mutex lifetime fix'
+Require-Text $textureCache 'async_decode->cancelled = true;' 'async decode cancellation on image deletion'
 
 # Late sparse-memory deadlock fix and precise VRAM accounting.
 Require-Text $gsv 'struct MappedBacking {' 'GPU/guest mapping deadlock separation'
