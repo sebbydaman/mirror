@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - ns2-pokopia
+      - cpu-safe-validate4-20261101
   workflow_dispatch:
 
 permissions:
@@ -49,8 +50,6 @@ jobs:
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-handheld-mode.ps1"
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-late-stability.ps1"
 
-      # Keep these as separate cheap steps. When one regression suite breaks, the Actions UI now
-      # identifies the exact failing surface instead of collapsing four validators into one red box.
       - name: Validate core NS2 regressions
         shell: pwsh
         working-directory: eden
