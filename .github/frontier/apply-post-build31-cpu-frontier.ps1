@@ -16,11 +16,12 @@ $dmaDownloadState = Join-Path $PSScriptRoot 'apply-texture-dma-download-state-in
 $plainRemapGpuPath = Join-Path $PSScriptRoot 'apply-maxwell-dma-plain-remap-gpu-path.ps1'
 $paddedRenderTarget = Join-Path $PSScriptRoot 'apply-texture-padded-render-target-reuse.ps1'
 $downloadCopyBatch = Join-Path $PSScriptRoot 'apply-buffer-download-copy-batching.ps1'
+$streamReusedUniforms = Join-Path $PSScriptRoot 'apply-stream-reused-uniforms.ps1'
 
 foreach ($path in @($rangeNotify, $jitTelemetry, $legacyCleanup, $dispatchTelemetry,
                     $increasingRunFastPath, $increasingFrontCache, $descriptorScratch,
                     $samplerIdVector, $imageViewIdVector, $dmaDownloadState, $plainRemapGpuPath,
-                    $paddedRenderTarget, $downloadCopyBatch)) {
+                    $paddedRenderTarget, $downloadCopyBatch, $streamReusedUniforms)) {
     if (-not (Test-Path $path -PathType Leaf)) {
         throw "Post-Build31 CPU frontier: missing $path"
     }
@@ -39,5 +40,6 @@ foreach ($path in @($rangeNotify, $jitTelemetry, $legacyCleanup, $dispatchTeleme
 & $plainRemapGpuPath
 & $paddedRenderTarget
 & $downloadCopyBatch
+& $streamReusedUniforms
 
-Write-Host '[APPLIED] Post-Build31 CPU frontier: range-batched GMMU notifications + opt-in Dynarmic duplicate-compile telemetry + stale reactive-read diagnostic cleanup + opt-in DmaDispatch traffic-shape telemetry + tight pure-Increasing engine-run dispatch + cached split routing + reusable Vulkan descriptor scratch + direct indexed sampler/image-view IDs + inherited first DMA-download state + plain-remap Maxwell DMA GPU fast path + conservative padded render-target reuse + batched buffer download copy submissions'
+Write-Host '[APPLIED] Post-Build31 CPU frontier: range-batched GMMU notifications + opt-in Dynarmic duplicate-compile telemetry + stale reactive-read diagnostic cleanup + opt-in DmaDispatch traffic-shape telemetry + tight pure-Increasing engine-run dispatch + cached split routing + reusable Vulkan descriptor scratch + direct indexed sampler/image-view IDs + inherited first DMA-download state + plain-remap Maxwell DMA GPU fast path + conservative padded render-target reuse + batched buffer download copy submissions + streamed reused CPU-dirty uniforms'
