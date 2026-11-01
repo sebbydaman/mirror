@@ -18,6 +18,15 @@ if (-not (Test-Path $build31Frontier -PathType Leaf)) {
 }
 & $build31Frontier
 
+# Build-31 also had one CPU-only texture bookkeeping improvement that was previously left out with
+# its broader readback work. Our newer PR137/PR142/PR163 coherency stack lets us take this isolated
+# change safely: it only coalesces already-approved partial-write page tracking.
+$partialWriteFrontier = Join-Path $PSScriptRoot '..\frontier\apply-zortos-build31-partial-write.ps1'
+if (-not (Test-Path $partialWriteFrontier -PathType Leaf)) {
+    throw "Safe donor regression: missing Zortos build31 partial-write layer $partialWriteFrontier"
+}
+& $partialWriteFrontier
+
 function Require-Text([string]$Path, [string]$Needle, [string]$Name) {
     if (-not (Test-Path $Path -PathType Leaf)) {
         throw "Safe donor regression: missing required file $Path"
@@ -48,6 +57,9 @@ if ($textureText.Contains('EDEN_NX2_TC_LOG')) {
 } else {
     Write-Host '[PASS] no periodic texture-cache diagnostic sorting block requires gating'
 }
+Require-Text $texture 'const auto begin_it = std::lower_bound(pages.begin(), pages.end(), first);' 'coalesced texture partial-write lookup'
+Require-Text $texture 'std::iota(inserted, inserted + (last - first + 1), first);' 'coalesced texture partial-write vector fill'
+Require-Text $texture 'size_t{run_end - run_begin} << Core::DEVICE_PAGEBITS' 'coalesced texture cache-count range update'
 
 # PR163: coalesce all BufferCache downloads belonging to one MemoryManager::FlushRegion into one
 # host-GPU wait, and clip each touched buffer's tracker query to that buffer before clearing ranges.
