@@ -8,10 +8,15 @@ $ErrorActionPreference = 'Stop'
 # no MarkPartialWrite/partial_dirty_pages path at all. Do not force an unverified rewrite into that
 # architecture. If the old path exists, preserve it; if it is absent, this frontier is inapplicable.
 #
-# This guard is the final Build31 hook in test-ns2-donor-safe-perf.ps1, so successful paths hand off
-# to the post-Build31 CPU frontier only after the mapping-generation and Build31 patches are stable.
+# Legacy donor/test flows can still hand off to the post-Build31 CPU frontier. The composed final
+# stack sets EDEN_SKIP_POST_BUILD31_FRONTIER=1 because it applies the production frontier patches
+# explicitly and must not silently reapply telemetry/optimizations underneath itself.
 
 function Invoke-PostBuild31CpuFrontier {
+    if ($env:EDEN_SKIP_POST_BUILD31_FRONTIER -eq '1') {
+        Write-Host '[SKIP] post-Build31 CPU frontier handoff disabled by composed final stack'
+        return
+    }
     $postFrontier = Join-Path $PSScriptRoot 'apply-post-build31-cpu-frontier.ps1'
     if (-not (Test-Path $postFrontier -PathType Leaf)) {
         throw "Build31 partial-write frontier: missing post-Build31 CPU frontier $postFrontier"
