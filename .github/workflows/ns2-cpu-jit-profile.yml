@@ -2,13 +2,16 @@ name: Build Eden NS2 CPU JIT Profiling Runtime
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - ns2-pokopia
+    paths:
+      - '.github/workflows/ns2-cpu-jit-profile.yml'
+      - '.github/frontier/apply-cpu-jit-telemetry.ps1'
 
 permissions:
   contents: read
 
-# Experimental measurement build only. It keeps each Dynarmic JIT independent, but records
-# whether a guest location is compiled again by the same core or by another guest core. This gives
-# us the data needed before attempting shared generated-code ownership or persistent compile-ahead.
 concurrency:
   group: ns2-pokopia-cpu-jit-profile-${{ github.ref }}
   cancel-in-progress: true
@@ -33,7 +36,7 @@ jobs:
           path: eden
           fetch-depth: 1
 
-      - name: Apply fully validated NS2 integration stack
+      - name: Apply validated NS2 stack
         shell: pwsh
         working-directory: eden
         run: |
@@ -48,7 +51,7 @@ jobs:
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-handheld-mode.ps1"
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-late-stability.ps1"
 
-      - name: Validate normal integrated regression surface
+      - name: Validate integrated regression surface
         shell: pwsh
         working-directory: eden
         run: |
@@ -60,143 +63,7 @@ jobs:
       - name: Add cross-core Dynarmic compile telemetry
         shell: pwsh
         working-directory: eden
-        run: |
-          $path = 'src/dynarmic/src/dynarmic/backend/x64/a64_interface.cpp'
-          $text = Get-Content $path -Raw
-          $marker = '[NX2 JIT] compile profile:'
-          if ($text.Contains($marker)) {
-            Write-Host 'CPU JIT compile telemetry already present.'
-            exit 0
-          }
-
-          $includeAnchor = '#include <cstring>'
-          if (-not $text.Contains($includeAnchor)) { throw 'Dynarmic telemetry: include anchor not found' }
-          $includes = @'
-#include <array>
-#include <cstdio>
-#include <cstdlib>
-#include <cstdint>
-#include <unordered_map>
-'@
-          $text = $text.Replace($includeAnchor, $includeAnchor + "`n" + $includes.TrimEnd("`r", "`n"))
-
-          $namespaceAnchor = 'namespace Dynarmic::A64 {'
-          if (-not $text.Contains($namespaceAnchor)) { throw 'Dynarmic telemetry: namespace anchor not found' }
-          $tracker = @'
-namespace {
-
-struct Nx2JitCompileTracker {
-    std::mutex mutex;
-    std::unordered_map<std::uint64_t, std::uint64_t> cores_by_location;
-    std::array<std::uint64_t, 64> per_core{};
-    std::uint64_t total{};
-    std::uint64_t unique{};
-    std::uint64_t cross_core_duplicates{};
-    std::uint64_t same_core_recompiles{};
-};
-
-Nx2JitCompileTracker& Nx2JitTracker() {
-    // Intentionally process-lifetime so the atexit reporter never observes destroyed state.
-    static auto* tracker = new Nx2JitCompileTracker{};
-    return *tracker;
-}
-
-bool Nx2JitProfileEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("EDEN_NX2_CPU_JIT_PROFILE");
-        return value != nullptr && value[0] != '0';
-    }();
-    return enabled;
-}
-
-void ReportNx2JitCompileProfile() {
-    if (!Nx2JitProfileEnabled()) {
-        return;
-    }
-    auto& tracker = Nx2JitTracker();
-    std::scoped_lock lock{tracker.mutex};
-    std::fprintf(stderr,
-                 "[NX2 JIT] compile profile: total=%llu unique=%llu cross_core_duplicates=%llu same_core_recompiles=%llu\n",
-                 static_cast<unsigned long long>(tracker.total),
-                 static_cast<unsigned long long>(tracker.unique),
-                 static_cast<unsigned long long>(tracker.cross_core_duplicates),
-                 static_cast<unsigned long long>(tracker.same_core_recompiles));
-    for (std::size_t core = 0; core < tracker.per_core.size(); ++core) {
-        if (tracker.per_core[core] != 0) {
-            std::fprintf(stderr, "[NX2 JIT] core %zu compilations=%llu\n", core,
-                         static_cast<unsigned long long>(tracker.per_core[core]));
-        }
-    }
-}
-
-void RecordNx2JitCompile(std::uint64_t location, std::uint8_t processor_id) {
-    if (!Nx2JitProfileEnabled()) {
-        return;
-    }
-    static const bool report_registered = [] {
-        std::atexit(ReportNx2JitCompileProfile);
-        return true;
-    }();
-    (void)report_registered;
-
-    auto& tracker = Nx2JitTracker();
-    std::scoped_lock lock{tracker.mutex};
-    const std::uint64_t core_bit = processor_id < 64 ? (std::uint64_t{1} << processor_id) : 0;
-    auto [it, inserted] = tracker.cores_by_location.try_emplace(location, 0);
-    if (inserted) {
-        ++tracker.unique;
-    } else if (core_bit != 0 && (it->second & core_bit) == 0) {
-        ++tracker.cross_core_duplicates;
-    } else {
-        ++tracker.same_core_recompiles;
-    }
-    if (core_bit != 0) {
-        it->second |= core_bit;
-        ++tracker.per_core[processor_id];
-    }
-    ++tracker.total;
-
-    if ((tracker.total % 100000) == 0) {
-        std::fprintf(stderr,
-                     "[NX2 JIT] compile profile: total=%llu unique=%llu cross_core_duplicates=%llu same_core_recompiles=%llu\n",
-                     static_cast<unsigned long long>(tracker.total),
-                     static_cast<unsigned long long>(tracker.unique),
-                     static_cast<unsigned long long>(tracker.cross_core_duplicates),
-                     static_cast<unsigned long long>(tracker.same_core_recompiles));
-    }
-}
-
-} // namespace
-
-'@
-          $text = $text.Replace($namespaceAnchor, $tracker + $namespaceAnchor)
-
-          $compileAnchor = @'
-        // JIT Compile
-        const auto get_code = [this](u64 vaddr) { return conf.callbacks->MemoryReadCode(vaddr); };
-'@
-          $compileAnchor = $compileAnchor.TrimEnd("`r", "`n")
-          if (-not $text.Contains($compileAnchor)) { throw 'Dynarmic telemetry: JIT compile anchor not found' }
-          $compileReplacement = @'
-        // JIT Compile
-        RecordNx2JitCompile(descriptor.Value(), conf.processor_id);
-        const auto get_code = [this](u64 vaddr) { return conf.callbacks->MemoryReadCode(vaddr); };
-'@
-          $text = $text.Replace($compileAnchor, $compileReplacement.TrimEnd("`r", "`n"))
-
-          Set-Content $path -Value $text -Encoding utf8 -NoNewline
-          $check = Get-Content $path -Raw
-          foreach ($required in @(
-              'EDEN_NX2_CPU_JIT_PROFILE',
-              'RecordNx2JitCompile(descriptor.Value(), conf.processor_id);',
-              '[NX2 JIT] compile profile:',
-              'cross_core_duplicates',
-              'same_core_recompiles'
-          )) {
-              if (-not $check.Contains($required)) { throw "Dynarmic telemetry marker missing: $required" }
-          }
-          git diff --check
-          if ($LASTEXITCODE -ne 0) { throw 'CPU JIT telemetry patch introduced diff errors' }
+        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-cpu-jit-telemetry.ps1"'
 
       - name: Restore CPM dependency cache
         uses: actions/cache@v4
@@ -232,67 +99,59 @@ void RecordNx2JitCompile(std::uint64_t location, std::uint8_t processor_id) {
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           $devcmd = Join-Path $vs 'Common7\Tools\VsDevCmd.bat'
-          cmd /c "`"$devcmd`" -arch=x64 -host_arch=x64 && cmake --build build --target video_core --parallel 4 --verbose"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cmd /c "`"$devcmd`" -arch=x64 -host_arch=x64 && cmake --build build --target yuzu --parallel 4 --verbose"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmd /c "`"$devcmd`" -arch=x64 -host_arch=x64 && cmake --build build --target video_core --parallel 4 --verbose > cpu_jit_video_core.log 2>&1"
+          $videoExit = $LASTEXITCODE
+          if (Test-Path cpu_jit_video_core.log) { Get-Content cpu_jit_video_core.log }
+          if ($videoExit -ne 0) { exit $videoExit }
+          cmd /c "`"$devcmd`" -arch=x64 -host_arch=x64 && cmake --build build --target yuzu --parallel 4 --verbose > cpu_jit_gui.log 2>&1"
+          $guiExit = $LASTEXITCODE
+          if (Test-Path cpu_jit_gui.log) { Get-Content cpu_jit_gui.log }
+          if ($guiExit -ne 0) { exit $guiExit }
 
-      - name: Add profiling launcher and package notes
+      - name: Add CPU JIT profiling launcher
         shell: pwsh
         working-directory: eden
         run: |
           $bin = 'build/bin'
-          $gui = @('eglantine.exe', 'eden.exe', 'yuzu.exe') |
-            ForEach-Object { Join-Path $bin $_ } |
-            Where-Object { Test-Path $_ -PathType Leaf } |
-            Select-Object -First 1
+          $gui = @('eglantine.exe', 'eden.exe', 'yuzu.exe') | ForEach-Object { Join-Path $bin $_ } | Where-Object { Test-Path $_ -PathType Leaf } | Select-Object -First 1
           if (-not $gui) { throw 'CPU JIT profiling build has no GUI executable' }
           $exe = Split-Path $gui -Leaf
-
-          @"
-          @echo off
-          setlocal
-          set EDEN_NX2_CPU_JIT_PROFILE=1
-          set EDEN_NX2_GPU_PROFILE=1
-          echo CPU JIT duplicate-compilation and GPU hot-path profiling enabled.
-          echo Close Eden normally to print the final JIT totals.
-          "%~dp0$exe" %* 2^> "%~dp0NX2_CPU_JIT_PROFILE.log"
-          echo Profile log: %~dp0NX2_CPU_JIT_PROFILE.log
-          endlocal
-          "@ | Set-Content -Path (Join-Path $bin 'run-cpu-jit-profile.cmd') -Encoding ASCII
-
-          @'
-          CPU JIT profiling build
-          =======================
-          Run run-cpu-jit-profile.cmd. The final log reports:
-          - total JIT block compilations
-          - unique guest locations
-          - cross-core duplicate compilations
-          - same-core recompiles (including invalidation/recompile activity)
-          - per-core compilation counts
-
-          It also enables EDEN_NX2_GPU_PROFILE=1 so the same run reports DmaFetch, DmaDispatch,
-          cache-lock waits, pipeline misses, rejected draws and the other frontier GPU zones.
-
-          This build does NOT share JIT code yet. It measures whether doing so is worth the risk.
-          '@ | Set-Content -Path (Join-Path $bin 'CPU_JIT_PROFILE_README.txt') -Encoding UTF8
-
-          @'
-          [Core]
-          memory_layout_mode\default=false
-          memory_layout_mode=4
-          use_multi_core\default=false
-          use_multi_core=false
-
-          [Renderer]
-          backend\default=false
-          backend=1
-          '@ | Set-Content -Path (Join-Path $bin 'POKOPIA_CONFIG.txt') -Encoding UTF8
-
-          @'
-          Experimental measurement runtime. Normal optimized NX2 controls remain at their validated
-          defaults. The profiling launcher enables EDEN_NX2_CPU_JIT_PROFILE and EDEN_NX2_GPU_PROFILE.
-          '@ | Set-Content -Path (Join-Path $bin 'NX2_PERFORMANCE_NOTES.txt') -Encoding UTF8
+          @(
+            '@echo off',
+            'setlocal',
+            'set EDEN_NX2_CPU_JIT_PROFILE=1',
+            'set EDEN_NX2_GPU_PROFILE=1',
+            'set EDEN_NX2_GPU_PROFILE_PAGES=0',
+            'set EDEN_NX2_TC_LOG=0',
+            'echo CPU JIT duplicate-compilation and lightweight GPU profiling enabled.',
+            'echo Close Eden normally to print the final JIT totals.',
+            ('"%~dp0' + $exe + '" %* 2^> "%~dp0NX2_CPU_JIT_PROFILE.log"'),
+            'echo Profile log: %~dp0NX2_CPU_JIT_PROFILE.log',
+            'endlocal'
+          ) | Set-Content -Path (Join-Path $bin 'run-cpu-jit-profile.cmd') -Encoding ASCII
+          @(
+            'CPU JIT profiling build',
+            '=======================',
+            'Run run-cpu-jit-profile.cmd through the same MKW race used for performance testing.',
+            'The final log reports total JIT compilations, unique guest locations, cross-core',
+            'duplicates, same-core recompiles, and per-core compilation counts.',
+            '',
+            'This build measures duplication only. It does not share or persist generated x86 code.'
+          ) | Set-Content -Path (Join-Path $bin 'CPU_JIT_PROFILE_README.txt') -Encoding UTF8
+          @(
+            '[Core]',
+            'memory_layout_mode\default=false',
+            'memory_layout_mode=4',
+            'use_multi_core\default=false',
+            'use_multi_core=false',
+            '',
+            '[Renderer]',
+            'backend\default=false',
+            'backend=1'
+          ) | Set-Content -Path (Join-Path $bin 'POKOPIA_CONFIG.txt') -Encoding UTF8
+          if (-not (Test-Path (Join-Path $bin 'NX2_PERFORMANCE_NOTES.txt'))) {
+            'Experimental CPU JIT measurement runtime.' | Set-Content -Path (Join-Path $bin 'NX2_PERFORMANCE_NOTES.txt') -Encoding UTF8
+          }
 
       - name: Stage reusable profiling checkpoint
         shell: pwsh
@@ -303,6 +162,17 @@ void RecordNx2JitCompile(std::uint64_t location, std::uint8_t processor_id) {
         shell: pwsh
         working-directory: eden
         run: '& "$env:GITHUB_WORKSPACE\automation\.github\scripts\package-ns2-runtime.ps1"'
+
+      - name: Upload CPU JIT profiling logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-NS2-CPU-JIT-Profile-build-log-${{ github.sha }}
+          path: |
+            eden/cpu_jit_video_core.log
+            eden/cpu_jit_gui.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Upload CPU JIT profiling runtime
         uses: actions/upload-artifact@v7
