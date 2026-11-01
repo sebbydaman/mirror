@@ -8,6 +8,7 @@ on:
     paths:
       - '.github/workflows/ns2-final-stack-preflight.yml'
       - '.github/frontier/**'
+      - '.github/experiments/**'
 
 permissions:
   contents: read
@@ -20,6 +21,8 @@ jobs:
   preflight:
     runs-on: windows-2022
     timeout-minutes: 15
+    env:
+      EDEN_SKIP_POST_BUILD31_FRONTIER: '1'
     steps:
       - name: Checkout build automation
         uses: actions/checkout@v5
@@ -119,6 +122,11 @@ jobs:
         shell: pwsh
         working-directory: eden
         run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-pushbuffer-mapgen-hardening.ps1"'
+
+      - name: 15 Loose RomFS memoization
+        shell: pwsh
+        working-directory: eden
+        run: '& "$env:GITHUB_WORKSPACE\automation\.github\experiments\apply-loose-romfs-memoization.ps1"'
 
       - name: Validate combined diff
         shell: pwsh
