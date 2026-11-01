@@ -40,6 +40,7 @@ jobs:
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-nx2-memory-layout.ps1"
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-bananza-post-menu-gpu.ps1"
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-late-runtime.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-handheld-mode.ps1"
 
       - name: Validate proven regression surface
         shell: pwsh
@@ -47,6 +48,7 @@ jobs:
         run: |
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-ns2-regressions.ps1"
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-pokedinner-performance.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-ns2-late-regressions.ps1"
 
       - name: Capture exact integrated source state
         shell: pwsh
