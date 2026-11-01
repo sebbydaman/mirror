@@ -1,5 +1,10 @@
 $ErrorActionPreference = 'Stop'
 
+# This validation is deliberately the last source-stack checkpoint in every normal/PGO/JIT path.
+# Apply tiny upstream guards here, after all compressed donor/frontier payloads have finished, so
+# those payloads keep their exact checked contexts and the compiler sees the normalized final tree.
+& "$PSScriptRoot\apply-ns2-post-stack-upstream-guards.ps1"
+
 function Require-Text([string]$Path, [string]$Needle, [string]$Name) {
     if (-not (Test-Path $Path)) { throw "NS2 stability regression: missing required file $Path" }
     $text = Get-Content $Path -Raw
@@ -30,6 +35,14 @@ Require-Text $model 'Emulation is running, deferring game list reload.' 'running
 Require-Text $workerHeader 'void Stop();' 'game-list worker synchronous stop API'
 Require-Text $worker 'stop_requested.exchange(true)' 'idempotent game-list worker shutdown'
 Require-Text $worker 'while (model->current_worker.get() == this)' 'nested-event worker replacement guard'
+
+# Do not regress the post-stack sparse-residency capability guard. Huge virtual images may only
+# take the unbacked sparse fallback when the host supports sparse residency for that image type.
+Require-Text 'src/video_core/vulkan_common/vulkan_device.h' 'bool IsSparseResidencyImageSupported(VkImageType type) const {' 'generic sparse image capability helper'
+Require-Text 'src/video_core/vulkan_common/vulkan_device.h' 'return features.features.sparseResidencyImage3D;' '3D sparse residency capability'
+Require-Text 'src/video_core/renderer_vulkan/vk_texture_cache.cpp' 'device.IsSparseResidencyImageSupported(VK_IMAGE_TYPE_2D)' 'sparse-layer generic capability query'
+Require-Text 'src/video_core/vulkan_common/vulkan_memory_allocator.cpp' 'ci.samples == VK_SAMPLE_COUNT_1_BIT' 'single-sample huge sparse fallback guard'
+Require-Text 'src/video_core/vulkan_common/vulkan_memory_allocator.cpp' 'device.IsSparseResidencyImageSupported(ci.imageType);' 'image-type huge sparse fallback guard'
 
 # Reject the old unsafe shapes if a later donor merge accidentally resurrects them. Search for the
 # actual controller call rather than the word CreateFactories, because the explanatory comment above
