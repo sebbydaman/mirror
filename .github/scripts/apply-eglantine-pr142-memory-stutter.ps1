@@ -24,6 +24,20 @@ function Test-GitObject([string]$Sha) {
     return $LASTEXITCODE -eq 0
 }
 
+function Replace-ExactlyOnce {
+    param(
+        [Parameter(Mandatory = $true)][string]$Text,
+        [Parameter(Mandatory = $true)][string]$Old,
+        [Parameter(Mandatory = $true)][string]$New,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    $first = $Text.IndexOf($Old, [StringComparison]::Ordinal)
+    if ($first -lt 0) { throw "PR #142 adapter anchor missing: $Name" }
+    $second = $Text.IndexOf($Old, $first + $Old.Length, [StringComparison]::Ordinal)
+    if ($second -ge 0) { throw "PR #142 adapter anchor is ambiguous: $Name" }
+    return $Text.Substring(0, $first) + $New + $Text.Substring($first + $Old.Length)
+}
+
 # The donor branch is tiny. Fetch enough ancestry to keep the exact pinned commits available even if
 # the branch receives a few follow-up fixes; then verify every object before generating any patch.
 & git fetch --no-tags --depth=32 $donorUrl $donorRef
@@ -85,12 +99,173 @@ function Apply-DonorFile {
     return $true
 }
 
+function Adapt-KMemoryManagerCpp {
+    $path = 'src/core/hle/kernel/k_memory_manager.cpp'
+    $marker = 'void KMemoryManager::FillAllocatedPages('
+    if ((Get-Content $path -Raw).Contains($marker)) {
+        Write-Host '[PRESENT] kernel freed-page zero-fill implementation'
+        return
+    }
+
+    # The integrated Eglantine tree already replaced the donor's optimized-path raw memset with
+    # ClearBackingRegion. Preserve that newer backing-store behavior while adding PR #142's
+    # freed-page knowledge around it.
+    $text = (Get-Content $path -Raw) -replace "`r`n", "`n"
+
+    if (-not $text.Contains('#include <utility>')) {
+        $text = Replace-ExactlyOnce $text "#include <algorithm>`n" "#include <algorithm>`n#include <utility>`n" 'k_memory_manager utility include'
+    }
+    if (-not $text.Contains('#include "common/div_ceil.h"')) {
+        $text = Replace-ExactlyOnce $text "#include `"common/assert.h`"`n" "#include `"common/assert.h`"`n#include `"common/div_ceil.h`"`n" 'k_memory_manager div_ceil include'
+    }
+
+    if (-not $text.Contains('std::exchange(m_system.DeviceMemory().used_by_kernel, true)')) {
+        $old = @'
+    // Update the used size for all managers.
+    for (size_t i = 0; i < m_num_managers; ++i) {
+        m_managers[i].SetInitialUsedHeapSize(reserved_sizes[i]);
+    }
+}
+'@
+        $new = @'
+    // Update the used size for all managers.
+    for (size_t i = 0; i < m_num_managers; ++i) {
+        m_managers[i].SetInitialUsedHeapSize(reserved_sizes[i]);
+    }
+
+    // The host backing outlives emulation sessions: after an earlier one, no page is known zero.
+    if (std::exchange(m_system.DeviceMemory().used_by_kernel, true)) {
+        for (size_t i = 0; i < m_num_managers; ++i) {
+            m_managers[i].MarkAllFreed();
+        }
+    }
+}
+'@
+        $text = Replace-ExactlyOnce $text $old $new 'kernel manager cross-session freed-page reset'
+    }
+
+    $directClear = @'
+    } else {
+        // Set all the allocated memory.
+        for (const auto& block : *out) {
+            m_system.DeviceMemory().buffer.ClearBackingRegion(GetInteger(block.GetAddress()) -
+                                                                  Core::DramMemoryMap::Base,
+                                                              block.GetSize(), fill_pattern);
+        }
+    }
+
+    R_SUCCEED();
+}
+'@
+    $selectiveClear = @'
+    } else {
+        // Set all the allocated memory. A zero fill only touches pages that were previously freed;
+        // never-used backing is already zero and need not be committed in host RAM.
+        for (const auto& block : *out) {
+            this->FillAllocatedPages(block.GetAddress(), block.GetNumPages(), fill_pattern);
+        }
+    }
+
+    R_SUCCEED();
+}
+'@
+    if ($text.Contains($directClear)) {
+        $text = Replace-ExactlyOnce $text $directClear $selectiveClear 'AllocateForProcess selective zero-fill routing'
+    } elseif (-not $text.Contains('this->FillAllocatedPages(block.GetAddress(), block.GetNumPages(), fill_pattern);')) {
+        throw 'PR #142 adapter could not locate AllocateForProcess backing clear'
+    }
+
+    if (-not $text.Contains($marker)) {
+        $anchor = 'size_t KMemoryManager::Impl::Initialize(KPhysicalAddress address, size_t size,'
+        $fillImpl = @'
+void KMemoryManager::FillAllocatedPages(KPhysicalAddress address, size_t num_pages,
+                                        u8 fill_pattern) {
+    auto& backing = m_system.DeviceMemory().buffer;
+    while (num_pages > 0) {
+        auto& manager = this->GetManager(address);
+        const size_t cur_pages = (std::min)(num_pages, manager.GetPageOffsetToEnd(address));
+        if (fill_pattern != 0) {
+            backing.ClearBackingRegion(GetInteger(address) - Core::DramMemoryMap::Base,
+                                       cur_pages * PageSize, fill_pattern);
+        } else {
+            const size_t first = manager.GetPageOffset(address);
+            manager.TakeFreedRuns(first, cur_pages, [&](size_t index, size_t count) {
+                const KPhysicalAddress run = address + (index - first) * PageSize;
+                backing.ClearBackingRegion(GetInteger(run) - Core::DramMemoryMap::Base,
+                                           count * PageSize, 0);
+            });
+        }
+        address += cur_pages * PageSize;
+        num_pages -= cur_pages;
+    }
+}
+
+'@
+        $text = Replace-ExactlyOnce $text $anchor ($fillImpl + $anchor) 'FillAllocatedPages insertion point'
+    }
+
+    $oldResize = @'
+    m_page_reference_counts.resize(
+        Kernel::Board::Nintendo::Nx::KSystemControl::Init::GetIntendedMemorySize() / PageSize);
+'@
+    $newResize = @'
+    // Indexed by page offset into this manager's region, so its own size is enough. Sizing every
+    // manager for all guest DRAM wastes substantial host memory on Switch 2 layouts.
+    m_page_reference_counts.resize(size / PageSize);
+    m_freed_pages =
+        std::make_unique<std::atomic<u64>[]>(Common::DivCeil(size / PageSize, size_t{64}));
+'@
+    if ($text.Contains($oldResize)) {
+        $text = Replace-ExactlyOnce $text $oldResize $newResize 'per-manager page metadata sizing'
+    } elseif (-not $text.Contains('m_page_reference_counts.resize(size / PageSize);')) {
+        throw 'PR #142 adapter could not locate page-reference-count allocation'
+    }
+
+    $oldOptimizedFill = @'
+            // Fill the page (a zero fill skips pages that are still zero).
+            device_memory.buffer.ClearBackingRegion(
+                GetInteger(m_heap.GetAddress()) + offset * PageSize - Core::DramMemoryMap::Base,
+                PageSize, fill_pattern);
+'@
+    $newOptimizedFill = @'
+            // The integrated tree uses ClearBackingRegion rather than the donor's raw memset.
+            // Keep that behavior, but do not commit a never-used host page just to write zero.
+            if (this->TakeFreed(offset) || fill_pattern != 0) {
+                device_memory.buffer.ClearBackingRegion(
+                    GetInteger(m_heap.GetAddress()) + offset * PageSize - Core::DramMemoryMap::Base,
+                    PageSize, fill_pattern);
+            }
+'@
+    if ($text.Contains($oldOptimizedFill)) {
+        $text = Replace-ExactlyOnce $text $oldOptimizedFill $newOptimizedFill 'optimized allocation freed-page clear guard'
+    } elseif (-not $text.Contains('this->TakeFreed(offset) || fill_pattern != 0')) {
+        throw 'PR #142 adapter could not locate integrated optimized-allocation backing clear'
+    }
+
+    [IO.File]::WriteAllText($path, $text, [Text.UTF8Encoding]::new($false))
+    $check = Get-Content $path -Raw
+    foreach ($required in @(
+        'void KMemoryManager::FillAllocatedPages(',
+        'std::exchange(m_system.DeviceMemory().used_by_kernel, true)',
+        'manager.TakeFreedRuns',
+        'm_page_reference_counts.resize(size / PageSize);',
+        'this->TakeFreed(offset) || fill_pattern != 0'
+    )) {
+        if (-not $check.Contains($required)) {
+            throw "PR #142 adapted k_memory_manager.cpp is missing '$required'"
+        }
+    }
+    Write-Host '[ADAPTED] kernel freed-page zero-fill implementation over newer ClearBackingRegion path'
+}
+
 # Host-RAM pressure: avoid committing/zeroing guest pages that have never been used, while tracking
 # freed pages so reused memory still receives the required zero/fill semantics.
 Apply-DonorFile -Name 'kernel device-memory reuse flag' -Base $kernelBase -Commit $kernelCommit `
     -Path 'src/core/device_memory.h' -Marker 'bool used_by_kernel{};' | Out-Null
-Apply-DonorFile -Name 'kernel freed-page zero-fill implementation' -Base $kernelBase -Commit $kernelCommit `
-    -Path 'src/core/hle/kernel/k_memory_manager.cpp' -Marker 'void KMemoryManager::FillAllocatedPages(' | Out-Null
+$cppApplied = Apply-DonorFile -Name 'kernel freed-page zero-fill implementation' -Base $kernelBase `
+    -Commit $kernelCommit -Path 'src/core/hle/kernel/k_memory_manager.cpp' `
+    -Marker 'void KMemoryManager::FillAllocatedPages(' -AllowCheckFailure
+if (-not $cppApplied) { Adapt-KMemoryManagerCpp }
 Apply-DonorFile -Name 'kernel freed-page tracking state' -Base $kernelBase -Commit $kernelCommit `
     -Path 'src/core/hle/kernel/k_memory_manager.h' -Marker 'std::unique_ptr<std::atomic<u64>[]> m_freed_pages;' | Out-Null
 Apply-DonorFile -Name 'page-table zero-fill routing' -Base $kernelBase -Commit $kernelCommit `
