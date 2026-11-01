@@ -6,7 +6,8 @@ $ErrorActionPreference = 'Stop'
 # Cache that decision once per pure Increasing run and call the same existing FrontCallMethod
 # implementation directly for Maxwell3D native Turing and Kepler compute front-macro paths.
 # All other engines/states fall back to CallMethod unchanged. Preserve EDEN_NX2_SEM_WATCH by
-# disabling the shortcut while that diagnostic is requested.
+# disabling the shortcut while that diagnostic is requested. Profiling counts the whole run once
+# instead of one atomic/counter update per word, reducing measurement distortion.
 
 function Write-PatchedText([string]$Path, [string]$Text) {
     $normalized = $Text.Replace("`r`n", "`n").TrimEnd("`r", "`n") + "`n"
@@ -54,6 +55,9 @@ if (-not $text.Contains($marker)) {
                 auto& run_split = VideoCommon::GpuSplit::Get();
                 const bool run_split_active = run_split.Active();
                 const bool run_profile_enabled = Profile::Enabled();
+                if (run_profile_enabled && run_split_active) [[unlikely]] {
+                    Profile::Add(Profile::Counter::DmaSplitEngineWords, available_words);
+                }
                 Engines::Maxwell3D* front_run_maxwell = nullptr;
                 Engines::KeplerCompute* front_run_compute = nullptr;
                 if (g_semaphore_watch == 0 && run_split_active && run_split.FrontMacros()) {
@@ -76,11 +80,6 @@ if (-not $text.Contains($marker)) {
                 do {
                     dma_state.dma_word_offset = u64((word_offset + index) * sizeof(u32));
                     dma_state.is_last_call = dma_state.method_count <= 1;
-                    if (run_profile_enabled) [[unlikely]] {
-                        if (run_split_active) {
-                            Profile::Add(Profile::Counter::DmaSplitEngineWords, 1);
-                        }
-                    }
                     const u32 argument = commands[index].argument;
                     if (front_run_maxwell != nullptr) {
                         front_run_maxwell->FrontCallMethod(system, run_split, dma_state.method,
@@ -109,6 +108,7 @@ if (-not $text.Contains($marker)) {
 
 $final = (Get-Content $path -Raw).Replace("`r`n", "`n")
 foreach ($needle in @(
+    'Profile::Add(Profile::Counter::DmaSplitEngineWords, available_words);',
     'Engines::Maxwell3D* front_run_maxwell = nullptr;',
     'Engines::KeplerCompute* front_run_compute = nullptr;',
     'g_semaphore_watch == 0 && run_split_active && run_split.FrontMacros()',
@@ -131,4 +131,4 @@ if ($LASTEXITCODE -ne 0) {
     throw 'DMA increasing front-cache introduced diff/whitespace errors'
 }
 
-Write-Host 'DMA increasing front-cache validated: same front-macro implementations, cached once per run.'
+Write-Host 'DMA increasing front-cache validated: same front-macro implementations, cached once per run; profiling count is batched.'
