@@ -5,7 +5,9 @@ if (-not (Test-Path $path -PathType Leaf)) {
     throw "NX2 coherence telemetry: missing $path"
 }
 
-$text = (Get-Content $path -Raw).Replace("`r`n", "`n")
+# Some donor patches leave mixed line endings in this file. Normalize all CR bytes first so the
+# structural anchors below stay deterministic in capture, normal and PGO workflows.
+$text = (Get-Content $path -Raw).Replace("`r", "")
 if ($text.Contains('NX2 coherence:')) {
     Write-Host '[PRESENT] NX2 coherence wait telemetry already installed'
     exit 0
@@ -22,19 +24,6 @@ if (-not $text.Contains($loggingAnchor)) {
     throw 'NX2 coherence telemetry: logging include anchor missing'
 }
 $text = $text.Replace($loggingAnchor, $loggingAnchor + "`n" + '#include "common/logging.h"')
-
-$namespaceAnchor = @'
-constexpr u64 GpuClockMultiplier(Settings::GpuClock clock) {
-    switch (clock) {
-    case Settings::GpuClock::Boost:
-        return 256;
-    case Settings::GpuClock::Overclock:
-        return 512;
-    default:
-        return 1;
-    }
-}
-'@
 
 $profileHelpers = @'
 
@@ -115,94 +104,89 @@ void Nx2CoherenceReportFrame() {
 }
 '@
 
-if (-not $text.Contains($namespaceAnchor)) {
-    throw 'NX2 coherence telemetry: GPU clock helper anchor missing'
+$namespaceClose = '} // Anonymous namespace'
+if (([regex]::Matches($text, [regex]::Escape($namespaceClose))).Count -ne 1) {
+    throw 'NX2 coherence telemetry: anonymous-namespace boundary missing or ambiguous'
 }
-$text = $text.Replace($namespaceAnchor, $namespaceAnchor + $profileHelpers)
+$text = $text.Replace($namespaceClose, $profileHelpers + "`n" + $namespaceClose)
 
-$oldFrame = @'
-    void RendererFrameEndNotify() {
-        system.GetPerfStats().EndGameFrame();
-    }
-'@
-$newFrame = @'
-    void RendererFrameEndNotify() {
-        system.GetPerfStats().EndGameFrame();
-        Nx2CoherenceReportFrame();
-    }
-'@
-if (-not $text.Contains($oldFrame)) {
-    throw 'NX2 coherence telemetry: frame-end anchor missing'
+$frameStatement = '        system.GetPerfStats().EndGameFrame();'
+if (([regex]::Matches($text, [regex]::Escape($frameStatement))).Count -ne 1) {
+    throw 'NX2 coherence telemetry: frame-end statement missing or ambiguous'
 }
-$text = $text.Replace($oldFrame, $newFrame)
+$text = $text.Replace($frameStatement, $frameStatement + "`n        Nx2CoherenceReportFrame();")
 
-$oldRead = @'
-    VideoCore::RasterizerDownloadArea OnCPURead(DAddr addr, u64 size) {
-        auto raster_area = renderer->ReadRasterizer()->GetFlushArea(addr, size);
-        if (raster_area.preemtive) {
-            return raster_area;
-        }
-        raster_area.preemtive = true;
-        // A guest CPU read of GPU-written memory (reactive flushing): count them, they decide
-        // whether buffer data must be copied back at every fence (EDEN_NX2_BUFFER_DOWNLOADS).
-        // Reactive readback performs no unconditional diagnostic bookkeeping. The old bring-up
-        // counter did an atomic operation on every CPU read of GPU-written memory and emitted an
-        // INFO log every 64 reads even in normal gameplay, while no runtime policy consumed it.
-const u64 fence = RequestSyncOperation([this, &raster_area]() {
-            renderer->ReadRasterizer()->FlushRegion(raster_area.start_address, raster_area.end_address - raster_area.start_address);
-        });
-        gpu_thread.TickGPU(is_async);
-        WaitForSyncOperation(fence);
-        return raster_area;
-    }
-'@
-$newRead = @'
-    VideoCore::RasterizerDownloadArea OnCPURead(DAddr addr, u64 size) {
-        const bool profile = Nx2CoherenceProfileEnabled();
-        u64 lookup_start_ns = 0;
-        if (profile) {
-            lookup_start_ns = Nx2CoherenceNowNs();
-            Nx2CoherenceEnsureWindow(lookup_start_ns);
-            g_nx2_coherence_profile.cpu_reads.fetch_add(1, std::memory_order_relaxed);
-        }
-
-        auto raster_area = renderer->ReadRasterizer()->GetFlushArea(addr, size);
-        if (profile) {
-            g_nx2_coherence_profile.lookup_ns.fetch_add(Nx2CoherenceNowNs() - lookup_start_ns,
-                                                         std::memory_order_relaxed);
-        }
-        if (raster_area.preemtive) {
-            if (profile) {
-                g_nx2_coherence_profile.preemptive_reads.fetch_add(1,
-                                                                   std::memory_order_relaxed);
-            }
-            return raster_area;
-        }
-        raster_area.preemtive = true;
-
-        const u64 reactive_start_ns = profile ? Nx2CoherenceNowNs() : 0;
-        const u64 fence = RequestSyncOperation([this, &raster_area]() {
-            renderer->ReadRasterizer()->FlushRegion(
-                raster_area.start_address, raster_area.end_address - raster_area.start_address);
-        });
-        gpu_thread.TickGPU(is_async);
-        const u64 wait_start_ns = profile ? Nx2CoherenceNowNs() : 0;
-        WaitForSyncOperation(fence);
-        if (profile) {
-            const u64 complete_ns = Nx2CoherenceNowNs();
-            g_nx2_coherence_profile.wait_ns.fetch_add(complete_ns - wait_start_ns,
-                                                       std::memory_order_relaxed);
-            g_nx2_coherence_profile.reactive_ns.fetch_add(complete_ns - reactive_start_ns,
-                                                           std::memory_order_relaxed);
-            g_nx2_coherence_profile.reactive_syncs.fetch_add(1, std::memory_order_relaxed);
-        }
-        return raster_area;
-    }
-'@
-if (-not $text.Contains($oldRead)) {
-    throw 'NX2 coherence telemetry: OnCPURead anchor missing'
+$readStartMarker = '    VideoCore::RasterizerDownloadArea OnCPURead(DAddr addr, u64 size) {'
+$readEndMarker = '    /// Notify rasterizer that any caches of the specified region should be invalidated'
+$readStart = $text.IndexOf($readStartMarker, [StringComparison]::Ordinal)
+$readEnd = $text.IndexOf($readEndMarker, $readStart, [StringComparison]::Ordinal)
+if ($readStart -lt 0 -or $readEnd -lt 0 -or $readEnd -le $readStart) {
+    throw 'NX2 coherence telemetry: OnCPURead structural boundaries missing'
 }
-$text = $text.Replace($oldRead, $newRead)
+$readBlock = $text.Substring($readStart, $readEnd - $readStart)
+
+$readBlock = $readBlock.Replace(
+    $readStartMarker,
+    $readStartMarker + "`n        const bool profile = Nx2CoherenceProfileEnabled();`n" +
+    "        u64 lookup_start_ns = 0;`n        if (profile) {`n" +
+    "            lookup_start_ns = Nx2CoherenceNowNs();`n" +
+    "            Nx2CoherenceEnsureWindow(lookup_start_ns);`n" +
+    "            g_nx2_coherence_profile.cpu_reads.fetch_add(1, std::memory_order_relaxed);`n" +
+    "        }`n")
+
+$lookupLine = '        auto raster_area = renderer->ReadRasterizer()->GetFlushArea(addr, size);'
+if (-not $readBlock.Contains($lookupLine)) {
+    throw 'NX2 coherence telemetry: GetFlushArea line missing'
+}
+$readBlock = $readBlock.Replace(
+    $lookupLine,
+    $lookupLine + "`n        if (profile) {`n" +
+    "            g_nx2_coherence_profile.lookup_ns.fetch_add(Nx2CoherenceNowNs() - lookup_start_ns,`n" +
+    "                                                         std::memory_order_relaxed);`n        }")
+
+$preemptiveBlock = "        if (raster_area.preemtive) {`n            return raster_area;`n        }"
+if (-not $readBlock.Contains($preemptiveBlock)) {
+    throw 'NX2 coherence telemetry: preemptive-read block missing'
+}
+$readBlock = $readBlock.Replace(
+    $preemptiveBlock,
+    "        if (raster_area.preemtive) {`n            if (profile) {`n" +
+    "                g_nx2_coherence_profile.preemptive_reads.fetch_add(1,`n" +
+    "                                                                   std::memory_order_relaxed);`n" +
+    "            }`n            return raster_area;`n        }")
+
+$fenceNeedle = 'const u64 fence = RequestSyncOperation([this, &raster_area]() {'
+if (([regex]::Matches($readBlock, [regex]::Escape($fenceNeedle))).Count -ne 1) {
+    throw 'NX2 coherence telemetry: reactive fence anchor missing or ambiguous'
+}
+$readBlock = $readBlock.Replace(
+    $fenceNeedle,
+    "        const u64 reactive_start_ns = profile ? Nx2CoherenceNowNs() : 0;`n" +
+    '        const u64 fence = RequestSyncOperation([this, &raster_area]() {')
+
+$tickLine = '        gpu_thread.TickGPU(is_async);'
+if (([regex]::Matches($readBlock, [regex]::Escape($tickLine))).Count -ne 1) {
+    throw 'NX2 coherence telemetry: TickGPU anchor missing or ambiguous'
+}
+$readBlock = $readBlock.Replace(
+    $tickLine,
+    $tickLine + "`n        const u64 wait_start_ns = profile ? Nx2CoherenceNowNs() : 0;")
+
+$waitLine = '        WaitForSyncOperation(fence);'
+if (([regex]::Matches($readBlock, [regex]::Escape($waitLine))).Count -ne 1) {
+    throw 'NX2 coherence telemetry: reactive wait anchor missing or ambiguous'
+}
+$readBlock = $readBlock.Replace(
+    $waitLine,
+    $waitLine + "`n        if (profile) {`n            const u64 complete_ns = Nx2CoherenceNowNs();`n" +
+    "            g_nx2_coherence_profile.wait_ns.fetch_add(complete_ns - wait_start_ns,`n" +
+    "                                                       std::memory_order_relaxed);`n" +
+    "            g_nx2_coherence_profile.reactive_ns.fetch_add(complete_ns - reactive_start_ns,`n" +
+    "                                                           std::memory_order_relaxed);`n" +
+    "            g_nx2_coherence_profile.reactive_syncs.fetch_add(1, std::memory_order_relaxed);`n" +
+    "        }")
+
+$text = $text.Substring(0, $readStart) + $readBlock + $text.Substring($readEnd)
 
 [IO.File]::WriteAllText((Resolve-Path $path).Path, $text.TrimEnd("`r", "`n") + "`n",
     [Text.UTF8Encoding]::new($false))
