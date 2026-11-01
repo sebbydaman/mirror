@@ -15,6 +15,8 @@ $vkRasterizer = 'src/video_core/renderer_vulkan/vk_rasterizer.cpp'
 $vkTexture = 'src/video_core/renderer_vulkan/vk_texture_cache.cpp'
 $vkTextureHeader = 'src/video_core/renderer_vulkan/vk_texture_cache.h'
 $textureCache = 'src/video_core/texture_cache/texture_cache.h'
+$textureBase = 'src/video_core/texture_cache/texture_cache_base.h'
+$nx2 = 'src/video_core/nx2.h'
 $gsv = 'src/core/hle/service/nx2_gsv.h'
 $core = 'src/core/core.cpp'
 $lifecycle = 'src/core/hle/service/am/lifecycle_manager.cpp'
@@ -30,12 +32,27 @@ Require-Text $ampere '2D gather with per-texel offsets' 'TLD4 .PTP per-texel gat
 Require-Text $ampere 'TXD 2D or ARRAY_2D, four channels; the two destination pairs anywhere.' 'Splatoon Raiders 2D TXD split-destination lowering'
 Require-Text $gsv 'seen on Mario Kart World and Splatoon Raiders' 'generic 1920x1080 Switch 2 handheld crop'
 
+# Title-4/PokeDinner shader forms that are easy to lose in a large lower_to_maxwell conflict. These
+# include its high-frequency 64-bit carry chain and the per-primitive hint that has no Maxwell
+# attribute equivalent and is deliberately dropped rather than rejecting the whole pipeline.
+Require-Text $ampere 'TMML (LOD query), 2D. Results are 8.8 fixed point' 'native TMML 2D LOD query lowering'
+Require-Text $ampere 'opcode == 0x322 && address == 0x5c && components == 1' 'Ampere a[0x5c] per-primitive hint drop'
+Require-Text $ampere 'carry = (a + b) < a, unsigned' 'IADD3/UIADD3 carry-out lowering'
+Require-Text $ampere 'const bool carry_in = insn.Bits(74, 1) != 0;' 'IADD3/UIADD3 carry-in lowering'
+
 # Eglantine first-read traps merged with PokeDinner selective copyback.
 Require-Text $bufferBase 'bool FlushesOnCpuRead() const' 'CPU-read buffer flush mode'
 Require-Text $bufferBase 'void ArmReadTraps(DAddr device_addr, u64 size)' 'buffer-cache first-read trap arming'
 Require-Text $bufferBase 'read_trapped_ranges.Add(begin, end - begin);' 'read-trap lifetime tracking'
 Require-Text $bufferCache 'read_trapped_ranges.Subtract(slot_buffers[buffer_id].CpuAddr()' 'read-trap cleanup on buffer deletion'
 Require-Text $vkRasterizer 'if (buffer_cache.FlushesOnCpuRead())' 'Vulkan CPU-read readback path'
+
+# Sparse virtual textures: large unwritten pools stay unbacked/zero until the first CPU or GPU write,
+# then get replaced. This is distinct from merely accounting their memory correctly.
+Require-Text $nx2 'inline bool Nx2SparseUnwritten' 'unwritten sparse-region query'
+Require-Text $vkTexture 'bool IsUnwrittenSparse' 'unwritten sparse Vulkan image selection'
+Require-Text $textureBase 'UnwrittenSparse = 1 << 21' 'unwritten sparse image lifetime flag'
+Require-Text $textureCache 'True(image.flags & ImageFlagBits::UnwrittenSparse)' 'unwritten sparse first-write replacement path'
 
 # Late sparse-memory deadlock fix and precise VRAM accounting.
 Require-Text $gsv 'struct MappedBacking {' 'GPU/guest mapping deadlock separation'
