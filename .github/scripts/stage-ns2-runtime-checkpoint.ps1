@@ -30,6 +30,49 @@ foreach ($note in 'POKOPIA_CONFIG.txt', 'NX2_PERFORMANCE_NOTES.txt') {
     }
 }
 
+# Keep the packaged controls synchronized with the frontier stack without duplicating text when a
+# checkpoint is staged more than once. Normal users leave all controls unset; these are targeted
+# diagnosis/rollback switches for the new optimizations.
+$performanceNotes = Join-Path $source 'NX2_PERFORMANCE_NOTES.txt'
+$notesText = Get-Content $performanceNotes -Raw
+$frontierMarker = 'Frontier profiling / rollback controls'
+if (-not $notesText.Contains($frontierMarker)) {
+    @'
+
+Frontier profiling / rollback controls
+======================================
+EDEN_NX2_UBOREUSE=0
+  Disable same-tick, byte-identical small uniform-buffer stream reuse. Default is enabled on Vulkan.
+
+EDEN_NX2_GPU_PROFILE=1
+  Enable granular GPU-thread profiling: DMA fetch/dispatch, channel switching, deferred split calls,
+  geometry/vertex/uniform setup, cache-lock waits, rejected draws and pipeline misses.
+
+EDEN_NX2_TC_LOG=1
+  Re-enable the periodic texture-cache inventory/sort diagnostic. It stays off during normal play.
+
+The DMA pushbuffer span fast-path is guarded by GMMU mapping epochs and preserves submitted-command
+snapshot / GPU-written-command coherency ordering. There is no user switch because stale mappings
+fall back automatically to the existing guest-memory path.
+'@ | Add-Content -Path $performanceNotes -Encoding UTF8
+}
+
+# A one-click diagnostics launcher is useful for the new profiler and does not change normal launch
+# behavior. It writes the emulator's stderr beside the executable while leaving regular logs intact.
+$guiName = Split-Path $gui -Leaf
+$profileLauncher = Join-Path $source 'run-nx2-gpu-profile.cmd'
+@"
+@echo off
+setlocal
+set EDEN_NX2_GPU_PROFILE=1
+set EDEN_NX2_TC_LOG=1
+echo NX2 granular GPU profiling enabled.
+echo Close Eden normally when the representative gameplay section is complete.
+"%~dp0$guiName" %* 2^> "%~dp0NX2_GPU_PROFILE.stderr.log"
+echo Diagnostic stderr: %~dp0NX2_GPU_PROFILE.stderr.log
+endlocal
+"@ | Set-Content -Path $profileLauncher -Encoding ASCII
+
 function Find-RuntimeDependency([string]$name) {
     $roots = @(
         (Join-Path (Get-Location) 'build'),
