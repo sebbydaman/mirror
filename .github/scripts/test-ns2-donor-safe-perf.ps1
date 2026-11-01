@@ -81,10 +81,53 @@ if ($finishCount -ne 1) {
 if (-not $finishSection.Contains('downloads.swap(batched_downloads);')) {
     throw 'Safe donor regression: batch queue is not detached before the GPU wait/writeback'
 }
-
-# Preserve the older collector optimization: garbage-collector buffer evictions already use their
-# own one-wait DownloadBuffersMemory path and must not regress while adding FlushRegion batching.
 Require-Text $bufferCache 'void BufferCache<P>::DownloadBuffersMemory(std::span<const BufferId> buffer_ids)' 'existing garbage-collector buffer batching'
-
 Write-Host '[PASS] PR163 coalesced buffer FlushRegion downloads and clipped tracker ranges'
+
+# PR160: a shader set already known rejected can never produce a graphics pipeline. The fast bail
+# must happen before draw work/cache synchronization, while dirty shader registers must still take
+# the normal refresh path so a newly changed program gets another chance to compile.
+$shaderCache = 'src/video_core/shader_cache.cpp'
+$shaderCacheHeader = 'src/video_core/shader_cache.h'
+Require-Text $shaderCacheHeader 'bool AreShadersValid() const noexcept;' 'rejected-shader fast validity query'
+Require-Text $shaderCache 'if (!maxwell3d->dirty.flags[VideoCommon::Dirty::Shaders])' 'dirty-shader bypass protection'
+Require-Text $shaderCache 'return last_shaders_valid;' 'remembered shader validity result'
+Require-Text $vkRasterizer 'if (!pipeline_cache.AreShadersValid())' 'rejected draw early bailout'
+Require-Text $vkRasterizer 'Counter::SkippedDraws' 'early-bailout profiling counter'
+
+$vkText = Get-Content $vkRasterizer -Raw
+$prepareStart = $vkText.IndexOf('void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func)')
+if ($prepareStart -lt 0) { throw 'Safe donor regression: RasterizerVulkan::PrepareDraw not found' }
+$prepareEnd = $vkText.IndexOf("`n}", $prepareStart)
+if ($prepareEnd -lt 0) { throw 'Safe donor regression: PrepareDraw function end not found' }
+$prepare = $vkText.Substring($prepareStart, $prepareEnd - $prepareStart)
+$bailPos = $prepare.IndexOf('if (!pipeline_cache.AreShadersValid())')
+$flushWorkPos = $prepare.IndexOf('Profile::Zone::FlushWork')
+$flushCachingPos = $prepare.IndexOf('gpu_memory->FlushCaching()')
+$lockPos = $prepare.IndexOf('std::lock(buffer_cache.mutex, texture_cache.mutex)')
+if ($bailPos -lt 0 -or $flushWorkPos -lt 0 -or $flushCachingPos -lt 0 -or $lockPos -lt 0 -or
+    -not ($bailPos -lt $flushWorkPos -and $bailPos -lt $flushCachingPos -and $bailPos -lt $lockPos)) {
+    throw 'Safe donor regression: rejected-shader bailout is no longer ahead of flush/cache-lock work'
+}
+Write-Host '[PASS] PR160 rejected shaders bail before draw synchronization work'
+
+# PR162: identical small uniform payloads may reuse the same stream allocation only while its
+# scheduler tick is still current. A new runtime resets all remembered refs; OpenGL stays on the
+# original path; and EDEN_NX2_UBOREUSE=0 is an explicit rollback/debug switch.
+$uboReuse = 'src/video_core/buffer_cache/uniform_stream_reuse.h'
+$vkBufferCache = 'src/video_core/renderer_vulkan/vk_buffer_cache.h'
+Require-Text $uboReuse 'EDEN_NX2_UBOREUSE' 'UBO stream reuse rollback switch'
+Require-Text $uboReuse 'static constexpr u32 MaxBytes = 4096;' 'small-UBO reuse size ceiling'
+Require-Text $uboReuse 'slot.size == size && std::memcmp(slot.bytes.data(), scratch, size) == 0' 'byte-identical UBO requirement'
+Require-Text $uboReuse 'same_bytes && slot.tick == runtime.CurrentTick()' 'same-command-buffer tick requirement'
+Require-Text $uboReuse 'runtime.RebindStreamUniform(slot.ref, size);' 'stream allocation rebind on reuse hit'
+Require-Text $bufferCache 'VideoCommon::ResetUniformStreamReuse<Runtime>();' 'UBO reuse reset for new runtime'
+Require-Text $bufferCache 'if constexpr (!IS_OPENGL && VideoCommon::StreamUniformReusable<Runtime>)' 'Vulkan-only UBO reuse gate'
+Require-Text $bufferCache 'VideoCommon::BindSmallUniformReusing(' 'small uniform reuse integration'
+Require-Text $vkBufferCache 'struct StreamUniformRef' 'Vulkan stream-uniform allocation reference'
+Require-Text $vkBufferCache 'LastStreamUniformRef() const noexcept' 'latest stream uniform reference accessor'
+Require-Text $vkBufferCache 'void RebindStreamUniform(const StreamUniformRef& ref, u32 size)' 'descriptor rebind without stream copy'
+Require-Text $vkBufferCache 'StreamUniformRef last_stream_uniform{};' 'stored latest Vulkan stream reference'
+Write-Host '[PASS] PR162 uniform stream reuse is byte/tick bounded and reset-safe'
+
 Write-Host 'Safe NX2 donor performance regression validation passed.'
