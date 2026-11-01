@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - ns2-pokopia
+      - cpu-safe-validate2-20261101
   workflow_dispatch:
 
 permissions:
