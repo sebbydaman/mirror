@@ -1,14 +1,14 @@
 $ErrorActionPreference = 'Stop'
 
-# Final production performance composition for NS2. This wrapper intentionally excludes the pure
-# telemetry-only adapters and the experimental contiguous split-ring work. Every included layer has
-# already been used by the validated CPU/frame-time frontier or is a narrow runtime safety adapter.
+# Final production performance composition for NS2. This wrapper intentionally excludes pure
+# telemetry-only adapters, the experimental contiguous split-ring work, and the older
+# apply-post-build31-cpu-frontier.ps1 meta-wrapper. The useful production patches from that
+# meta-wrapper are applied individually below so they are composed exactly once.
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $scripts = @(
     'apply-zortos-build31-perf.ps1',
     'apply-zortos-build31-partial-write.ps1',
-    'apply-post-build31-cpu-frontier.ps1',
     'apply-ns2-legacy-hotpath-cleanup.ps1',
     'apply-ns2-pipeline-worker-budget.ps1',
     'apply-ns2-broken-driver-worker-budget.ps1',
@@ -48,4 +48,4 @@ if ($LASTEXITCODE -ne 0) {
     throw 'Final NS2 performance stack introduced diff/whitespace errors'
 }
 
-Write-Host '[PASS] Final NS2 performance stack applied cleanly.'
+Write-Host '[PASS] Final NS2 production performance stack applied cleanly exactly once.'
