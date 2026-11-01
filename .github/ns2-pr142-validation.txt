@@ -1,0 +1,12 @@
+Targeted PR #142 validation layer
+=================================
+Baseline: successful NS2 build #208 at f0331cbfabb25fc8a8d7c158c96c3e401732e46d
+Integration head before this trigger: 0c83857df6faacd2566307d6a9ceffed755c1113
+
+Included donor commits:
+- bb5eae57: selective zero-fill / freed-page host-RAM tracking
+- 5f0fc2eb: stale Switch 2 texture retirement + VMA block-slack budget accounting
+- 8f2e3ebd: release Vulkan SPIR-V modules after pipeline creation
+
+Intentionally excluded:
+- 993fae1e force-BC3-on-every-card policy; retain the integrated 20 GiB ASTC threshold and EDEN_NX2_KEEP_ASTC override.
