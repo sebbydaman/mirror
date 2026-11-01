@@ -118,6 +118,13 @@ $generalCompatScript = Join-Path $PSScriptRoot "apply-ns2-general-compat-batch-v
 $runtimeV3Script = Join-Path $PSScriptRoot "apply-ns2-runtime-blockers-v3.ps1"
 & $runtimeV3Script
 
+# PokeDinner 2.0 was previously staged as a 31-commit integration script but was never executed
+# by the production build. Apply it last so its newer Splatoon/Raiders, Pokopia correctness,
+# shader reuse/compiler, selective-copyback, and sparse-session fixes are validated against the
+# fully curated NS2 tree rather than being overwritten by later compatibility patches.
+$pokedinnerV2Script = Join-Path $PSScriptRoot "apply-pokedinner-v2-batch.ps1"
+& $pokedinnerV2Script
+
 git diff -- src/shader_recompiler/frontend/ampere/lower_to_maxwell.h `
             src/shader_recompiler/frontend/maxwell/translate/impl/load_store_attribute.cpp `
             src/video_core/buffer_cache/buffer_cache_base.h `
