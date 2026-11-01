@@ -155,3 +155,51 @@ foreach ($marker in @($resetMarker, $allocMarker, $resizeMarker, $freedPagesMark
 }
 
 Write-Host 'Prepared PR142 KMemoryManager semantic adapters.'
+
+# 5) VMA block slack: our integrated VRAM accounting already differs from the donor around this
+# function, so patch only the missing semantic. VMA reserves blocks larger than live allocations;
+# those empty bytes still consume the driver's budget even though AllocatedUsage omits them.
+$vmaPath = 'src/video_core/vulkan_common/vulkan_device.cpp'
+$vmaMarker = 'main_statistics.blockBytes - main_statistics.allocationBytes'
+$vmaText = (Get-Content $vmaPath -Raw) -replace "`r`n", "`n"
+if (-not $vmaText.Contains($vmaMarker)) {
+    $budgetStart = $vmaText.IndexOf('u64 Device::GetDeviceMemoryBudget() const {', [StringComparison]::Ordinal)
+    if ($budgetStart -lt 0) { throw 'Could not locate Device::GetDeviceMemoryBudget for PR142 VMA adapter' }
+
+    # The next function boundary keeps all matching/insertion confined to GetDeviceMemoryBudget().
+    $budgetEnd = $vmaText.IndexOf("`nu64 Device::", $budgetStart + 1, [StringComparison]::Ordinal)
+    if ($budgetEnd -lt 0) {
+        $budgetEnd = $vmaText.IndexOf("`nbool Device::", $budgetStart + 1, [StringComparison]::Ordinal)
+    }
+    if ($budgetEnd -lt 0) { throw 'Could not locate function after GetDeviceMemoryBudget for PR142 VMA adapter' }
+
+    $heapLoop = $vmaText.IndexOf('    for (const size_t heap : valid_heap_memory) {', $budgetStart, [StringComparison]::Ordinal)
+    if ($heapLoop -lt 0 -or $heapLoop -gt $budgetEnd) {
+        throw 'Could not locate valid-heap loop inside GetDeviceMemoryBudget for PR142 VMA adapter'
+    }
+
+    # Sanity-check the integrated function still computes its main-heap budget before this point.
+    $mainHeapUse = $vmaText.IndexOf('heap_budgets[main_heap]', $budgetStart, [StringComparison]::Ordinal)
+    if ($mainHeapUse -lt 0 -or $mainHeapUse -gt $heapLoop) {
+        throw 'GetDeviceMemoryBudget no longer references main-heap VMA statistics before heap aggregation'
+    }
+
+    $vmaInsert = @'
+    // VMA block slack counts against the driver budget even though live allocation usage omits it.
+    // Subtract only the main heap's reserved-but-empty bytes before adding secondary-heap usage.
+    const VmaStatistics& main_statistics = heap_budgets[main_heap].statistics;
+    result -= (std::min)(result, main_statistics.blockBytes - main_statistics.allocationBytes);
+'@
+    $vmaText = $vmaText.Substring(0, $heapLoop) + $vmaInsert.TrimEnd("`r", "`n") + "`n" +
+               $vmaText.Substring($heapLoop)
+    [IO.File]::WriteAllText($vmaPath, $vmaText, [Text.UTF8Encoding]::new($false))
+    Write-Host '[ADAPTED] PR142 VMA block-slack budget accounting at GetDeviceMemoryBudget heap boundary'
+} else {
+    Write-Host '[PRESENT] PR142 VMA block-slack budget accounting'
+}
+
+if (-not (Get-Content $vmaPath -Raw).Contains($vmaMarker)) {
+    throw 'PR142 VMA block-slack marker missing after semantic preparation'
+}
+
+Write-Host 'Prepared PR142 KMemoryManager + VMA semantic adapters.'
