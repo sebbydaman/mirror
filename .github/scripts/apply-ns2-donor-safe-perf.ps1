@@ -66,9 +66,13 @@ if ($texture.Contains('EDEN_NX2_TC_LOG')) {
         }
         $texture = $texture.Replace('#pragma once', "#pragma once`n`n#include <cstdlib>")
     }
-    $texture = $texture.Replace(
-        'if (static u64 frames{}; ++frames % 600 == 0) {',
-        "static const bool log_tc = std::getenv(\"EDEN_NX2_TC_LOG\") != nullptr;`n    static u64 frames{};`n    if (log_tc && ++frames % 600 == 0) {")
+    $tickReplacement = @'
+static const bool log_tc = std::getenv("EDEN_NX2_TC_LOG") != nullptr;
+    static u64 frames{};
+    if (log_tc && ++frames % 600 == 0) {
+'@
+    $texture = $texture.Replace('if (static u64 frames{}; ++frames % 600 == 0) {',
+                                $tickReplacement.TrimEnd("`r", "`n"))
     [IO.File]::WriteAllText((Resolve-Path $textureCache), $texture, [Text.UTF8Encoding]::new($false))
     Write-Host '[APPLIED] texture-cache diagnostic sorting gate'
 } else {
