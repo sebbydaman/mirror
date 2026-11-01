@@ -59,7 +59,10 @@ if ($profile.Contains('DmaIncreasingRuns') -or $dma.Contains('Counter::DmaSplitE
             throw "DMA dispatch telemetry: partial profile implementation; missing $needle"
         }
     }
-    foreach ($needle in @('Counter::DmaPullerWords', 'Counter::DmaSplitEngineWords')) {
+    foreach ($needle in @(
+        'namespace Profile = VideoCommon::Nx2Profile;',
+        'Counter::DmaPullerWords', 'Counter::DmaSplitEngineWords'
+    )) {
         if (-not $dma.Contains($needle)) {
             throw "DMA dispatch telemetry: partial DMA implementation; missing $needle"
         }
@@ -105,16 +108,11 @@ $profile = Insert-AfterOnce $profile `
     'PipelineMisses report insertion point'
 Write-PatchedText $profilePath $profile
 
-$functionOld = @'
-size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_t word_offset) {
-    VideoCommon::Nx2Profile::Scope dispatch_scope{VideoCommon::Nx2Profile::Zone::DmaDispatch};
-'@
-$functionNew = @'
-size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_t word_offset) {
-    namespace Profile = VideoCommon::Nx2Profile;
-    Profile::Scope dispatch_scope{Profile::Zone::DmaDispatch};
-'@
-$dma = Replace-Once $dma $functionOld.TrimEnd("`r", "`n") $functionNew.TrimEnd("`r", "`n") 'ProcessCommands profile alias'
+# Namespace aliases are namespace-scope declarations in C++. Keep the alias at Tegra scope rather
+# than putting it inside ProcessCommands; the existing DmaDispatch Scope itself remains unchanged.
+$dma = Insert-AfterOnce $dma 'namespace Tegra {' `
+    "`n`nnamespace Profile = VideoCommon::Nx2Profile;" `
+    'Tegra namespace profiler alias'
 
 $nonIncOld = @'
             if (g_nx2_ampere && dma_state.method < non_puller_methods) {
@@ -254,6 +252,7 @@ foreach ($needle in @(
     }
 }
 foreach ($needle in @(
+    'namespace Profile = VideoCommon::Nx2Profile;',
     'Counter::DmaPullerWords', 'Counter::DmaSplitEngineWords',
     'Counter::DmaIncreasingRuns', 'Counter::DmaNonIncreasingRuns', 'Counter::DmaIncreaseOnceRuns'
 )) {
