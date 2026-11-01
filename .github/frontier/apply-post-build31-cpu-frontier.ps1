@@ -6,8 +6,9 @@ $ErrorActionPreference = 'Stop'
 $rangeNotify = Join-Path $PSScriptRoot 'apply-memory-manager-range-notify.ps1'
 $jitTelemetry = Join-Path $PSScriptRoot 'apply-cpu-jit-telemetry.ps1'
 $legacyCleanup = Join-Path $PSScriptRoot 'apply-ns2-legacy-hotpath-cleanup.ps1'
+$dispatchTelemetry = Join-Path $PSScriptRoot 'apply-dma-dispatch-telemetry.ps1'
 
-foreach ($path in @($rangeNotify, $jitTelemetry, $legacyCleanup)) {
+foreach ($path in @($rangeNotify, $jitTelemetry, $legacyCleanup, $dispatchTelemetry)) {
     if (-not (Test-Path $path -PathType Leaf)) {
         throw "Post-Build31 CPU frontier: missing $path"
     }
@@ -16,5 +17,6 @@ foreach ($path in @($rangeNotify, $jitTelemetry, $legacyCleanup)) {
 & $rangeNotify
 & $jitTelemetry
 & $legacyCleanup
+& $dispatchTelemetry
 
-Write-Host '[APPLIED] Post-Build31 CPU frontier: range-batched GMMU notifications + opt-in Dynarmic duplicate-compile telemetry + stale reactive-read diagnostic cleanup'
+Write-Host '[APPLIED] Post-Build31 CPU frontier: range-batched GMMU notifications + opt-in Dynarmic duplicate-compile telemetry + stale reactive-read diagnostic cleanup + opt-in DmaDispatch traffic-shape telemetry'
