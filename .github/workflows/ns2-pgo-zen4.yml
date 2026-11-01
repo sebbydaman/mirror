@@ -88,15 +88,15 @@ jobs:
             libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p
             lerc:p graphite2:p libwebp:p libtiff:p brotli:p
 
-      - name: Configure Zen4 profile-use Release build
+      - name: Configure Zen4 tune-only profile-use Release build
         shell: msys2 {0}
         working-directory: eden
         run: |
           set -euo pipefail
           profile="-fprofile-use=$(cygpath -m "$PWD/eden.profdata") -Wno-backend-plugin -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date"
-          zen4="-march=znver4 -mtune=znver4"
+          zen4="-mtune=znver4"
           clang --version
-          printf 'Zen4 compile flags: %s %s\n' "$profile" "$zen4"
+          printf 'Zen4 tune-only compile flags: %s %s\n' "$profile" "$zen4"
           cmake -S . -B build-pgo-zen4 -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_TESTING=OFF \
@@ -171,16 +171,17 @@ jobs:
           done
 
           cat > PGO_BUILD_NOTES.txt <<'EOF'
-          Eden NS2 Zen4-targeted PGO CPU build
-          =====================================
-          This build uses the full validated ns2-pokopia source stack plus the coalesced texture
-          partial-write CPU bookkeeping patch, Eden-CI LLVM PGO data, and Clang's znver4 codegen.
+          Eden NS2 Zen4-tuned PGO CPU diagnostic build
+          =============================================
+          This build keeps the same validated NS2 source stack, Eden-CI LLVM PGO profile and
+          Clang/LLD toolchain as the earlier Zen4 build, but uses only -mtune=znver4.
 
-          It is intentionally targeted to AMD Zen 4 (including Ryzen 7000 such as the Ryzen 5 7600X)
-          and is separate from the normal portable MSVC build. Do not treat it as a universal release.
+          The previous -march=znver4 -mtune=znver4 build opened the emulator but froze at runtime.
+          This build intentionally removes only -march=znver4 so we can isolate aggressive Zen4
+          instruction selection from PGO, source changes, packaging and Zen4 scheduling.
 
-          Goal: reduce the CPU-side frame cost in MKW heavy scenes toward the 16.67 ms / 60 FPS target.
-          The generic PGO corpus is still not MKW-specific; a later custom MKW profile can stack on top.
+          If this version runs normally on the Ryzen 5 7600X, keep tune-only as the safe Zen4 path
+          while the full -march=znver4 freeze is investigated separately.
           EOF
 
           cat > POKOPIA_CONFIG.txt <<'EOF'
@@ -206,7 +207,7 @@ jobs:
           endlocal
           EOF
 
-          echo "Zen4 PGO GUI: $exe"
+          echo "Zen4 tune-only PGO GUI: $exe"
           ls -lah
 
       - name: Stage Zen4 PGO portable artifact
@@ -229,7 +230,7 @@ jobs:
       - name: Upload Zen4 PGO CPU runtime
         uses: actions/upload-artifact@v7
         with:
-          name: Eden-NS2-PGO-Zen4-Windows-${{ github.sha }}
+          name: Eden-NS2-PGO-Zen4-Safe-Windows-${{ github.sha }}
           path: eden/dist/Eden-NS2-PGO-Zen4-Windows/**
           if-no-files-found: error
           retention-days: 14
