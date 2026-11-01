@@ -81,3 +81,38 @@ if (-not $bufferText.Contains($cleanupMarker)) {
 } else {
     Write-Host 'BufferCache::DeleteBuffer read-trap cleanup is already prepared.'
 }
+
+# Seed the Vulkan CPU-read flush by function structure rather than by the donor's exact historical
+# texture block. The read-trap merge restores vk_rasterizer.cpp to this checkpoint, so this survives
+# that restore; FlushesOnCpuRead() is declared later in the same merge before compilation.
+$vkRasterizerPath = 'src/video_core/renderer_vulkan/vk_rasterizer.cpp'
+$vkText = (Get-Content $vkRasterizerPath -Raw).Replace("`r`n", "`n")
+if (-not $vkText.Contains('buffer_cache.FlushesOnCpuRead()')) {
+    $flushFunction = 'VideoCore::RasterizerDownloadArea RasterizerVulkan::GetFlushArea(DAddr addr, u64 size) {'
+    $flushStart = $vkText.IndexOf($flushFunction)
+    if ($flushStart -lt 0) {
+        throw 'Could not locate RasterizerVulkan::GetFlushArea for read-trap preparation'
+    }
+    $newAreaMarker = '    VideoCore::RasterizerDownloadArea new_area{'
+    $insertAt = $vkText.IndexOf($newAreaMarker, $flushStart)
+    if ($insertAt -lt 0) {
+        throw 'Could not locate post-texture insertion point inside RasterizerVulkan::GetFlushArea'
+    }
+    $bufferFlush = @'
+    if (buffer_cache.FlushesOnCpuRead()) {
+        std::scoped_lock lock{buffer_cache.mutex};
+        auto area = buffer_cache.GetFlushArea(addr, size);
+        if (area) {
+            return *area;
+        }
+    }
+'@
+    $vkText = $vkText.Insert($insertAt, $bufferFlush.TrimEnd("`r", "`n") + "`n")
+    if (-not $vkText.Contains('buffer_cache.FlushesOnCpuRead()')) {
+        throw 'Vulkan read-trap flush preparation did not produce expected marker'
+    }
+    Set-Content -Path $vkRasterizerPath -Value $vkText -Encoding utf8 -NoNewline
+    Write-Host 'Prepared RasterizerVulkan::GetFlushArea buffer readback with structural anchor.'
+} else {
+    Write-Host 'RasterizerVulkan CPU-read buffer flush is already prepared.'
+}
