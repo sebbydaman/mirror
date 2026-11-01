@@ -121,6 +121,61 @@ Require-Text $profilePath 'inline bool TrackDmaPages()' 'profiler DMA-page histo
 Require-Text $macroPath 'Nx2Profile::TrackDmaPages()' 'MME DMA page-history gate'
 Require-Text $bufferPath 'Nx2Profile::TrackDmaPages()' 'buffer-download page-history gate'
 
+# MKW fork post-release fix 5fdcbff: a fixed guest subgroup size is observable only by shaders that
+# actually use subgroup/warp operations. Requiring SIMD32 for every compute pipeline can impose a
+# needless driver compile/register-pressure constraint. Their measured pathological case was Intel;
+# the semantic condition is vendor-independent, so keep warp shaders at guest width 32 and let the
+# driver choose its native subgroup for compute kernels that never inspect lanes.
+$vkComputePath = 'src/video_core/renderer_vulkan/vk_compute_pipeline.cpp'
+if (-not (Test-Path $vkComputePath -PathType Leaf)) {
+    throw 'MKW subgroup optimization: Vulkan compute pipeline source is missing'
+}
+$vkCompute = Get-Content $vkComputePath -Raw
+if (-not $vkCompute.Contains('const bool uses_warp_ops =')) {
+    $subgroupAnchor = @'
+        const VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT subgroup_size_ci{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO_EXT,
+            .pNext = nullptr,
+            .requiredSubgroupSize = GuestWarpSize,
+        };
+'@
+    $subgroupReplacement = @'
+        const VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT subgroup_size_ci{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO_EXT,
+            .pNext = nullptr,
+            .requiredSubgroupSize = GuestWarpSize,
+        };
+        // Only subgroup/warp operations can observe the guest warp width. Avoid constraining
+        // ordinary compute kernels to SIMD32 when the driver can choose a better native width.
+        const bool uses_warp_ops = info.uses_subgroup_vote || info.uses_subgroup_invocation_id ||
+                                   info.uses_subgroup_shuffles || info.uses_subgroup_mask ||
+                                   info.uses_quad_shuffles || info.uses_fswzadd;
+'@
+    if (-not $vkCompute.Contains($subgroupAnchor.TrimEnd("`r", "`n"))) {
+        throw 'MKW subgroup optimization: subgroup-size declaration anchor changed'
+    }
+    $vkCompute = $vkCompute.Replace($subgroupAnchor.TrimEnd("`r", "`n"),
+                                    $subgroupReplacement.TrimEnd("`r", "`n"))
+
+    $pnextAnchor = @'
+                .pNext =
+                    device.IsExtSubgroupSizeControlSupported() ? &subgroup_size_ci : nullptr,
+'@
+    $pnextReplacement = @'
+                .pNext = device.IsExtSubgroupSizeControlSupported() && uses_warp_ops
+                             ? &subgroup_size_ci
+                             : nullptr,
+'@
+    if (-not $vkCompute.Contains($pnextAnchor.TrimEnd("`r", "`n"))) {
+        throw 'MKW subgroup optimization: compute pipeline subgroup pNext anchor changed'
+    }
+    $vkCompute = $vkCompute.Replace($pnextAnchor.TrimEnd("`r", "`n"),
+                                    $pnextReplacement.TrimEnd("`r", "`n"))
+    Write-PatchedText $vkComputePath $vkCompute
+}
+Require-Text $vkComputePath 'const bool uses_warp_ops =' 'MKW compute subgroup usage gate'
+Require-Text $vkComputePath 'device.IsExtSubgroupSizeControlSupported() && uses_warp_ops' 'conditional guest subgroup-size request'
+
 # Host-RAM / zero-fill tracking.
 Require-Text 'src/core/device_memory.h' 'bool used_by_kernel{};' 'device-memory session reuse flag'
 Require-Text 'src/core/hle/kernel/k_memory_manager.cpp' 'void KMemoryManager::FillAllocatedPages(' 'selective allocated-page fill implementation'
@@ -158,8 +213,9 @@ Write-Host '[PASS] existing threshold-based ASTC policy preserved'
 
 git diff --check
 if ($LASTEXITCODE -ne 0) {
-    throw 'NX2 profiler hardening introduced diff errors'
+    throw 'NX2 profiler/MKW subgroup hardening introduced diff errors'
 }
 
 Write-Host '[PASS] NX2 gameplay profiler keeps per-page DMA history opt-in'
+Write-Host '[PASS] MKW non-warp compute pipelines can use the driver-native subgroup size'
 Write-Host 'Targeted PR #142 RAM/stutter regression validation passed.'
