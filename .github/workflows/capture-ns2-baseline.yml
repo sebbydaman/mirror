@@ -69,7 +69,27 @@ jobs:
       - name: Validate stability and frontier regressions
         shell: pwsh
         working-directory: eden
-        run: '& "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-ns2-stability-regressions.ps1"'
+        run: |
+          $transcript = Join-Path $env:RUNNER_TEMP 'ns2-stability-frontier-validation.log'
+          Start-Transcript -Path $transcript -Force | Out-Null
+          try {
+            & "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-ns2-stability-regressions.ps1"
+          } catch {
+            Write-Host "[VALIDATION-FAILURE] $($_.Exception.Message)"
+            Write-Host $_.ScriptStackTrace
+            throw
+          } finally {
+            Stop-Transcript | Out-Null
+          }
+
+      - name: Upload stability/frontier validation transcript
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: NS2-Stability-Frontier-Validation-Transcript
+          path: ${{ runner.temp }}/ns2-stability-frontier-validation.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Capture exact integrated source state
         shell: pwsh
