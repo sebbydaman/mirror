@@ -1,17 +1,24 @@
 $ErrorActionPreference = 'Stop'
 
-# Profiling-only classification of the remaining DmaDispatch CPU bucket. This adds no counters to
-# normal gameplay: every update is behind the already opt-in EDEN_NX2_GPU_PROFILE flag. The goal is
-# to learn whether the remaining dispatch time is dominated by increasing engine runs (a candidate
-# for split-ring packetization), non-increasing runs, puller methods, or inline/IncreaseOnce traffic
-# before changing command-stream semantics.
+# Profiling-only classification of the remaining DmaDispatch CPU bucket. All counter updates stay
+# behind the existing opt-in EDEN_NX2_GPU_PROFILE gate. This measures command traffic before we
+# change any ordering-sensitive GPU command semantics.
+
+function Normalize-Lf([string]$Text) {
+    return $Text.Replace("`r`n", "`n")
+}
 
 function Write-PatchedText([string]$Path, [string]$Text) {
-    $normalized = $Text.TrimEnd("`r", "`n") + "`n"
+    $normalized = (Normalize-Lf $Text).TrimEnd("`r", "`n") + "`n"
     [IO.File]::WriteAllText((Resolve-Path $Path).Path, $normalized, [Text.UTF8Encoding]::new($false))
 }
 
 function Replace-Once([string]$Text, [string]$Old, [string]$New, [string]$Name) {
+    # GitHub's Windows runners check scripts out with CRLF while the integrated source is normalized
+    # to LF before patching. Normalize the here-string anchors too or every multi-line match fails.
+    $Text = Normalize-Lf $Text
+    $Old = Normalize-Lf $Old
+    $New = Normalize-Lf $New
     $first = $Text.IndexOf($Old, [StringComparison]::Ordinal)
     if ($first -lt 0) { throw "DMA dispatch telemetry: missing anchor $Name" }
     $second = $Text.IndexOf($Old, $first + $Old.Length, [StringComparison]::Ordinal)
@@ -20,6 +27,9 @@ function Replace-Once([string]$Text, [string]$Old, [string]$New, [string]$Name) 
 }
 
 function Insert-AfterOnce([string]$Text, [string]$Anchor, [string]$Insertion, [string]$Name) {
+    $Text = Normalize-Lf $Text
+    $Anchor = Normalize-Lf $Anchor
+    $Insertion = Normalize-Lf $Insertion
     $first = $Text.IndexOf($Anchor, [StringComparison]::Ordinal)
     if ($first -lt 0) { throw "DMA dispatch telemetry: missing anchor $Name" }
     $second = $Text.IndexOf($Anchor, $first + $Anchor.Length, [StringComparison]::Ordinal)
@@ -36,10 +46,10 @@ foreach ($path in @($profilePath, $dmaPath)) {
     }
 }
 
-$profile = (Get-Content $profilePath -Raw).Replace("`r`n", "`n")
-$dma = (Get-Content $dmaPath -Raw).Replace("`r`n", "`n")
-$marker = 'DmaIncreasingRuns'
-if ($profile.Contains($marker) -or $dma.Contains('Counter::DmaSplitEngineWords')) {
+$profile = Normalize-Lf (Get-Content $profilePath -Raw)
+$dma = Normalize-Lf (Get-Content $dmaPath -Raw)
+
+if ($profile.Contains('DmaIncreasingRuns') -or $dma.Contains('Counter::DmaSplitEngineWords')) {
     foreach ($needle in @(
         'DmaIncreasingRuns', 'DmaIncreasingWords', 'DmaNonIncreasingRuns',
         'DmaNonIncreasingWords', 'DmaIncreaseOnceRuns', 'DmaIncreaseOnceWords',
@@ -58,9 +68,7 @@ if ($profile.Contains($marker) -or $dma.Contains('Counter::DmaSplitEngineWords')
     exit 0
 }
 
-# Do not replace the whole Counter enum. The profiler has gained counters over time; PipelineMisses
-# is the stable semantic insertion point validated by the frontier regression suite.
-$counterAnchor = '    PipelineMisses,'
+# Insert after stable semantic profiler entries rather than replacing the complete enum/report block.
 $counterInsertion = @'
     DmaIncreasingRuns,
     DmaIncreasingWords,
@@ -72,12 +80,8 @@ $counterInsertion = @'
     DmaPullerWords,
     DmaSplitEngineWords,
 '@
-$counterInsertion = "`n" + $counterInsertion.TrimEnd("`r", "`n")
-$profile = Insert-AfterOnce $profile $counterAnchor $counterInsertion 'PipelineMisses counter insertion point'
+$profile = Insert-AfterOnce $profile '    PipelineMisses,' ("`n" + $counterInsertion.TrimEnd("`r", "`n")) 'PipelineMisses counter insertion point'
 
-# Likewise append DMA reporting after the existing pipeline-miss report instead of assuming the
-# complete report block has a frozen shape.
-$reportAnchor = '    line += fmt::format(" | pipeline cache misses {:.0f}", rate(Counter::PipelineMisses));'
 $reportInsertion = @'
     const auto average_run = [&](Counter words, Counter runs) {
         const double run_rate = rate(runs);
@@ -95,22 +99,22 @@ $reportInsertion = @'
         rate(Counter::DmaInlineCommands), rate(Counter::DmaPullerWords),
         rate(Counter::DmaSplitEngineWords));
 '@
-$reportInsertion = "`n" + $reportInsertion.TrimEnd("`r", "`n")
-$profile = Insert-AfterOnce $profile $reportAnchor $reportInsertion 'PipelineMisses report insertion point'
+$profile = Insert-AfterOnce $profile `
+    '    line += fmt::format(" | pipeline cache misses {:.0f}", rate(Counter::PipelineMisses));' `
+    ("`n" + $reportInsertion.TrimEnd("`r", "`n")) `
+    'PipelineMisses report insertion point'
 Write-PatchedText $profilePath $profile
 
 $functionOld = @'
 size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_t word_offset) {
     VideoCommon::Nx2Profile::Scope dispatch_scope{VideoCommon::Nx2Profile::Zone::DmaDispatch};
 '@
-$functionOld = $functionOld.TrimEnd("`r", "`n")
 $functionNew = @'
 size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_t word_offset) {
     namespace Profile = VideoCommon::Nx2Profile;
     Profile::Scope dispatch_scope{Profile::Zone::DmaDispatch};
 '@
-$functionNew = $functionNew.TrimEnd("`r", "`n")
-$dma = Replace-Once $dma $functionOld $functionNew 'ProcessCommands profile alias'
+$dma = Replace-Once $dma $functionOld.TrimEnd("`r", "`n") $functionNew.TrimEnd("`r", "`n") 'ProcessCommands profile alias'
 
 $nonIncOld = @'
             if (g_nx2_ampere && dma_state.method < non_puller_methods) {
@@ -118,7 +122,6 @@ $nonIncOld = @'
             }
             CallMultiMethod(&command_header.argument, max_write);
 '@
-$nonIncOld = $nonIncOld.TrimEnd("`r", "`n")
 $nonIncNew = @'
             if (g_nx2_ampere && dma_state.method < non_puller_methods) {
                 max_write = 1; // a semaphore acquire may suspend the channel after any word
@@ -132,15 +135,13 @@ $nonIncNew = @'
             }
             CallMultiMethod(&command_header.argument, max_write);
 '@
-$nonIncNew = $nonIncNew.TrimEnd("`r", "`n")
-$dma = Replace-Once $dma $nonIncOld $nonIncNew 'non-increasing actual-word classification'
+$dma = Replace-Once $dma $nonIncOld.TrimEnd("`r", "`n") $nonIncNew.TrimEnd("`r", "`n") 'non-increasing actual-word classification'
 
 $incWordOld = @'
             dma_state.is_last_call = dma_state.method_count <= 1;
             const u32 curr_method = dma_state.method;
             CallMethod(command_header.argument);
 '@
-$incWordOld = $incWordOld.TrimEnd("`r", "`n")
 $incWordNew = @'
             dma_state.is_last_call = dma_state.method_count <= 1;
             const u32 curr_method = dma_state.method;
@@ -153,8 +154,7 @@ $incWordNew = @'
             }
             CallMethod(command_header.argument);
 '@
-$incWordNew = $incWordNew.TrimEnd("`r", "`n")
-$dma = Replace-Once $dma $incWordOld $incWordNew 'increasing actual-word classification'
+$dma = Replace-Once $dma $incWordOld.TrimEnd("`r", "`n") $incWordNew.TrimEnd("`r", "`n") 'increasing actual-word classification'
 
 $increasingOld = @'
             case SubmissionMode::Increasing:
@@ -163,7 +163,6 @@ $increasingOld = @'
                 dma_increment_once = false;
                 break;
 '@
-$increasingOld = $increasingOld.TrimEnd("`r", "`n")
 $increasingNew = @'
             case SubmissionMode::Increasing:
                 SetState(command_header);
@@ -175,8 +174,7 @@ $increasingNew = @'
                 dma_increment_once = false;
                 break;
 '@
-$increasingNew = $increasingNew.TrimEnd("`r", "`n")
-$dma = Replace-Once $dma $increasingOld $increasingNew 'Increasing header telemetry'
+$dma = Replace-Once $dma $increasingOld.TrimEnd("`r", "`n") $increasingNew.TrimEnd("`r", "`n") 'Increasing header telemetry'
 
 $nonIncreasingOld = @'
             case SubmissionMode::NonIncreasing:
@@ -185,7 +183,6 @@ $nonIncreasingOld = @'
                 dma_increment_once = false;
                 break;
 '@
-$nonIncreasingOld = $nonIncreasingOld.TrimEnd("`r", "`n")
 $nonIncreasingNew = @'
             case SubmissionMode::NonIncreasing:
                 SetState(command_header);
@@ -197,8 +194,7 @@ $nonIncreasingNew = @'
                 dma_increment_once = false;
                 break;
 '@
-$nonIncreasingNew = $nonIncreasingNew.TrimEnd("`r", "`n")
-$dma = Replace-Once $dma $nonIncreasingOld $nonIncreasingNew 'NonIncreasing header telemetry'
+$dma = Replace-Once $dma $nonIncreasingOld.TrimEnd("`r", "`n") $nonIncreasingNew.TrimEnd("`r", "`n") 'NonIncreasing header telemetry'
 
 $inlineOld = @'
             case SubmissionMode::Inline:
@@ -207,7 +203,6 @@ $inlineOld = @'
                 dma_state.dma_word_offset = u64(-s64(dma_state.dma_get)); // negate to set address as 0
                 CallMethod(command_header.arg_count);
 '@
-$inlineOld = $inlineOld.TrimEnd("`r", "`n")
 $inlineNew = @'
             case SubmissionMode::Inline:
                 dma_state.method = command_header.method;
@@ -223,8 +218,7 @@ $inlineNew = @'
                 }
                 CallMethod(command_header.arg_count);
 '@
-$inlineNew = $inlineNew.TrimEnd("`r", "`n")
-$dma = Replace-Once $dma $inlineOld $inlineNew 'Inline command telemetry'
+$dma = Replace-Once $dma $inlineOld.TrimEnd("`r", "`n") $inlineNew.TrimEnd("`r", "`n") 'Inline command telemetry'
 
 $increaseOnceOld = @'
             case SubmissionMode::IncreaseOnce:
@@ -233,7 +227,6 @@ $increaseOnceOld = @'
                 dma_increment_once = true;
                 break;
 '@
-$increaseOnceOld = $increaseOnceOld.TrimEnd("`r", "`n")
 $increaseOnceNew = @'
             case SubmissionMode::IncreaseOnce:
                 SetState(command_header);
@@ -245,13 +238,12 @@ $increaseOnceNew = @'
                 dma_increment_once = true;
                 break;
 '@
-$increaseOnceNew = $increaseOnceNew.TrimEnd("`r", "`n")
-$dma = Replace-Once $dma $increaseOnceOld $increaseOnceNew 'IncreaseOnce header telemetry'
+$dma = Replace-Once $dma $increaseOnceOld.TrimEnd("`r", "`n") $increaseOnceNew.TrimEnd("`r", "`n") 'IncreaseOnce header telemetry'
 
 Write-PatchedText $dmaPath $dma
 
-$finalProfile = Get-Content $profilePath -Raw
-$finalDma = Get-Content $dmaPath -Raw
+$finalProfile = Normalize-Lf (Get-Content $profilePath -Raw)
+$finalDma = Normalize-Lf (Get-Content $dmaPath -Raw)
 foreach ($needle in @(
     'DmaIncreasingRuns', 'DmaIncreasingWords', 'DmaNonIncreasingRuns', 'DmaNonIncreasingWords',
     'DmaIncreaseOnceRuns', 'DmaIncreaseOnceWords', 'DmaInlineCommands', 'DmaPullerWords',
