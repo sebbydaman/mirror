@@ -8,28 +8,19 @@ function Require-Text([string]$Path, [string]$Needle, [string]$Name) {
 }
 
 function Write-PatchedText([string]$Path, [string]$Text) {
-    # Get-Content -Raw retains the source's final newline. Set-Content adds another newline when given
-    # a scalar string, which made git diff --check report a new blank line at EOF. Normalize to one
-    # LF and write without a BOM so the source patch remains semantically and textually clean.
     $normalized = $Text.TrimEnd("`r", "`n") + "`n"
     $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
     [System.IO.File]::WriteAllText((Resolve-Path $Path).Path, $normalized, $utf8NoBom)
 }
 
-# Keep representative gameplay profiling lightweight. PR #134's deep DMA correlation walks every
-# 4-KiB page touched by native MME DMA, translates each page, and inserts it into a process-global
-# unordered_set which the buffer-download path later consults. That is useful for a targeted
-# readback investigation, but it is too invasive for normal frame-time profiling and is a poor fit
-# for the split GPU/readback paths used by this branch. Keep the timing zones/counters behind
-# EDEN_NX2_GPU_PROFILE and make page-history correlation a separate explicit opt-in.
+# Keep representative gameplay profiling lightweight. The donor PR #134 profiler's deep DMA
+# correlation translates every 4-KiB page touched by native MME DMA and stores it in a process-global
+# set. That is useful for targeted readback work but too invasive for normal frame-time profiling.
 $profilePath = 'src/video_core/nx2_profile.h'
 $macroPath = 'src/video_core/macro.cpp'
 $bufferPath = 'src/video_core/buffer_cache/buffer_cache.h'
-
 foreach ($path in @($profilePath, $macroPath, $bufferPath)) {
-    if (-not (Test-Path $path -PathType Leaf)) {
-        throw "NX2 profiler hardening: missing required file $path"
-    }
+    if (-not (Test-Path $path -PathType Leaf)) { throw "NX2 profiler hardening: missing $path" }
 }
 
 $profile = Get-Content $profilePath -Raw
@@ -43,9 +34,7 @@ inline bool Enabled() {
 '@
     $newProfile = @'
 inline const bool g_enabled = std::getenv("EDEN_NX2_GPU_PROFILE") != nullptr;
-// Per-page MME DMA history is intentionally separate from normal gameplay profiling. It performs
-// address translation and hash-set insertion for every 4-KiB page and should only be enabled for a
-// focused readback investigation.
+// Per-page MME DMA history is intentionally separate from normal gameplay profiling.
 inline const bool g_track_dma_pages =
     std::getenv("EDEN_NX2_GPU_PROFILE_PAGES") != nullptr;
 
@@ -60,22 +49,14 @@ inline bool TrackDmaPages() {
     if (-not $profile.Contains($oldProfile)) {
         throw 'NX2 profiler hardening: enable anchor changed in nx2_profile.h'
     }
-    $profile = $profile.Replace($oldProfile, $newProfile)
-    Write-PatchedText $profilePath $profile
+    Write-PatchedText $profilePath ($profile.Replace($oldProfile, $newProfile))
 }
 
 $macro = Get-Content $macroPath -Raw
 if (-not $macro.Contains('Nx2Profile::TrackDmaPages()')) {
-    # Do not key this patch to whitespace/line-wrapping from one donor revision. Instead locate the
-    # actual page-history insertion, prove it belongs to the DmaReadBytes profiling block, then split
-    # the expensive page walk into its own TrackDmaPages() gate while leaving the cheap byte counter
-    # under the normal profiler gate.
     $insertToken = 'VideoCommon::Nx2Profile::DmaReadPages().insert(*device >> 12);'
     $insertIndex = $macro.IndexOf($insertToken)
-    if ($insertIndex -lt 0) {
-        throw 'NX2 profiler hardening: DmaReadPages insertion disappeared from macro.cpp'
-    }
-
+    if ($insertIndex -lt 0) { throw 'NX2 profiler hardening: DmaReadPages insertion disappeared' }
     $enabledToken = 'if (VideoCommon::Nx2Profile::Enabled()) {'
     $enabledIndex = $macro.LastIndexOf($enabledToken, $insertIndex)
     $addToken = 'VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::DmaReadBytes, read_bytes);'
@@ -84,32 +65,25 @@ if (-not $macro.Contains('Nx2Profile::TrackDmaPages()')) {
     $forIndex = if ($addIndex -ge 0) { $macro.IndexOf($forToken, $addIndex) } else { -1 }
     if ($enabledIndex -lt 0 -or $addIndex -lt 0 -or $forIndex -lt 0 -or
         $addIndex -gt $insertIndex -or $forIndex -gt $insertIndex) {
-        throw 'NX2 profiler hardening: native MME DMA profiling structure changed in macro.cpp'
+        throw 'NX2 profiler hardening: native MME DMA profiling structure changed'
     }
-
     $forLineStart = $macro.LastIndexOf("`n", $forIndex)
     if ($forLineStart -lt 0) { $forLineStart = 0 } else { ++$forLineStart }
     $forIndent = $macro.Substring($forLineStart, $forIndex - $forLineStart)
-    if ($forIndent -match '[^ \t]') {
-        throw 'NX2 profiler hardening: could not determine MME DMA loop indentation'
-    }
-    $outerIndentLength = [Math]::Max(0, $forIndent.Length - 4)
-    $outerIndent = $forIndent.Substring(0, $outerIndentLength)
-    $gate = $outerIndent + "}`n" + $outerIndent +
-        "if (VideoCommon::Nx2Profile::TrackDmaPages()) {`n"
-    $macro = $macro.Insert($forLineStart, $gate)
-    Write-PatchedText $macroPath $macro
+    if ($forIndent -match '[^ \t]') { throw 'NX2 profiler hardening: loop indentation changed' }
+    $outerIndent = $forIndent.Substring(0, [Math]::Max(0, $forIndent.Length - 4))
+    $gate = $outerIndent + "}`n" + $outerIndent + "if (VideoCommon::Nx2Profile::TrackDmaPages()) {`n"
+    Write-PatchedText $macroPath ($macro.Insert($forLineStart, $gate))
 }
 
 $buffer = Get-Content $bufferPath -Raw
 if (-not $buffer.Contains('Nx2Profile::TrackDmaPages()')) {
-    # As above, locate the gate that actually owns DmaReadPages() rather than relying on formatting.
     $pageToken = 'const auto& pages = Nx2Profile::DmaReadPages();'
     $pageIndex = $buffer.IndexOf($pageToken)
     $enabledToken = 'if (Nx2Profile::Enabled()) {'
     $gateIndex = if ($pageIndex -ge 0) { $buffer.LastIndexOf($enabledToken, $pageIndex) } else { -1 }
     if ($pageIndex -lt 0 -or $gateIndex -lt 0) {
-        throw 'NX2 profiler hardening: buffer-download DmaReadPages profiling structure changed'
+        throw 'NX2 profiler hardening: buffer-download page-history gate changed'
     }
     $buffer = $buffer.Remove($gateIndex, $enabledToken.Length).Insert(
         $gateIndex, 'if (Nx2Profile::TrackDmaPages()) {')
@@ -121,86 +95,72 @@ Require-Text $profilePath 'inline bool TrackDmaPages()' 'profiler DMA-page histo
 Require-Text $macroPath 'Nx2Profile::TrackDmaPages()' 'MME DMA page-history gate'
 Require-Text $bufferPath 'Nx2Profile::TrackDmaPages()' 'buffer-download page-history gate'
 
-# MKW fork post-release fix 5fdcbff: a fixed guest subgroup size is observable only by shaders that
-# actually use subgroup/warp operations. Requiring SIMD32 for every compute pipeline can impose a
-# needless driver compile/register-pressure constraint. Their measured pathological case was Intel;
-# the semantic condition is vendor-independent, so keep warp shaders at guest width 32 and let the
-# driver choose its native subgroup for compute kernels that never inspect lanes.
+# Wael3rd/Eglantine-MKW post-release fix 5fdcbff: guest subgroup width is observable only when a
+# compute shader actually uses warp/subgroup operations. Keep SIMD32 for those shaders, but avoid
+# unnecessarily constraining ordinary compute kernels. Use structural anchors so LF/CRLF or harmless
+# formatting differences cannot break the integration again.
 $vkComputePath = 'src/video_core/renderer_vulkan/vk_compute_pipeline.cpp'
 if (-not (Test-Path $vkComputePath -PathType Leaf)) {
     throw 'MKW subgroup optimization: Vulkan compute pipeline source is missing'
 }
 $vkCompute = Get-Content $vkComputePath -Raw
 if (-not $vkCompute.Contains('const bool uses_warp_ops =')) {
-    $subgroupAnchor = @'
-        const VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT subgroup_size_ci{
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO_EXT,
-            .pNext = nullptr,
-            .requiredSubgroupSize = GuestWarpSize,
-        };
-'@
-    $subgroupReplacement = @'
-        const VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT subgroup_size_ci{
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO_EXT,
-            .pNext = nullptr,
-            .requiredSubgroupSize = GuestWarpSize,
-        };
+    $subgroupToken = '.requiredSubgroupSize = GuestWarpSize,'
+    $subgroupIndex = $vkCompute.IndexOf($subgroupToken)
+    if ($subgroupIndex -lt 0) {
+        throw 'MKW subgroup optimization: required subgroup-size field disappeared'
+    }
+    $structClose = $vkCompute.IndexOf('};', $subgroupIndex)
+    if ($structClose -lt 0 -or $structClose - $subgroupIndex -gt 256) {
+        throw 'MKW subgroup optimization: subgroup-size structure changed unexpectedly'
+    }
+    $afterStruct = $structClose + 2
+    $insert = @'
+
         // Only subgroup/warp operations can observe the guest warp width. Avoid constraining
         // ordinary compute kernels to SIMD32 when the driver can choose a better native width.
         const bool uses_warp_ops = info.uses_subgroup_vote || info.uses_subgroup_invocation_id ||
                                    info.uses_subgroup_shuffles || info.uses_subgroup_mask ||
                                    info.uses_quad_shuffles || info.uses_fswzadd;
 '@
-    if (-not $vkCompute.Contains($subgroupAnchor.TrimEnd("`r", "`n"))) {
-        throw 'MKW subgroup optimization: subgroup-size declaration anchor changed'
-    }
-    $vkCompute = $vkCompute.Replace($subgroupAnchor.TrimEnd("`r", "`n"),
-                                    $subgroupReplacement.TrimEnd("`r", "`n"))
+    $vkCompute = $vkCompute.Insert($afterStruct, $insert)
 
-    $pnextAnchor = @'
-                .pNext =
-                    device.IsExtSubgroupSizeControlSupported() ? &subgroup_size_ci : nullptr,
-'@
-    $pnextReplacement = @'
-                .pNext = device.IsExtSubgroupSizeControlSupported() && uses_warp_ops
-                             ? &subgroup_size_ci
-                             : nullptr,
-'@
-    if (-not $vkCompute.Contains($pnextAnchor.TrimEnd("`r", "`n"))) {
-        throw 'MKW subgroup optimization: compute pipeline subgroup pNext anchor changed'
+    $oldExpression = 'device.IsExtSubgroupSizeControlSupported() ? &subgroup_size_ci : nullptr'
+    $expressionIndex = $vkCompute.IndexOf($oldExpression, $afterStruct)
+    if ($expressionIndex -lt 0) {
+        throw 'MKW subgroup optimization: compute subgroup pNext expression changed'
     }
-    $vkCompute = $vkCompute.Replace($pnextAnchor.TrimEnd("`r", "`n"),
-                                    $pnextReplacement.TrimEnd("`r", "`n"))
+    $newExpression = 'device.IsExtSubgroupSizeControlSupported() && uses_warp_ops ? &subgroup_size_ci : nullptr'
+    $vkCompute = $vkCompute.Remove($expressionIndex, $oldExpression.Length).Insert(
+        $expressionIndex, $newExpression)
     Write-PatchedText $vkComputePath $vkCompute
 }
 Require-Text $vkComputePath 'const bool uses_warp_ops =' 'MKW compute subgroup usage gate'
 Require-Text $vkComputePath 'device.IsExtSubgroupSizeControlSupported() && uses_warp_ops' 'conditional guest subgroup-size request'
 
-# Host-RAM / zero-fill tracking.
-Require-Text 'src/core/device_memory.h' 'bool used_by_kernel{};' 'device-memory session reuse flag'
-Require-Text 'src/core/hle/kernel/k_memory_manager.cpp' 'void KMemoryManager::FillAllocatedPages(' 'selective allocated-page fill implementation'
-Require-Text 'src/core/hle/kernel/k_memory_manager.cpp' 'manager.TakeFreedRuns' 'freed-page run clearing'
-Require-Text 'src/core/hle/kernel/k_memory_manager.cpp' 'm_page_reference_counts.resize(size / PageSize);' 'per-manager reference-count sizing'
-Require-Text 'src/core/hle/kernel/k_memory_manager.h' 'std::unique_ptr<std::atomic<u64>[]> m_freed_pages;' 'atomic freed-page bitmap'
-Require-Text 'src/core/hle/kernel/k_memory_manager.h' 'void MarkAllFreed()' 'cross-session freed-page reset'
-Require-Text 'src/core/hle/kernel/k_page_table_base.cpp' 'system.Kernel().MemoryManager().FillAllocatedPages' 'page-table selective fill routing'
-Require-Text 'src/core/hle/service/nx2_gsv.h' 'kernel_core.MemoryManager().FillAllocatedPages' 'NX2 sparse selective fill routing'
+$required = @(
+    @('src/core/device_memory.h', 'bool used_by_kernel{};', 'device-memory session reuse flag'),
+    @('src/core/hle/kernel/k_memory_manager.cpp', 'void KMemoryManager::FillAllocatedPages(', 'selective allocated-page fill implementation'),
+    @('src/core/hle/kernel/k_memory_manager.cpp', 'manager.TakeFreedRuns', 'freed-page run clearing'),
+    @('src/core/hle/kernel/k_memory_manager.cpp', 'm_page_reference_counts.resize(size / PageSize);', 'per-manager reference-count sizing'),
+    @('src/core/hle/kernel/k_memory_manager.h', 'std::unique_ptr<std::atomic<u64>[]> m_freed_pages;', 'atomic freed-page bitmap'),
+    @('src/core/hle/kernel/k_memory_manager.h', 'void MarkAllFreed()', 'cross-session freed-page reset'),
+    @('src/core/hle/kernel/k_page_table_base.cpp', 'system.Kernel().MemoryManager().FillAllocatedPages', 'page-table selective fill routing'),
+    @('src/core/hle/service/nx2_gsv.h', 'kernel_core.MemoryManager().FillAllocatedPages', 'NX2 sparse selective fill routing'),
+    @('src/video_core/texture_cache/texture_cache_base.h', 'STALE_IMAGE_FRAMES = 3 * 60 * 60', 'three-minute stale-image threshold'),
+    @('src/video_core/texture_cache/texture_cache_base.h', 'STALE_DELETES_PER_FRAME = 8', 'bounded stale-image deletion rate'),
+    @('src/video_core/texture_cache/texture_cache.h', 'stale_deletes = STALE_DELETES_PER_FRAME', 'incremental stale-image collector'),
+    @('src/video_core/texture_cache/texture_cache.h', 'True(image.flags & ImageFlagBits::IsDecoding)', 'stale collector decode-lifetime guard'),
+    @('src/video_core/texture_cache/texture_cache.h', 'IsDownloadable(image)', 'stale collector GPU-written-image guard'),
+    @('src/video_core/vulkan_common/vulkan_device.cpp', 'main_statistics.blockBytes - main_statistics.allocationBytes', 'VMA reserved-block slack budget accounting'),
+    @('src/video_core/renderer_vulkan/vk_compute_pipeline.cpp', 'Only needed to create the pipeline.', 'compute shader-module release'),
+    @('src/video_core/renderer_vulkan/vk_compute_pipeline.cpp', 'spv_module = {};', 'compute SPIR-V module reset'),
+    @('src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp', 'modules are only needed to create the pipeline', 'graphics shader-module release'),
+    @('src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp', 'spv_modules = {};', 'graphics SPIR-V module reset')
+)
+foreach ($entry in $required) { Require-Text $entry[0] $entry[1] $entry[2] }
 
-# VRAM budget/stale texture retirement.
-Require-Text 'src/video_core/texture_cache/texture_cache_base.h' 'STALE_IMAGE_FRAMES = 3 * 60 * 60' 'three-minute stale-image threshold'
-Require-Text 'src/video_core/texture_cache/texture_cache_base.h' 'STALE_DELETES_PER_FRAME = 8' 'bounded stale-image deletion rate'
-Require-Text 'src/video_core/texture_cache/texture_cache.h' 'stale_deletes = STALE_DELETES_PER_FRAME' 'incremental stale-image collector'
-Require-Text 'src/video_core/texture_cache/texture_cache.h' 'True(image.flags & ImageFlagBits::IsDecoding)' 'stale collector decode-lifetime guard'
-Require-Text 'src/video_core/texture_cache/texture_cache.h' 'IsDownloadable(image)' 'stale collector GPU-written-image guard'
-Require-Text 'src/video_core/vulkan_common/vulkan_device.cpp' 'main_statistics.blockBytes - main_statistics.allocationBytes' 'VMA reserved-block slack budget accounting'
-
-# Vulkan shader-module lifetime.
-Require-Text 'src/video_core/renderer_vulkan/vk_compute_pipeline.cpp' 'Only needed to create the pipeline.' 'compute shader-module release'
-Require-Text 'src/video_core/renderer_vulkan/vk_compute_pipeline.cpp' 'spv_module = {};' 'compute SPIR-V module reset'
-Require-Text 'src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp' 'modules are only needed to create the pipeline' 'graphics shader-module release'
-Require-Text 'src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp' 'spv_modules = {};' 'graphics SPIR-V module reset'
-
-# Our 20 GiB ASTC policy must survive. PR #142's separate force-BC3 commit intentionally stays out.
+# Preserve our 20 GiB ASTC policy; the donor's force-BC3-on-every-card policy intentionally stays out.
 $vkTexturePath = 'src/video_core/renderer_vulkan/vk_texture_cache.cpp'
 $vkTexture = Get-Content $vkTexturePath -Raw
 if (-not $vkTexture.Contains('UseBc3ForSwitch2OnSmallCards')) {
@@ -212,9 +172,7 @@ if ($vkTexture.Contains('void UseBc3ForSwitch2(const Device& device)')) {
 Write-Host '[PASS] existing threshold-based ASTC policy preserved'
 
 git diff --check
-if ($LASTEXITCODE -ne 0) {
-    throw 'NX2 profiler/MKW subgroup hardening introduced diff errors'
-}
+if ($LASTEXITCODE -ne 0) { throw 'NX2 profiler/MKW subgroup hardening introduced diff errors' }
 
 Write-Host '[PASS] NX2 gameplay profiler keeps per-page DMA history opt-in'
 Write-Host '[PASS] MKW non-warp compute pipelines can use the driver-native subgroup size'
