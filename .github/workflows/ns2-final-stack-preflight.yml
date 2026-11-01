@@ -60,67 +60,62 @@ jobs:
         working-directory: eden
         run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-zortos-build31-partial-write.ps1"'
 
-      - name: 03 Post-build31 CPU frontier
-        shell: pwsh
-        working-directory: eden
-        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-post-build31-cpu-frontier.ps1"'
-
-      - name: 04 Legacy hotpath cleanup
+      - name: 03 Legacy hotpath cleanup
         shell: pwsh
         working-directory: eden
         run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-ns2-legacy-hotpath-cleanup.ps1"'
 
-      - name: 05 Pipeline worker budget
+      - name: 04 Pipeline worker budget
         shell: pwsh
         working-directory: eden
         run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-ns2-pipeline-worker-budget.ps1"'
 
-      - name: 06 Broken-driver worker budget
+      - name: 05 Broken-driver worker budget
         shell: pwsh
         working-directory: eden
         run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-ns2-broken-driver-worker-budget.ps1"'
 
-      - name: 07 DMA increasing-run fastpath
+      - name: 06 DMA increasing-run fastpath
         shell: pwsh
         working-directory: eden
         run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-dma-increasing-run-fastpath.ps1"'
 
-      - name: 08 DMA increasing front cache
+      - name: 07 DMA increasing front cache
         shell: pwsh
         working-directory: eden
         run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-dma-increasing-front-cache.ps1"'
 
-      - name: 09 Vulkan descriptor scratch reuse
+      - name: 08 Vulkan descriptor scratch reuse
         shell: pwsh
         working-directory: eden
         run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-vulkan-descriptor-scratch-reuse.ps1"'
 
-      - name: 10 Texture sampler ID vector cache
+      - name: 09 Texture sampler ID vector cache
         shell: pwsh
         working-directory: eden
         run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-texture-sampler-id-vector-cache.ps1"'
 
-      - name: 11 Texture image-view ID vector cache
+      - name: 10 Texture image-view ID vector cache
         shell: pwsh
         working-directory: eden
         run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-texture-image-view-id-vector-cache.ps1"'
 
-      - name: 12 Texture DMA download-state inheritance
+      - name: 11 Texture DMA download-state inheritance
         shell: pwsh
         working-directory: eden
         run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-texture-dma-download-state-inheritance.ps1"'
 
-      - name: 13 Descriptor-table span cache
+      - name: 12 Descriptor-table span cache
         shell: pwsh
         working-directory: eden
         run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-descriptor-table-span-cache.ps1"'
 
-      - name: 14 Memory-manager range notify
+      - name: 13 Memory-manager range notify
         shell: pwsh
         working-directory: eden
         run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-memory-manager-range-notify.ps1"'
 
-      - name: 15 Pushbuffer map-generation hardening
+      - name: 14 Pushbuffer map-generation hardening
         shell: pwsh
         working-directory: eden
         run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-pushbuffer-mapgen-hardening.ps1"'
@@ -131,4 +126,4 @@ jobs:
         run: |
           git diff --check
           if ($LASTEXITCODE -ne 0) { throw 'Combined performance stack failed git diff --check' }
-          Write-Host '[PASS] All final performance patches applied cleanly.'
+          Write-Host '[PASS] All final production performance patches applied cleanly.'
