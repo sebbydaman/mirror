@@ -47,3 +47,6 @@ if ($guard -lt 0 -or $factories -lt 0 -or $guard -gt $factories) {
 }
 
 Write-Host 'Late NS2 stability regression validation passed.'
+
+# Validate the newer targeted donor layer chained after this stability stack.
+& "$PSScriptRoot\test-ns2-donor-20261101.ps1"
