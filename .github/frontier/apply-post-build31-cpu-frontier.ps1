@@ -8,9 +8,10 @@ $jitTelemetry = Join-Path $PSScriptRoot 'apply-cpu-jit-telemetry.ps1'
 $legacyCleanup = Join-Path $PSScriptRoot 'apply-ns2-legacy-hotpath-cleanup.ps1'
 $dispatchTelemetry = Join-Path $PSScriptRoot 'apply-dma-dispatch-telemetry.ps1'
 $increasingRunFastPath = Join-Path $PSScriptRoot 'apply-dma-increasing-run-fastpath.ps1'
+$increasingFrontCache = Join-Path $PSScriptRoot 'apply-dma-increasing-front-cache.ps1'
 
 foreach ($path in @($rangeNotify, $jitTelemetry, $legacyCleanup, $dispatchTelemetry,
-                    $increasingRunFastPath)) {
+                    $increasingRunFastPath, $increasingFrontCache)) {
     if (-not (Test-Path $path -PathType Leaf)) {
         throw "Post-Build31 CPU frontier: missing $path"
     }
@@ -21,5 +22,6 @@ foreach ($path in @($rangeNotify, $jitTelemetry, $legacyCleanup, $dispatchTeleme
 & $legacyCleanup
 & $dispatchTelemetry
 & $increasingRunFastPath
+& $increasingFrontCache
 
-Write-Host '[APPLIED] Post-Build31 CPU frontier: range-batched GMMU notifications + opt-in Dynarmic duplicate-compile telemetry + stale reactive-read diagnostic cleanup + opt-in DmaDispatch traffic-shape telemetry + tight pure-Increasing engine-run dispatch'
+Write-Host '[APPLIED] Post-Build31 CPU frontier: range-batched GMMU notifications + opt-in Dynarmic duplicate-compile telemetry + stale reactive-read diagnostic cleanup + opt-in DmaDispatch traffic-shape telemetry + tight pure-Increasing engine-run dispatch + cached front-macro run dispatch'
