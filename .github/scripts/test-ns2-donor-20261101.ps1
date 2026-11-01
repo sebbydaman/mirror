@@ -38,3 +38,11 @@ if ($objectText.Contains('std::destroy_n(storage.get(), used_objects);')) {
 }
 
 Write-Host 'November NX2 donor regression validation passed.'
+
+# Apply the host-CPU worker budget after the PokeDinner donor batch has established its pipeline and
+# translation pools. Build31 runs immediately after this and does not replace GetTotalPipelineWorkers.
+$pipelineWorkerBudget = Join-Path $PSScriptRoot '..\frontier\apply-ns2-pipeline-worker-budget.ps1'
+if (-not (Test-Path $pipelineWorkerBudget -PathType Leaf)) {
+    throw "November donor regression: missing pipeline-worker frontier layer $pipelineWorkerBudget"
+}
+& $pipelineWorkerBudget
