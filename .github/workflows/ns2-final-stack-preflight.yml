@@ -1,0 +1,134 @@
+name: Preflight Eden NS2 Final Performance Stack
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ns2-pokopia-final-perf
+    paths:
+      - '.github/workflows/ns2-final-stack-preflight.yml'
+      - '.github/frontier/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ns2-final-stack-preflight-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - name: Checkout build automation
+        uses: actions/checkout@v5
+        with:
+          path: automation
+          fetch-depth: 1
+
+      - name: Checkout Eglantine NS2 source
+        uses: actions/checkout@v5
+        with:
+          repository: Djihads80/Eglantine
+          ref: f362528c0447c491bfe00c0bdd5d8c245396a24c
+          path: eden
+          fetch-depth: 1
+
+      - name: Apply validated base NS2 stack
+        shell: pwsh
+        working-directory: eden
+        run: |
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-integration.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-positive-shader-cache.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-bananza-generic-overlap.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-draw-state-cache.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-nso-loader.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-nx2-memory-layout.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-bananza-post-menu-gpu.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-late-runtime.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-handheld-mode.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-late-stability.ps1"
+
+      - name: 01 Zortos build31 performance
+        shell: pwsh
+        working-directory: eden
+        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-zortos-build31-perf.ps1"'
+
+      - name: 02 Zortos partial write
+        shell: pwsh
+        working-directory: eden
+        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-zortos-build31-partial-write.ps1"'
+
+      - name: 03 Post-build31 CPU frontier
+        shell: pwsh
+        working-directory: eden
+        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-post-build31-cpu-frontier.ps1"'
+
+      - name: 04 Legacy hotpath cleanup
+        shell: pwsh
+        working-directory: eden
+        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-ns2-legacy-hotpath-cleanup.ps1"'
+
+      - name: 05 Pipeline worker budget
+        shell: pwsh
+        working-directory: eden
+        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-ns2-pipeline-worker-budget.ps1"'
+
+      - name: 06 Broken-driver worker budget
+        shell: pwsh
+        working-directory: eden
+        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-ns2-broken-driver-worker-budget.ps1"'
+
+      - name: 07 DMA increasing-run fastpath
+        shell: pwsh
+        working-directory: eden
+        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-dma-increasing-run-fastpath.ps1"'
+
+      - name: 08 DMA increasing front cache
+        shell: pwsh
+        working-directory: eden
+        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-dma-increasing-front-cache.ps1"'
+
+      - name: 09 Vulkan descriptor scratch reuse
+        shell: pwsh
+        working-directory: eden
+        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-vulkan-descriptor-scratch-reuse.ps1"'
+
+      - name: 10 Texture sampler ID vector cache
+        shell: pwsh
+        working-directory: eden
+        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-texture-sampler-id-vector-cache.ps1"'
+
+      - name: 11 Texture image-view ID vector cache
+        shell: pwsh
+        working-directory: eden
+        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-texture-image-view-id-vector-cache.ps1"'
+
+      - name: 12 Texture DMA download-state inheritance
+        shell: pwsh
+        working-directory: eden
+        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-texture-dma-download-state-inheritance.ps1"'
+
+      - name: 13 Descriptor-table span cache
+        shell: pwsh
+        working-directory: eden
+        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-descriptor-table-span-cache.ps1"'
+
+      - name: 14 Memory-manager range notify
+        shell: pwsh
+        working-directory: eden
+        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-memory-manager-range-notify.ps1"'
+
+      - name: 15 Pushbuffer map-generation hardening
+        shell: pwsh
+        working-directory: eden
+        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-pushbuffer-mapgen-hardening.ps1"'
+
+      - name: Validate combined diff
+        shell: pwsh
+        working-directory: eden
+        run: |
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'Combined performance stack failed git diff --check' }
+          Write-Host '[PASS] All final performance patches applied cleanly.'
