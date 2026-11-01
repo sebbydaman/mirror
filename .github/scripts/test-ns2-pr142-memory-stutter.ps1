@@ -7,6 +7,15 @@ function Require-Text([string]$Path, [string]$Needle, [string]$Name) {
     Write-Host "[PASS] $Name"
 }
 
+function Write-PatchedText([string]$Path, [string]$Text) {
+    # Get-Content -Raw retains the source's final newline. Set-Content adds another newline when given
+    # a scalar string, which made git diff --check report a new blank line at EOF. Normalize to one
+    # LF and write without a BOM so the source patch remains semantically and textually clean.
+    $normalized = $Text.TrimEnd("`r", "`n") + "`n"
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+    [System.IO.File]::WriteAllText((Resolve-Path $Path).Path, $normalized, $utf8NoBom)
+}
+
 # Keep representative gameplay profiling lightweight. PR #134's deep DMA correlation walks every
 # 4-KiB page touched by native MME DMA, translates each page, and inserts it into a process-global
 # unordered_set which the buffer-download path later consults. That is useful for a targeted
@@ -52,7 +61,7 @@ inline bool TrackDmaPages() {
         throw 'NX2 profiler hardening: enable anchor changed in nx2_profile.h'
     }
     $profile = $profile.Replace($oldProfile, $newProfile)
-    Set-Content $profilePath $profile -Encoding UTF8
+    Write-PatchedText $profilePath $profile
 }
 
 $macro = Get-Content $macroPath -Raw
@@ -89,7 +98,7 @@ if (-not $macro.Contains('Nx2Profile::TrackDmaPages()')) {
     $gate = $outerIndent + "}`n" + $outerIndent +
         "if (VideoCommon::Nx2Profile::TrackDmaPages()) {`n"
     $macro = $macro.Insert($forLineStart, $gate)
-    Set-Content $macroPath $macro -Encoding UTF8
+    Write-PatchedText $macroPath $macro
 }
 
 $buffer = Get-Content $bufferPath -Raw
@@ -104,7 +113,7 @@ if (-not $buffer.Contains('Nx2Profile::TrackDmaPages()')) {
     }
     $buffer = $buffer.Remove($gateIndex, $enabledToken.Length).Insert(
         $gateIndex, 'if (Nx2Profile::TrackDmaPages()) {')
-    Set-Content $bufferPath $buffer -Encoding UTF8
+    Write-PatchedText $bufferPath $buffer
 }
 
 Require-Text $profilePath 'EDEN_NX2_GPU_PROFILE_PAGES' 'profiler DMA-page history opt-in'
