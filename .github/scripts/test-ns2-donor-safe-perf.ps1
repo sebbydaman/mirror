@@ -9,6 +9,15 @@ if (-not (Test-Path $frontierHardening -PathType Leaf)) {
 }
 & $frontierHardening
 
+# zortos293/Eglantine build 31 contains a small group of CPU/JIT/cache hot-path changes that are
+# independent of its newer readback subsystem. Apply only that guarded subset after the proven
+# donor stack so the fast baseline validates the exact source that the compiler will see.
+$build31Frontier = Join-Path $PSScriptRoot '..\frontier\apply-zortos-build31-perf.ps1'
+if (-not (Test-Path $build31Frontier -PathType Leaf)) {
+    throw "Safe donor regression: missing Zortos build31 frontier layer $build31Frontier"
+}
+& $build31Frontier
+
 function Require-Text([string]$Path, [string]$Needle, [string]$Name) {
     if (-not (Test-Path $Path -PathType Leaf)) {
         throw "Safe donor regression: missing required file $Path"
