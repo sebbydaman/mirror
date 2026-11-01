@@ -9,6 +9,12 @@ on:
 permissions:
   contents: read
 
+# A newer integration commit completely supersedes an older source capture, so do not spend a
+# runner finishing a stale capture when rapid donor/regression changes are pushed back-to-back.
+concurrency:
+  group: ns2-pokopia-capture-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   capture-integrated-source:
     runs-on: windows-2025
