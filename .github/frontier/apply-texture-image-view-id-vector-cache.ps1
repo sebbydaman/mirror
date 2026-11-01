@@ -150,8 +150,10 @@ $newValidation = @'
         channel_info.graphics_image_table.Invalidate();
         channel_info.compute_image_table.Invalidate();
 '@
-$oldValidation = $oldValidation.TrimEnd("`r", "`n")
-$newValidation = $newValidation.TrimEnd("`r", "`n")
+# Earlier frontier helpers normalize integrated source to LF; normalize these multi-line Windows
+# here-strings as well so both validation-only invalidation sites are rewritten reliably.
+$oldValidation = $oldValidation.Replace("`r`n", "`n").TrimEnd("`r", "`n")
+$newValidation = $newValidation.Replace("`r`n", "`n").TrimEnd("`r", "`n")
 $validationCount = ([regex]::Matches($cache, [regex]::Escape($oldValidation))).Count
 if ($validationCount -gt 0) {
     $cache = $cache.Replace($oldValidation, $newValidation)
