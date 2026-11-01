@@ -27,6 +27,7 @@ $pipelineCache = 'src/video_core/renderer_vulkan/vk_pipeline_cache.cpp'
 Require-Text $deviceMemory 'An unmapped page says nothing about the pages after it' 'Splatoon/Raiders stale WalkBlock page fix'
 Require-Text $ampere 'Bit 90 (word 2 bit 26) is the sign of the LOD' 'signed-LOD gradient texture acceptance'
 Require-Text $ampere '2D gather with per-texel offsets' 'TLD4 .PTP per-texel gather lowering'
+Require-Text $ampere 'TXD 2D or ARRAY_2D, four channels; the two destination pairs anywhere.' 'Splatoon Raiders 2D TXD split-destination lowering'
 Require-Text $gsv 'seen on Mario Kart World and Splatoon Raiders' 'generic 1920x1080 Switch 2 handheld crop'
 
 # Eglantine first-read traps merged with PokeDinner selective copyback.
