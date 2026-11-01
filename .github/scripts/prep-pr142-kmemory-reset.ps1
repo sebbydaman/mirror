@@ -73,9 +73,85 @@ if (-not $text.Contains($allocMarker)) {
     Write-Host '[PRESENT] PR142 AllocateForProcess selective-fill routing'
 }
 
+# 3) Impl::Initialize page metadata: locate the resize statement inside the function rather than
+# matching the donor's old two-line GetIntendedMemorySize expression. Switch 2 has several managers;
+# sizing every manager for all guest DRAM wastes a large amount of host RAM.
+$resizeMarker = 'm_page_reference_counts.resize(size / PageSize);'
+$freedPagesMarker = 'm_freed_pages ='
+if (-not $text.Contains($resizeMarker)) {
+    $implStart = $text.IndexOf('size_t KMemoryManager::Impl::Initialize(', [StringComparison]::Ordinal)
+    if ($implStart -lt 0) { throw 'Could not locate KMemoryManager::Impl::Initialize for PR142 metadata adapter' }
+
+    $resizeNeedle = 'm_page_reference_counts.resize('
+    $resizeStart = $text.IndexOf($resizeNeedle, $implStart, [StringComparison]::Ordinal)
+    if ($resizeStart -lt 0) { throw 'Could not locate page-reference-count resize inside Impl::Initialize' }
+
+    # Refuse to touch a later function if this source shape changes unexpectedly.
+    $heapInit = $text.IndexOf('m_heap.Initialize(', $implStart, [StringComparison]::Ordinal)
+    if ($heapInit -lt 0 -or $resizeStart -gt $heapInit) {
+        throw 'Page-reference-count resize is outside the expected Impl::Initialize setup region'
+    }
+
+    $resizeEnd = $text.IndexOf(');', $resizeStart, [StringComparison]::Ordinal)
+    if ($resizeEnd -lt 0 -or $resizeEnd -gt $heapInit) {
+        throw 'Could not locate end of page-reference-count resize statement'
+    }
+    $resizeEnd += 2
+
+    $lineStart = $text.LastIndexOf("`n", $resizeStart)
+    if ($lineStart -lt 0) { $lineStart = 0 } else { ++$lineStart }
+    $indent = $text.Substring($lineStart, $resizeStart - $lineStart)
+    if ($indent.Trim().Length -ne 0) { throw 'Unexpected non-whitespace before page-reference-count resize' }
+
+    $replacement = @(
+        $indent + 'm_page_reference_counts.resize(size / PageSize);',
+        $indent + 'm_freed_pages =',
+        $indent + '    std::make_unique<std::atomic<u64>[]>(Common::DivCeil(size / PageSize, size_t{64}));'
+    ) -join "`n"
+
+    $text = $text.Substring(0, $lineStart) + $replacement + $text.Substring($resizeEnd)
+    Write-Host '[ADAPTED] PR142 per-manager page metadata sizing by Impl::Initialize semantic anchor'
+} elseif (-not $text.Contains($freedPagesMarker)) {
+    throw 'PR142 page-reference resize is present but freed-page bitmap allocation is missing'
+} else {
+    Write-Host '[PRESENT] PR142 per-manager page metadata sizing'
+}
+
+# 4) Optimized allocation: preserve the integrated ClearBackingRegion implementation, but only zero
+# pages known to have been freed. Never-used host backing is already zero and should stay uncommitted.
+$takeFreedMarker = 'this->TakeFreed(offset) || fill_pattern != 0'
+if (-not $text.Contains($takeFreedMarker)) {
+    $optStart = $text.IndexOf('bool KMemoryManager::Impl::ProcessOptimizedAllocation(', [StringComparison]::Ordinal)
+    if ($optStart -lt 0) { throw 'Could not locate ProcessOptimizedAllocation for PR142 adapter' }
+
+    $clearNeedle = 'device_memory.buffer.ClearBackingRegion('
+    $clearStart = $text.IndexOf($clearNeedle, $optStart, [StringComparison]::Ordinal)
+    if ($clearStart -lt 0) { throw 'Could not locate optimized-allocation backing clear' }
+
+    $callEnd = $text.IndexOf(');', $clearStart, [StringComparison]::Ordinal)
+    if ($callEnd -lt 0) { throw 'Could not locate end of optimized-allocation backing clear call' }
+    $callEnd += 2
+
+    $lineStart = $text.LastIndexOf("`n", $clearStart)
+    if ($lineStart -lt 0) { $lineStart = 0 } else { ++$lineStart }
+    $indent = $text.Substring($lineStart, $clearStart - $lineStart)
+    if ($indent.Trim().Length -ne 0) { throw 'Unexpected non-whitespace before optimized-allocation backing clear' }
+
+    $originalCall = $text.Substring($lineStart, $callEnd - $lineStart)
+    $indentedCall = (($originalCall -split "`n") | ForEach-Object { '    ' + $_ }) -join "`n"
+    $replacement = $indent + 'if (this->TakeFreed(offset) || fill_pattern != 0) {' + "`n" +
+                   $indentedCall + "`n" + $indent + '}'
+
+    $text = $text.Substring(0, $lineStart) + $replacement + $text.Substring($callEnd)
+    Write-Host '[ADAPTED] PR142 optimized-allocation freed-page clear guard by semantic call boundary'
+} else {
+    Write-Host '[PRESENT] PR142 optimized-allocation freed-page clear guard'
+}
+
 [IO.File]::WriteAllText($path, $text, [Text.UTF8Encoding]::new($false))
 $check = Get-Content $path -Raw
-if (-not $check.Contains($resetMarker)) { throw 'PR142 KMemoryManager reset marker missing after semantic insertion' }
-if (-not $check.Contains($allocMarker)) { throw 'PR142 AllocateForProcess fill-routing marker missing after semantic insertion' }
+foreach ($marker in @($resetMarker, $allocMarker, $resizeMarker, $freedPagesMarker, $takeFreedMarker)) {
+    if (-not $check.Contains($marker)) { throw "PR142 KMemoryManager marker missing after semantic preparation: $marker" }
+}
 
 Write-Host 'Prepared PR142 KMemoryManager semantic adapters.'
