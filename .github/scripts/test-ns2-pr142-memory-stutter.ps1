@@ -7,6 +7,109 @@ function Require-Text([string]$Path, [string]$Needle, [string]$Name) {
     Write-Host "[PASS] $Name"
 }
 
+# Keep representative gameplay profiling lightweight. PR #134's deep DMA correlation walks every
+# 4-KiB page touched by native MME DMA, translates each page, and inserts it into a process-global
+# unordered_set which the buffer-download path later consults. That is useful for a targeted
+# readback investigation, but it is too invasive for normal frame-time profiling and is a poor fit
+# for the split GPU/readback paths used by this branch. Keep the timing zones/counters behind
+# EDEN_NX2_GPU_PROFILE and make page-history correlation a separate explicit opt-in.
+$profilePath = 'src/video_core/nx2_profile.h'
+$macroPath = 'src/video_core/macro.cpp'
+$bufferPath = 'src/video_core/buffer_cache/buffer_cache.h'
+
+foreach ($path in @($profilePath, $macroPath, $bufferPath)) {
+    if (-not (Test-Path $path -PathType Leaf)) {
+        throw "NX2 profiler hardening: missing required file $path"
+    }
+}
+
+$profile = Get-Content $profilePath -Raw
+if (-not $profile.Contains('EDEN_NX2_GPU_PROFILE_PAGES')) {
+    $oldProfile = @'
+inline const bool g_enabled = std::getenv("EDEN_NX2_GPU_PROFILE") != nullptr;
+
+inline bool Enabled() {
+    return g_enabled;
+}
+'@
+    $newProfile = @'
+inline const bool g_enabled = std::getenv("EDEN_NX2_GPU_PROFILE") != nullptr;
+// Per-page MME DMA history is intentionally separate from normal gameplay profiling. It performs
+// address translation and hash-set insertion for every 4-KiB page and should only be enabled for a
+// focused readback investigation.
+inline const bool g_track_dma_pages =
+    std::getenv("EDEN_NX2_GPU_PROFILE_PAGES") != nullptr;
+
+inline bool Enabled() {
+    return g_enabled;
+}
+
+inline bool TrackDmaPages() {
+    return g_enabled && g_track_dma_pages;
+}
+'@
+    if (-not $profile.Contains($oldProfile)) {
+        throw 'NX2 profiler hardening: enable anchor changed in nx2_profile.h'
+    }
+    $profile = $profile.Replace($oldProfile, $newProfile)
+    Set-Content $profilePath $profile -Encoding UTF8
+}
+
+$macro = Get-Content $macroPath -Raw
+if (-not $macro.Contains('Nx2Profile::TrackDmaPages()')) {
+    $oldMacro = @'
+        if (VideoCommon::Nx2Profile::Enabled()) {
+            VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::DmaReadBytes, read_bytes);
+            for (GPUVAddr page = source & ~GPUVAddr{0xfff}; page < source + read_bytes;
+                 page += 0x1000) {
+                if (const auto device = memory.GpuToCpuAddress(page)) {
+                    VideoCommon::Nx2Profile::DmaReadPages().insert(*device >> 12);
+                }
+            }
+        }
+'@
+    $newMacro = @'
+        if (VideoCommon::Nx2Profile::Enabled()) {
+            VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::DmaReadBytes, read_bytes);
+        }
+        if (VideoCommon::Nx2Profile::TrackDmaPages()) {
+            for (GPUVAddr page = source & ~GPUVAddr{0xfff}; page < source + read_bytes;
+                 page += 0x1000) {
+                if (const auto device = memory.GpuToCpuAddress(page)) {
+                    VideoCommon::Nx2Profile::DmaReadPages().insert(*device >> 12);
+                }
+            }
+        }
+'@
+    if (-not $macro.Contains($oldMacro)) {
+        throw 'NX2 profiler hardening: native MME DMA page-history anchor changed in macro.cpp'
+    }
+    $macro = $macro.Replace($oldMacro, $newMacro)
+    Set-Content $macroPath $macro -Encoding UTF8
+}
+
+$buffer = Get-Content $bufferPath -Raw
+if (-not $buffer.Contains('Nx2Profile::TrackDmaPages()')) {
+    $oldBuffer = @'
+                if (Nx2Profile::Enabled()) {
+                    const auto& pages = Nx2Profile::DmaReadPages();
+'@
+    $newBuffer = @'
+                if (Nx2Profile::TrackDmaPages()) {
+                    const auto& pages = Nx2Profile::DmaReadPages();
+'@
+    if (-not $buffer.Contains($oldBuffer)) {
+        throw 'NX2 profiler hardening: buffer-download page-history anchor changed in buffer_cache.h'
+    }
+    $buffer = $buffer.Replace($oldBuffer, $newBuffer)
+    Set-Content $bufferPath $buffer -Encoding UTF8
+}
+
+Require-Text $profilePath 'EDEN_NX2_GPU_PROFILE_PAGES' 'profiler DMA-page history opt-in'
+Require-Text $profilePath 'inline bool TrackDmaPages()' 'profiler DMA-page history gate'
+Require-Text $macroPath 'Nx2Profile::TrackDmaPages()' 'MME DMA page-history gate'
+Require-Text $bufferPath 'Nx2Profile::TrackDmaPages()' 'buffer-download page-history gate'
+
 # Host-RAM / zero-fill tracking.
 Require-Text 'src/core/device_memory.h' 'bool used_by_kernel{};' 'device-memory session reuse flag'
 Require-Text 'src/core/hle/kernel/k_memory_manager.cpp' 'void KMemoryManager::FillAllocatedPages(' 'selective allocated-page fill implementation'
@@ -42,4 +145,10 @@ if ($vkTexture.Contains('void UseBc3ForSwitch2(const Device& device)')) {
 }
 Write-Host '[PASS] existing threshold-based ASTC policy preserved'
 
+git diff --check
+if ($LASTEXITCODE -ne 0) {
+    throw 'NX2 profiler hardening introduced diff errors'
+}
+
+Write-Host '[PASS] NX2 gameplay profiler keeps per-page DMA history opt-in'
 Write-Host 'Targeted PR #142 RAM/stutter regression validation passed.'
