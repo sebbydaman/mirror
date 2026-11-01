@@ -267,12 +267,35 @@ foreach ($name in $portableImports) {
     }
 }
 
+# Preserve dynamically loaded shader-compiler support while the Vulkan SDK is still available in
+# the compile job. The packaging job runs on a fresh VM, so it cannot recover these SDK DLLs unless
+# they are carried across in the reusable checkpoint. Keep them optional: Eden can use fallback
+# shader paths on systems/builds that do not need DXC, and a missing optional DLL must not invalidate
+# an otherwise reusable expensive compile.
+$optionalShaderRuntime = @('dxcompiler.dll', 'dxil.dll', 'd3dcompiler_47.dll')
+$missingOptionalShaderRuntime = [System.Collections.Generic.List[string]]::new()
+foreach ($name in $optionalShaderRuntime) {
+    $existing = Get-ChildItem $source -Recurse -Filter $name -File -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($existing) { continue }
+
+    $dependency = Find-RuntimeDependency $name
+    if ($dependency) {
+        Copy-Item $dependency (Join-Path $source $name) -Force
+        Write-Host "Checkpoint staged optional shader runtime: $name from $dependency"
+    } else {
+        $missingOptionalShaderRuntime.Add($name)
+        Write-Warning "Checkpoint could not stage optional shader runtime: $name"
+    }
+}
+
 $manifest = Join-Path $source 'COMPILED_CHECKPOINT.txt'
 @(
     "Automation commit: $env:GITHUB_SHA",
     "GUI executable: $(Split-Path $gui -Leaf)",
     "Checkpoint created: $([DateTime]::UtcNow.ToString('o'))",
-    "Missing staged runtime imports: $(if ($missing.Count) { $missing -join ', ' } else { 'none' })"
+    "Missing staged runtime imports: $(if ($missing.Count) { $missing -join ', ' } else { 'none' })",
+    "Missing optional shader runtime: $(if ($missingOptionalShaderRuntime.Count) { $missingOptionalShaderRuntime -join ', ' } else { 'none' })"
 ) | Set-Content -Path $manifest -Encoding UTF8
 
 if ($Strict -and $missing.Count -gt 0) {
@@ -283,4 +306,7 @@ Write-Host "Reusable compiled checkpoint prepared at $source"
 Write-Host "Files: $((Get-ChildItem $source -File -Recurse).Count)"
 if ($missing.Count -gt 0) {
     Write-Warning "Compile checkpoint was preserved despite missing packaging imports; package job will validate strictly."
+}
+if ($missingOptionalShaderRuntime.Count -gt 0) {
+    Write-Warning "Compile checkpoint is missing optional shader runtime: $($missingOptionalShaderRuntime -join ', ')"
 }
