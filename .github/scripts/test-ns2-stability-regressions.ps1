@@ -52,3 +52,8 @@ Write-Host 'Late NS2 stability regression validation passed.'
 & "$PSScriptRoot\test-ns2-donor-20261101.ps1"
 & "$PSScriptRoot\test-ns2-donor-safe-perf.ps1"
 & "$PSScriptRoot\test-ns2-pr142-memory-stutter.ps1"
+
+# Finally reject superseded runtime shapes and dormant automation generations. Keeping this last
+# means the positive regression tests explain any missing modern feature before the legacy audit
+# checks for an old form that may have replaced it.
+& "$PSScriptRoot\audit-ns2-legacy-dead-code.ps1"
