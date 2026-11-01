@@ -86,6 +86,7 @@ $expectedScripts = @(
     'capture-ns2-baseline.ps1',
     'package-ns2-runtime.ps1',
     'prep-pr142-integrated.ps1',
+    'prepare-eglantine-read-trap-selective-copyback.ps1',
     'prepare-ns2-big-batch-anchors.ps1',
     'prepare-pr52-selective-copyback.ps1',
     'stage-ns2-runtime-checkpoint.ps1',
@@ -123,8 +124,8 @@ if ($missingPayloads.Count -gt 0 -or $unexpectedPayloads.Count -gt 0) {
 }
 Write-Host '[CLEAN] patch payload inventory: only live late-runtime/handheld/stability payloads remain'
 
-# Explicit live transitive dependency graph. These edges caught the first audit's false deletion of
-# apply-bananza-blue-screen-gpu.ps1 before a compile was started.
+# Explicit live transitive dependency graph. These edges caught two false-deletion candidates before
+# an expensive compile: the Bananza blue-screen layer and the PR48 read-trap preparation helper.
 Require-ScriptReference 'apply-eglantine-integration.ps1' @(
     'apply-ns2-geometry-stage.ps1'
 )
@@ -142,6 +143,9 @@ Require-ScriptReference 'apply-bananza-post-menu-gpu.ps1' @(
     'prepare-pr52-selective-copyback.ps1',
     'apply-ns2-general-compat-batch-v2.ps1',
     'apply-ns2-runtime-blockers-v3.ps1'
+)
+Require-ScriptReference 'apply-eglantine-pr48-device-memory.ps1' @(
+    'prepare-eglantine-read-trap-selective-copyback.ps1'
 )
 Require-ScriptReference 'apply-ns2-runtime-blockers-v3.ps1' @(
     'apply-ns2-runtime-blockers-v3-core.ps1',
@@ -176,8 +180,7 @@ $knownDead = @(
     'apply-ns2-build-fixes.ps1',
     'package-windows-runtime.ps1',
     'prep-pr142-kmemory-reset.ps1',
-    'prep-pr142-vma-budget.ps1',
-    'prepare-eglantine-read-trap-selective-copyback.ps1'
+    'prep-pr142-vma-budget.ps1'
 )
 $workflowDir = Join-Path $PSScriptRoot '..\workflows'
 $referenceFiles = @(
