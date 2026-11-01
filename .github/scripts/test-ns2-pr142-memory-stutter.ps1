@@ -57,51 +57,53 @@ inline bool TrackDmaPages() {
 
 $macro = Get-Content $macroPath -Raw
 if (-not $macro.Contains('Nx2Profile::TrackDmaPages()')) {
-    $oldMacro = @'
-        if (VideoCommon::Nx2Profile::Enabled()) {
-            VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::DmaReadBytes, read_bytes);
-            for (GPUVAddr page = source & ~GPUVAddr{0xfff}; page < source + read_bytes;
-                 page += 0x1000) {
-                if (const auto device = memory.GpuToCpuAddress(page)) {
-                    VideoCommon::Nx2Profile::DmaReadPages().insert(*device >> 12);
-                }
-            }
-        }
-'@
-    $newMacro = @'
-        if (VideoCommon::Nx2Profile::Enabled()) {
-            VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::DmaReadBytes, read_bytes);
-        }
-        if (VideoCommon::Nx2Profile::TrackDmaPages()) {
-            for (GPUVAddr page = source & ~GPUVAddr{0xfff}; page < source + read_bytes;
-                 page += 0x1000) {
-                if (const auto device = memory.GpuToCpuAddress(page)) {
-                    VideoCommon::Nx2Profile::DmaReadPages().insert(*device >> 12);
-                }
-            }
-        }
-'@
-    if (-not $macro.Contains($oldMacro)) {
-        throw 'NX2 profiler hardening: native MME DMA page-history anchor changed in macro.cpp'
+    # Do not key this patch to whitespace/line-wrapping from one donor revision. Instead locate the
+    # actual page-history insertion, prove it belongs to the DmaReadBytes profiling block, then split
+    # the expensive page walk into its own TrackDmaPages() gate while leaving the cheap byte counter
+    # under the normal profiler gate.
+    $insertToken = 'VideoCommon::Nx2Profile::DmaReadPages().insert(*device >> 12);'
+    $insertIndex = $macro.IndexOf($insertToken)
+    if ($insertIndex -lt 0) {
+        throw 'NX2 profiler hardening: DmaReadPages insertion disappeared from macro.cpp'
     }
-    $macro = $macro.Replace($oldMacro, $newMacro)
+
+    $enabledToken = 'if (VideoCommon::Nx2Profile::Enabled()) {'
+    $enabledIndex = $macro.LastIndexOf($enabledToken, $insertIndex)
+    $addToken = 'VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::DmaReadBytes, read_bytes);'
+    $addIndex = if ($enabledIndex -ge 0) { $macro.IndexOf($addToken, $enabledIndex) } else { -1 }
+    $forToken = 'for (GPUVAddr page = source & ~GPUVAddr{0xfff};'
+    $forIndex = if ($addIndex -ge 0) { $macro.IndexOf($forToken, $addIndex) } else { -1 }
+    if ($enabledIndex -lt 0 -or $addIndex -lt 0 -or $forIndex -lt 0 -or
+        $addIndex -gt $insertIndex -or $forIndex -gt $insertIndex) {
+        throw 'NX2 profiler hardening: native MME DMA profiling structure changed in macro.cpp'
+    }
+
+    $forLineStart = $macro.LastIndexOf("`n", $forIndex)
+    if ($forLineStart -lt 0) { $forLineStart = 0 } else { ++$forLineStart }
+    $forIndent = $macro.Substring($forLineStart, $forIndex - $forLineStart)
+    if ($forIndent -match '[^ \t]') {
+        throw 'NX2 profiler hardening: could not determine MME DMA loop indentation'
+    }
+    $outerIndentLength = [Math]::Max(0, $forIndent.Length - 4)
+    $outerIndent = $forIndent.Substring(0, $outerIndentLength)
+    $gate = $outerIndent + "}`n" + $outerIndent +
+        "if (VideoCommon::Nx2Profile::TrackDmaPages()) {`n"
+    $macro = $macro.Insert($forLineStart, $gate)
     Set-Content $macroPath $macro -Encoding UTF8
 }
 
 $buffer = Get-Content $bufferPath -Raw
 if (-not $buffer.Contains('Nx2Profile::TrackDmaPages()')) {
-    $oldBuffer = @'
-                if (Nx2Profile::Enabled()) {
-                    const auto& pages = Nx2Profile::DmaReadPages();
-'@
-    $newBuffer = @'
-                if (Nx2Profile::TrackDmaPages()) {
-                    const auto& pages = Nx2Profile::DmaReadPages();
-'@
-    if (-not $buffer.Contains($oldBuffer)) {
-        throw 'NX2 profiler hardening: buffer-download page-history anchor changed in buffer_cache.h'
+    # As above, locate the gate that actually owns DmaReadPages() rather than relying on formatting.
+    $pageToken = 'const auto& pages = Nx2Profile::DmaReadPages();'
+    $pageIndex = $buffer.IndexOf($pageToken)
+    $enabledToken = 'if (Nx2Profile::Enabled()) {'
+    $gateIndex = if ($pageIndex -ge 0) { $buffer.LastIndexOf($enabledToken, $pageIndex) } else { -1 }
+    if ($pageIndex -lt 0 -or $gateIndex -lt 0) {
+        throw 'NX2 profiler hardening: buffer-download DmaReadPages profiling structure changed'
     }
-    $buffer = $buffer.Replace($oldBuffer, $newBuffer)
+    $buffer = $buffer.Remove($gateIndex, $enabledToken.Length).Insert(
+        $gateIndex, 'if (Nx2Profile::TrackDmaPages()) {')
     Set-Content $bufferPath $buffer -Encoding UTF8
 }
 
