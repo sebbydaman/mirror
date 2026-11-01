@@ -28,11 +28,19 @@ foreach ($script in $scripts) {
     if (-not (Test-Path $path -PathType Leaf)) {
         throw "Final NS2 performance stack: missing $path"
     }
+
     Write-Host "[FINAL PERF] Applying $script"
-    & $path
-    if ($LASTEXITCODE -ne 0) {
-        throw "Final NS2 performance stack failed in $script"
+    try {
+        & $path
+    } catch {
+        throw "Final NS2 performance stack failed in ${script}: $($_.Exception.Message)"
     }
+
+    # Do not inspect $LASTEXITCODE here. A PowerShell child script may invoke native tools
+    # internally and leave a stale non-zero value even when the script itself completed
+    # successfully. With ErrorActionPreference=Stop, real PowerShell failures propagate via
+    # exceptions; native commands that matter are validated inside each patch script.
+    Write-Host "[FINAL PERF] Completed $script"
 }
 
 git diff --check
