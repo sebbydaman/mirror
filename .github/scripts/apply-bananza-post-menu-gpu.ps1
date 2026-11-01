@@ -135,9 +135,6 @@ $vkRasterizerPath = 'src/video_core/renderer_vulkan/vk_rasterizer.cpp'
 $readTrapMarker = 'void ArmReadTraps(DAddr addr, size_t size);'
 
 if (-not (Get-Content $deviceMemoryHeader -Raw).Contains($readTrapMarker)) {
-    # Cherry-pick needs a clean index. The CI-only checkpoint preserves every earlier integration
-    # edit and gives us an exact tree to restore for the three files where PokeDinner has newer
-    # semantics than the Eglantine donor.
     git add -A
     if (git status --porcelain) {
         git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'CI checkpoint before Eglantine read traps' --no-verify
@@ -164,15 +161,11 @@ if (-not (Get-Content $deviceMemoryHeader -Raw).Contains($readTrapMarker)) {
         }
     }
 
-    # Those three files carry PokeDinner's newer selective-copyback semantics. Restore our exact
-    # pre-pick versions, then layer the read-trap pieces onto them deliberately.
     foreach ($path in $manualFiles) {
         git checkout $checkpoint -- $path
         if ($LASTEXITCODE -ne 0) { throw "Could not restore $path for selective read-trap merge" }
     }
 
-    # buffer_cache_base.h: keep cpu_read_ranges/QueueDownload and arm a trap only until the CPU has
-    # actually read the GPU-written range. Once known, later GPU writes are copied at fences.
     $baseText = (Get-Content $bufferBasePath -Raw).Replace("`r`n", "`n")
     $flushDecl = '    std::optional<VideoCore::RasterizerDownloadArea> GetFlushArea(DAddr device_addr, u64 size);'
     if (-not $baseText.Contains('bool FlushesOnCpuRead() const')) {
@@ -230,12 +223,11 @@ if (-not (Get-Content $deviceMemoryHeader -Raw).Contains($readTrapMarker)) {
         }
 '@
     if (-not $baseText.Contains('covered < size')) {
-        if (-not $baseText.Contains($oldQueue.Trim())) { throw 'Could not locate PokeDinner QueueDownload selective-copyback block' }
-        $baseText = $baseText.Replace($oldQueue.Trim(), $newQueue.Trim())
+        if (-not $baseText.Contains($oldQueue.TrimEnd())) { throw 'Could not locate PokeDinner QueueDownload selective-copyback block' }
+        $baseText = $baseText.Replace($oldQueue.TrimEnd(), $newQueue.TrimEnd())
     }
     Set-Content -Path $bufferBasePath -Value $baseText -Encoding utf8 -NoNewline
 
-    # Forget trap history when a buffer dies; a later buffer can reuse the same device pages.
     $bufferText = (Get-Content $bufferCachePath -Raw).Replace("`r`n", "`n")
     if (-not $bufferText.Contains('read_trapped_ranges.Subtract(slot_buffers[buffer_id].CpuAddr()')) {
         $deleteNeedle = @'
@@ -243,7 +235,7 @@ if (-not (Get-Content $deviceMemoryHeader -Raw).Contains($readTrapMarker)) {
         runtime.OnBufferDeleted(slot_buffers[buffer_id]);
     }
 '@
-        if (-not $bufferText.Contains($deleteNeedle.Trim())) { throw 'Could not locate BufferCache DeleteBuffer runtime hook' }
+        if (-not $bufferText.Contains($deleteNeedle.TrimEnd())) { throw 'Could not locate BufferCache DeleteBuffer runtime hook' }
         $deleteReplacement = $deleteNeedle.TrimEnd() + "`n" +
             '    read_trapped_ranges.Subtract(slot_buffers[buffer_id].CpuAddr(),' + "`n" +
             '                                 slot_buffers[buffer_id].SizeBytes());'
@@ -251,9 +243,6 @@ if (-not (Get-Content $deviceMemoryHeader -Raw).Contains($readTrapMarker)) {
         Set-Content -Path $bufferCachePath -Value $bufferText -Encoding utf8 -NoNewline
     }
 
-    # PokeDinner already notes CPU-read pages here. The trap needs the actual buffer flush area too,
-    # otherwise the first fault would only affect the *next* fence and the current CPU read could
-    # still observe stale GPU data.
     $vkText = (Get-Content $vkRasterizerPath -Raw).Replace("`r`n", "`n")
     if (-not $vkText.Contains('buffer_cache.FlushesOnCpuRead()')) {
         $textureBlock = @'
@@ -265,7 +254,7 @@ if (-not (Get-Content $deviceMemoryHeader -Raw).Contains($readTrapMarker)) {
         }
     }
 '@
-        if (-not $vkText.Contains($textureBlock.Trim())) { throw 'Could not locate Vulkan texture GetFlushArea block' }
+        if (-not $vkText.Contains($textureBlock.TrimEnd())) { throw 'Could not locate Vulkan texture GetFlushArea block' }
         $bufferFlush = @'
     if (buffer_cache.FlushesOnCpuRead()) {
         std::scoped_lock lock{buffer_cache.mutex};
@@ -289,7 +278,6 @@ if (-not (Get-Content $deviceMemoryHeader -Raw).Contains($readTrapMarker)) {
     Write-Host 'Integrated Eglantine GPU-read traps without replacing PokeDinner selective copyback.'
 }
 
-# Explicit game/path regressions: these were previously only implicit in the donor cherry-pick list.
 $deviceMemoryCheck = Get-Content $deviceMemoryHeader -Raw
 $deviceMemoryIncCheck = Get-Content $deviceMemoryIncPath -Raw
 $coreMemoryCheck = Get-Content $coreMemoryPath -Raw
@@ -300,7 +288,7 @@ $ampereCheck = Get-Content $amperePath -Raw
 foreach ($pair in @(
     @($deviceMemoryCheck, 'void ArmReadTraps(DAddr addr, size_t size);', 'Eglantine device-memory read traps'),
     @($coreMemoryCheck, 'EDEN_NX2_READ_TRAPS', 'read-trap debug fallback'),
-    @($bufferBaseCheck, 'buffer_cache', 'buffer cache marker'),
+    @($bufferBaseCheck, 'Common::RangeSet<DAddr> read_trapped_ranges;', 'read-trap buffer range tracking'),
     @($bufferBaseCheck, 'covered < size', 'read traps feeding PokeDinner selective copyback'),
     @($vkCheck, 'buffer_cache.FlushesOnCpuRead()', 'immediate trapped CPU-read buffer flush'),
     @($deviceMemoryIncCheck, 'phys_addr == 0 ? 1', 'Raiders stale unmapped-page WalkBlock fix'),
