@@ -45,11 +45,17 @@ EDEN_NX2_UBOREUSE=0
   Disable same-tick, byte-identical small uniform-buffer stream reuse. Default is enabled on Vulkan.
 
 EDEN_NX2_GPU_PROFILE=1
-  Enable granular GPU-thread profiling: DMA fetch/dispatch, channel switching, deferred split calls,
-  geometry/vertex/uniform setup, cache-lock waits, rejected draws and pipeline misses.
+  Enable lightweight granular GPU-thread profiling: DMA fetch/dispatch, channel switching, deferred
+  split calls, geometry/vertex/uniform setup, cache-lock waits, rejected draws and pipeline misses.
+
+EDEN_NX2_GPU_PROFILE_PAGES=1
+  Opt in to the expensive per-4-KiB MME DMA page-history/readback correlation diagnostic. Leave this
+  unset during representative gameplay profiling; it performs address translation and set lookups
+  on hot paths and is intended only for a focused readback investigation.
 
 EDEN_NX2_TC_LOG=1
-  Re-enable the periodic texture-cache inventory/sort diagnostic. It stays off during normal play.
+  Re-enable the periodic texture-cache inventory/sort diagnostic. It stays off during normal play
+  and during the standard gameplay profiler run.
 
 The DMA pushbuffer span fast-path is guarded by GMMU mapping epochs and preserves submitted-command
 snapshot / GPU-written-command coherency ordering. There is no user switch because stale mappings
@@ -62,15 +68,17 @@ The analyzer ranks hot zones, exports NX2_GPU_PROFILE_summary.csv, and prints ta
 }
 
 # A one-click diagnostics launcher is useful for the new profiler and does not change normal launch
-# behavior. It writes the emulator's stderr beside the executable while leaving regular logs intact.
+# behavior. Keep expensive texture-cache and per-page DMA diagnostics explicitly disabled here so
+# representative profiling measures the game rather than the diagnostics themselves.
 $guiName = Split-Path $gui -Leaf
 $profileLauncher = Join-Path $source 'run-nx2-gpu-profile.cmd'
 @"
 @echo off
 setlocal
 set EDEN_NX2_GPU_PROFILE=1
-set EDEN_NX2_TC_LOG=1
-echo NX2 granular GPU profiling enabled.
+set EDEN_NX2_GPU_PROFILE_PAGES=0
+set EDEN_NX2_TC_LOG=0
+echo NX2 lightweight GPU profiling enabled.
 echo Close Eden normally when the representative gameplay section is complete.
 "%~dp0$guiName" %* 2^> "%~dp0NX2_GPU_PROFILE.stderr.log"
 echo Diagnostic stderr: %~dp0NX2_GPU_PROFILE.stderr.log
