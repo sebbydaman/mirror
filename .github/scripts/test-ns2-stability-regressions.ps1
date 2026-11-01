@@ -51,3 +51,4 @@ Write-Host 'Late NS2 stability regression validation passed.'
 # Validate the newer targeted donor layers chained after this stability stack.
 & "$PSScriptRoot\test-ns2-donor-20261101.ps1"
 & "$PSScriptRoot\test-ns2-donor-safe-perf.ps1"
+& "$PSScriptRoot\test-ns2-pr142-memory-stutter.ps1"
