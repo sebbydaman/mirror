@@ -82,7 +82,6 @@ static const bool log_tc = std::getenv("EDEN_NX2_TC_LOG") != nullptr;
 # Eglantine PR #163: MemoryManager::FlushRegion can split one GPU-to-CPU buffer flush into several
 # page pieces and several BufferCache objects. Historically every piece performed its own Vulkan
 # Finish/wait, and an unclipped range could also clear a neighbouring buffer's download tracker.
-# Apply the six-file adaptation before PR142/frontier layers; it is independent of those changes.
 $bufferBatchMarkers = @(
     @{ Path = 'src/video_core/buffer_cache/buffer_cache.h'; Text = 'void BufferCache<P>::BeginDownloadBatch()' },
     @{ Path = 'src/video_core/buffer_cache/buffer_cache.h'; Text = 'void BufferCache<P>::FinishDownloadBatch()' },
@@ -160,9 +159,95 @@ XOTal29Nd2/1b8FLm/8DYF+p2XQmAAA=
     Write-Host '[APPLIED] coalesced buffer FlushRegion downloads + clipped tracker ranges'
 }
 
+# PR #160 + #162: once a native shader set is remembered as rejected, skip the expensive draw
+# preparation before cache flushes/locks; and reuse byte-identical small Vulkan stream UBOs within
+# the same scheduler tick so descriptor payloads can also be reused. Both remain correctness-gated:
+# dirty shader state takes the normal path, and UBO reuse never crosses a command-buffer tick.
+$drawUboMarkers = @(
+    @{ Path = 'src/video_core/shader_cache.h'; Text = 'bool AreShadersValid() const noexcept;' },
+    @{ Path = 'src/video_core/renderer_vulkan/vk_rasterizer.cpp'; Text = 'if (!pipeline_cache.AreShadersValid())' },
+    @{ Path = 'src/video_core/buffer_cache/uniform_stream_reuse.h'; Text = 'EDEN_NX2_UBOREUSE' },
+    @{ Path = 'src/video_core/buffer_cache/buffer_cache.h'; Text = 'VideoCommon::BindSmallUniformReusing(' },
+    @{ Path = 'src/video_core/renderer_vulkan/vk_buffer_cache.h'; Text = 'struct StreamUniformRef' }
+)
+$drawUboPresent = 0
+foreach ($marker in $drawUboMarkers) {
+    if ((Test-Path $marker.Path -PathType Leaf) -and (Get-Content $marker.Path -Raw).Contains($marker.Text)) {
+        ++$drawUboPresent
+    }
+}
+if ($drawUboPresent -eq $drawUboMarkers.Count) {
+    Write-Host '[PRESENT] rejected-shader early bailout + per-tick uniform stream reuse'
+} elseif ($drawUboPresent -ne 0) {
+    throw "Partial PR160/PR162 draw/UBO optimization state detected ($drawUboPresent/$($drawUboMarkers.Count)); refusing mixed apply"
+} else {
+    $encoded = @'
+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
+'@
+    $encoded = $encoded -replace '\s', ''
+    $compressed = [Convert]::FromBase64String($encoded)
+    $input = [IO.MemoryStream]::new($compressed, $false)
+    $gzip = [IO.Compression.GZipStream]::new($input, [IO.Compression.CompressionMode]::Decompress)
+    $output = [IO.MemoryStream]::new()
+    try {
+        $gzip.CopyTo($output)
+        $patchBytes = $output.ToArray()
+    } finally {
+        $output.Dispose(); $gzip.Dispose(); $input.Dispose()
+    }
+    $patchPath = Join-Path $env:RUNNER_TEMP 'ns2-pr160-pr162-draw-ubo.patch'
+    [IO.File]::WriteAllBytes($patchPath, $patchBytes)
+    git apply --check --whitespace=error-all $patchPath
+    if ($LASTEXITCODE -ne 0) { throw 'PR160/PR162 draw/UBO batch no longer applies cleanly after PR163' }
+    git apply --whitespace=error-all $patchPath
+    if ($LASTEXITCODE -ne 0) { throw 'Failed to apply PR160/PR162 draw/UBO batch' }
+    foreach ($marker in $drawUboMarkers) {
+        if (-not (Test-Path $marker.Path -PathType Leaf) -or -not (Get-Content $marker.Path -Raw).Contains($marker.Text)) {
+            throw "PR160/PR162 validation failed: missing '$($marker.Text)' in $($marker.Path)"
+        }
+    }
+    Write-Host '[APPLIED] rejected-shader early bailout + per-tick uniform stream reuse'
+}
+
 git diff --check
 if ($LASTEXITCODE -ne 0) {
     throw 'Safe donor performance batch introduced whitespace/diff errors'
 }
 
-Write-Host 'Applied safe NX2 donor performance batch: GPU family flags + split alignment + optional TC diagnostics + coalesced buffer flushes.'
+Write-Host 'Applied safe NX2 donor performance batch: GPU family flags + split alignment + optional TC diagnostics + coalesced buffer flushes + rejected-draw bailout + UBO reuse.'
