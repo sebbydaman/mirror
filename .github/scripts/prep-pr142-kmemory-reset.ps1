@@ -166,12 +166,12 @@ if (-not $vmaText.Contains($vmaMarker)) {
     $budgetStart = $vmaText.IndexOf('u64 Device::GetDeviceMemoryBudget() const {', [StringComparison]::Ordinal)
     if ($budgetStart -lt 0) { throw 'Could not locate Device::GetDeviceMemoryBudget for PR142 VMA adapter' }
 
-    # The next function boundary keeps all matching/insertion confined to GetDeviceMemoryBudget().
-    $budgetEnd = $vmaText.IndexOf("`nu64 Device::", $budgetStart + 1, [StringComparison]::Ordinal)
-    if ($budgetEnd -lt 0) {
-        $budgetEnd = $vmaText.IndexOf("`nbool Device::", $budgetStart + 1, [StringComparison]::Ordinal)
-    }
-    if ($budgetEnd -lt 0) { throw 'Could not locate function after GetDeviceMemoryBudget for PR142 VMA adapter' }
+    # Constrain the rewrite to this function by its unique final return and closing brace. Do not
+    # assume the next Device method has a particular return type; this tree follows it with void.
+    $budgetReturn = $vmaText.IndexOf('    return result;', $budgetStart, [StringComparison]::Ordinal)
+    if ($budgetReturn -lt 0) { throw 'Could not locate GetDeviceMemoryBudget return for PR142 VMA adapter' }
+    $budgetEnd = $vmaText.IndexOf("`n}", $budgetReturn, [StringComparison]::Ordinal)
+    if ($budgetEnd -lt 0) { throw 'Could not locate GetDeviceMemoryBudget closing brace for PR142 VMA adapter' }
 
     $heapLoop = $vmaText.IndexOf('    for (const size_t heap : valid_heap_memory) {', $budgetStart, [StringComparison]::Ordinal)
     if ($heapLoop -lt 0 -or $heapLoop -gt $budgetEnd) {
