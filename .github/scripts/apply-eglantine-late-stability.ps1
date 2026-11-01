@@ -22,6 +22,7 @@ foreach ($marker in $markers) {
 }
 if ($present -eq $markers.Count) {
     Write-Host 'Late NS2 stability batch is already present.'
+    & "$PSScriptRoot\apply-ns2-donor-20261101.ps1"
     exit 0
 }
 if ($present -ne 0) {
@@ -80,3 +81,6 @@ if (-not ($worker.Contains('stop_requested.exchange(true)') -and
 }
 
 Write-Host 'Applied late NS2 stability batch: AMD undefined-register zeroing + safe game-list/content-provider lifetime.'
+
+# Apply the newer, targeted donor fixes only after the stable PokeDinner/Eglantine stack exists.
+& "$PSScriptRoot\apply-ns2-donor-20261101.ps1"
