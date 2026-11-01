@@ -15,11 +15,12 @@ $imageViewIdVector = Join-Path $PSScriptRoot 'apply-texture-image-view-id-vector
 $dmaDownloadState = Join-Path $PSScriptRoot 'apply-texture-dma-download-state-inheritance.ps1'
 $plainRemapGpuPath = Join-Path $PSScriptRoot 'apply-maxwell-dma-plain-remap-gpu-path.ps1'
 $paddedRenderTarget = Join-Path $PSScriptRoot 'apply-texture-padded-render-target-reuse.ps1'
+$downloadCopyBatch = Join-Path $PSScriptRoot 'apply-buffer-download-copy-batching.ps1'
 
 foreach ($path in @($rangeNotify, $jitTelemetry, $legacyCleanup, $dispatchTelemetry,
                     $increasingRunFastPath, $increasingFrontCache, $descriptorScratch,
                     $samplerIdVector, $imageViewIdVector, $dmaDownloadState, $plainRemapGpuPath,
-                    $paddedRenderTarget)) {
+                    $paddedRenderTarget, $downloadCopyBatch)) {
     if (-not (Test-Path $path -PathType Leaf)) {
         throw "Post-Build31 CPU frontier: missing $path"
     }
@@ -37,5 +38,6 @@ foreach ($path in @($rangeNotify, $jitTelemetry, $legacyCleanup, $dispatchTeleme
 & $dmaDownloadState
 & $plainRemapGpuPath
 & $paddedRenderTarget
+& $downloadCopyBatch
 
-Write-Host '[APPLIED] Post-Build31 CPU frontier: range-batched GMMU notifications + opt-in Dynarmic duplicate-compile telemetry + stale reactive-read diagnostic cleanup + opt-in DmaDispatch traffic-shape telemetry + tight pure-Increasing engine-run dispatch + cached split routing + reusable Vulkan descriptor scratch + direct indexed sampler/image-view IDs + inherited first DMA-download state + plain-remap Maxwell DMA GPU fast path + conservative padded render-target reuse'
+Write-Host '[APPLIED] Post-Build31 CPU frontier: range-batched GMMU notifications + opt-in Dynarmic duplicate-compile telemetry + stale reactive-read diagnostic cleanup + opt-in DmaDispatch traffic-shape telemetry + tight pure-Increasing engine-run dispatch + cached split routing + reusable Vulkan descriptor scratch + direct indexed sampler/image-view IDs + inherited first DMA-download state + plain-remap Maxwell DMA GPU fast path + conservative padded render-target reuse + batched buffer download copy submissions'
