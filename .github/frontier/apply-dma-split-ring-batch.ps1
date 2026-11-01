@@ -5,7 +5,7 @@ $ErrorActionPreference = 'Stop'
 # reserve the run's maximum ring space once and Commit once. Maxwell same-value skips may emit fewer
 # entries, so EndMethodBatch commits only the words actually written. Runs that reach the macro
 # register range stay on the ordinary path because a front-run macro can emit extra MacroWrite work.
-# EDEN_NX2_DMA_RING_BATCH=0 disables this optimization independently for A/B testing.
+# Experimental for now: EDEN_NX2_DMA_RING_BATCH=1 explicitly enables it; unset/0 keeps it off.
 
 function Write-PatchedText([string]$Path, [string]$Text) {
     $normalized = $Text.Replace("`r`n", "`n").TrimEnd("`r", "`n") + "`n"
@@ -57,7 +57,9 @@ if (-not $header.Contains('method_batch_base')) {
         if (method_batch_base == nullptr) {
             return;
         }
-        Commit(method_batch_used);
+        if (method_batch_used != 0) {
+            Commit(method_batch_used);
+        }
         method_batch_base = nullptr;
         method_batch_capacity = 0;
         method_batch_used = 0;
@@ -207,11 +209,11 @@ static const bool g_nx2_dma_increasing_run = [] {
 }();
 static const bool g_nx2_dma_ring_batch = [] {
     const char* value = std::getenv("EDEN_NX2_DMA_RING_BATCH");
-    return value == nullptr || value[0] != '0';
+    return value != nullptr && value[0] != '0';
 }();
 '@
     $dma = Replace-Once $dma $flagOld.TrimEnd("`r", "`n") $flagNew.TrimEnd("`r", "`n") `
-        'DMA ring-batch rollback flag'
+        'DMA ring-batch opt-in flag'
 
     $beginOld = @'
                 do {
@@ -254,11 +256,13 @@ static const bool g_nx2_dma_ring_batch = [] {
 $checks = @(
     @($splitHeaderPath, 'void BeginMethodBatch(Tegra::Engines::EngineInterface* engine, size_t max_words)', 'batch begin API'),
     @($splitHeaderPath, 'method_batch_used + words <= method_batch_capacity', 'bounded batch encoder'),
+    @($splitHeaderPath, 'if (method_batch_used != 0)', 'empty-batch commit avoidance'),
     @($splitHeaderPath, 'Commit(method_batch_used);', 'actual-size batch commit'),
     @($splitHeaderPath, 'EndMethodBatch();', 'unexpected-entry batch flush'),
     @($splitCppPath, 'method_batch_base = nullptr;', 'session batch reset'),
     @($splitCppPath, 'void GpuSplit::MultiMethod', 'existing multimethod path'),
-    @($dmaPath, 'EDEN_NX2_DMA_RING_BATCH', 'ring-batch rollback switch'),
+    @($dmaPath, 'EDEN_NX2_DMA_RING_BATCH', 'ring-batch opt-in switch'),
+    @($dmaPath, "return value != nullptr && value[0] != '0';", 'ring-batch default-off gate'),
     @($dmaPath, 'dma_state.method + available_words <= MacroRegistersStart', 'macro-range exclusion'),
     @($dmaPath, 'run_split.BeginMethodBatch(run_batch_engine,', 'Increasing-run batch begin'),
     @($dmaPath, 'run_split.EndMethodBatch();', 'Increasing-run batch end')
@@ -272,4 +276,4 @@ foreach ($check in $checks) {
 
 & git diff --check
 if ($LASTEXITCODE -ne 0) { throw 'DMA split-ring batch introduced diff/whitespace errors' }
-Write-Host 'DMA split-ring batch validated: existing Method encoding preserved; macro-range runs excluded; fallbacks flush safely.'
+Write-Host 'DMA split-ring batch validated: existing Method encoding preserved; macro-range runs excluded; default off until profiled.'
