@@ -9,6 +9,10 @@ $ErrorActionPreference = 'Stop'
 #   -AutomationOnly: prove the live script/payload inventory and transitive call graph before any
 #                    integration work touches the Eglantine tree.
 #   default:          repeat the automation checks, then reject known superseded runtime shapes.
+#
+# Runtime cleanup policy: old code is only harmful when a superseded path can still execute. Keep
+# intentional rollback/debug fallbacks, but reject duplicate active synchronization/readback paths
+# that can repeat GPU waits, downloads, invalidations or stale command-memory arbitration.
 
 function Read-Required([string]$Path) {
     if (-not (Test-Path $Path -PathType Leaf)) {
@@ -45,6 +49,26 @@ function Require-ScriptReference([string]$Parent, [string[]]$Children) {
         }
         Write-Host "[EDGE] $Parent -> $child"
     }
+}
+
+function Get-Section([string]$Text, [string]$StartNeedle, [string]$EndNeedle, [string]$Name) {
+    $start = $Text.IndexOf($StartNeedle, [StringComparison]::Ordinal)
+    if ($start -lt 0) {
+        throw "Legacy audit: could not locate start of $Name"
+    }
+    $end = $Text.IndexOf($EndNeedle, $start + $StartNeedle.Length, [StringComparison]::Ordinal)
+    if ($end -lt 0) {
+        throw "Legacy audit: could not locate end of $Name"
+    }
+    return $Text.Substring($start, $end - $start)
+}
+
+function Require-ExactlyOne([string]$Text, [string]$Needle, [string]$Name) {
+    $count = ([regex]::Matches($Text, [regex]::Escape($Needle))).Count
+    if ($count -ne 1) {
+        throw "Legacy audit: expected exactly one $Name, found $count"
+    }
+    Write-Host "[CURRENT] exactly one $Name"
 }
 
 # -----------------------------------------------------------------------------
@@ -124,14 +148,8 @@ if ($missingPayloads.Count -gt 0 -or $unexpectedPayloads.Count -gt 0) {
 }
 Write-Host '[CLEAN] patch payload inventory: only live late-runtime/handheld/stability payloads remain'
 
-# Explicit live transitive dependency graph. These edges caught two false-deletion candidates before
-# an expensive compile: the Bananza blue-screen layer and the PR48 read-trap preparation helper.
-Require-ScriptReference 'apply-eglantine-integration.ps1' @(
-    'apply-ns2-geometry-stage.ps1'
-)
-Require-ScriptReference 'apply-eglantine-positive-shader-cache.ps1' @(
-    'apply-pokedinner-v2-batch.ps1'
-)
+Require-ScriptReference 'apply-eglantine-integration.ps1' @('apply-ns2-geometry-stage.ps1')
+Require-ScriptReference 'apply-eglantine-positive-shader-cache.ps1' @('apply-pokedinner-v2-batch.ps1')
 Require-ScriptReference 'apply-pokedinner-v2-batch.ps1' @(
     'apply-ns2-geometry-stage.ps1',
     'apply-ns2-native-lowering-overlays.ps1'
@@ -144,9 +162,7 @@ Require-ScriptReference 'apply-bananza-post-menu-gpu.ps1' @(
     'apply-ns2-general-compat-batch-v2.ps1',
     'apply-ns2-runtime-blockers-v3.ps1'
 )
-Require-ScriptReference 'apply-eglantine-pr48-device-memory.ps1' @(
-    'prepare-eglantine-read-trap-selective-copyback.ps1'
-)
+Require-ScriptReference 'apply-eglantine-pr48-device-memory.ps1' @('prepare-eglantine-read-trap-selective-copyback.ps1')
 Require-ScriptReference 'apply-ns2-runtime-blockers-v3.ps1' @(
     'apply-ns2-runtime-blockers-v3-core.ps1',
     'apply-ns2-runtime-blockers-v4.ps1'
@@ -172,8 +188,8 @@ Require-ScriptReference 'test-ns2-stability-regressions.ps1' @(
     'audit-ns2-legacy-dead-code.ps1'
 )
 
-# Proven-unreachable generations. Fail if any surviving automation/workflow starts referring to one
-# again; that would mean the file is no longer safe to keep deleted.
+# Proven-unreachable generations. These are already removed; fail if a later merge resurrects them
+# or adds a reference back to them.
 $knownDead = @(
     'apply-glasm-task-mesh-guard.ps1',
     'apply-ns2-build-fixes-base.ps1',
@@ -223,7 +239,7 @@ if ($ampereText.Contains($oldCombinedSel)) {
 Write-Host '[ABSENT] combined SEL/FSEL legacy lowering'
 
 # -----------------------------------------------------------------------------
-# ASTC/VRAM policy: keep the modern threshold path and reject both older policy generations.
+# ASTC/VRAM policy: keep the modern threshold path and reject older policy generations.
 # -----------------------------------------------------------------------------
 $vkTexture = 'src/video_core/renderer_vulkan/vk_texture_cache.cpp'
 Require-Text $vkTexture 'UseBc3ForSwitch2OnSmallCards' 'threshold-based Switch 2 ASTC policy'
@@ -233,8 +249,6 @@ Forbid-Text $vkTexture 'memory >= 12_GiB' 'superseded 12 GiB ASTC threshold'
 Forbid-Text $vkTexture 'void UseBc3ForSwitch2(const Device& device)' 'PR142 force-BC3-on-every-card policy'
 Forbid-Text 'src/video_core/renderer_vulkan/renderer_vulkan.cpp' 'Nx2UncompressedAstcMinimumVram' 'late renderer-level ASTC override'
 
-# VMA reserved block slack must be accounted exactly once. Duplicating this subtraction would make
-# the emulator believe it has less VRAM than the driver actually exposes.
 $vulkanDevice = 'src/video_core/vulkan_common/vulkan_device.cpp'
 $vulkanText = Read-Required $vulkanDevice
 $vmaMarker = 'main_statistics.blockBytes - main_statistics.allocationBytes'
@@ -275,6 +289,100 @@ if ($km.Contains('std::memset(ptr + offset * PageSize, fill_pattern, PageSize);'
 Write-Host '[ABSENT] legacy unconditional host-page zero-fill paths'
 
 # -----------------------------------------------------------------------------
+# Selective GPU->CPU readback/coherency.
+# -----------------------------------------------------------------------------
+# A blanket old GPU-write download path layered under the newer first-CPU-read/read-trap policy can
+# perform the same transfer or GPU wait twice. Keep one authoritative write notification path, one
+# command-page coherency helper, and the intentional async-download fallback only in QueueDownload.
+$bufferCachePath = 'src/video_core/buffer_cache/buffer_cache.h'
+$bufferCache = Read-Required $bufferCachePath
+$markWritten = Get-Section $bufferCache 'void BufferCache<P>::MarkWrittenBuffer(' "`ntemplate <class P>" 'BufferCache::MarkWrittenBuffer'
+Require-ExactlyOne $markWritten 'QueueDownload(device_addr, size);' 'MarkWrittenBuffer selective QueueDownload call'
+Require-ExactlyOne $markWritten 'Tegra::Nx2MarkGpuWritten(device_addr, size);' 'MarkWrittenBuffer NX2 GPU-write history marker'
+if ($markWritten.Contains('uncommitted_gpu_modified_ranges.Add(device_addr')) {
+    throw 'Legacy audit: MarkWrittenBuffer still contains a direct blanket download-range add beside QueueDownload'
+}
+$queuePos = $markWritten.IndexOf('QueueDownload(device_addr, size);', [StringComparison]::Ordinal)
+$historyPos = $markWritten.IndexOf('Tegra::Nx2MarkGpuWritten(device_addr, size);', [StringComparison]::Ordinal)
+if ($queuePos -lt 0 -or $historyPos -lt $queuePos) {
+    throw 'Legacy audit: GPU-write history is no longer layered after the selective QueueDownload path'
+}
+Write-Host '[ABSENT] duplicate blanket MarkWrittenBuffer download path'
+
+Require-Text $bufferCachePath 'QueueDownload(new_base_address, size);' 'selective DMACopy QueueDownload routing'
+$oldDmaCopy = @'
+        if (AsyncBufferDownloads()) {
+            uncommitted_gpu_modified_ranges.Add(new_base_address, size);
+        }
+'@
+if ($bufferCache.Contains($oldDmaCopy.TrimEnd("`r", "`n"))) {
+    throw 'Legacy audit: old inline DMACopy async-download block returned beside selective QueueDownload'
+}
+Write-Host '[ABSENT] legacy inline DMACopy async-download block'
+
+$bufferBasePath = 'src/video_core/buffer_cache/buffer_cache_base.h'
+$bufferBase = Read-Required $bufferBasePath
+$queueDownload = Get-Section $bufferBase 'void QueueDownload(DAddr addr, u64 size) {' "`n    // Async Buffers" 'BufferCache::QueueDownload'
+foreach ($marker in @(
+    'cpu_read_ranges.ForEachInRange(addr, size',
+    'covered < size',
+    'ArmReadTraps(addr, size);'
+)) {
+    if (-not $queueDownload.Contains($marker)) {
+        throw "Legacy audit: selective QueueDownload marker missing: $marker"
+    }
+}
+$directAdd = 'uncommitted_gpu_modified_ranges.Add(addr, size);'
+$directAddCount = ([regex]::Matches($queueDownload, [regex]::Escape($directAdd))).Count
+if ($directAddCount -gt 1) {
+    throw "Legacy audit: QueueDownload contains $directAddCount blanket range-add sites; expected at most the single async-download fallback"
+}
+$cpuReadPos = $queueDownload.IndexOf('cpu_read_ranges.ForEachInRange(addr, size', [StringComparison]::Ordinal)
+$trapPos = $queueDownload.IndexOf('ArmReadTraps(addr, size);', [StringComparison]::Ordinal)
+if ($cpuReadPos -lt 0 -or $trapPos -lt $cpuReadPos) {
+    throw 'Legacy audit: QueueDownload no longer resolves known CPU-read ranges before arming first-read traps'
+}
+Write-Host '[CURRENT] selective QueueDownload/read-trap policy; no duplicate blanket normal-path add'
+
+Require-Text $bufferCachePath 'void BufferCache<P>::NoteCpuRead(DAddr addr, size_t size)' 'CPU-read range learning'
+Require-Text $bufferCachePath 'cpu_read_ranges.Add(addr, size);' 'CPU-read range registration'
+Require-Text $bufferCachePath 'read_trapped_ranges.Subtract(slot_buffers[buffer_id].CpuAddr()' 'read-trap lifetime cleanup on buffer deletion'
+$vkRasterizerPath = 'src/video_core/renderer_vulkan/vk_rasterizer.cpp'
+Require-Text $vkRasterizerPath 'buffer_cache.NoteCpuRead' 'Vulkan CPU-read notification'
+Require-Text $vkRasterizerPath 'buffer_cache.FlushesOnCpuRead()' 'Vulkan selective CPU-read flush gate'
+Require-Text $vkRasterizerPath 'buffer_cache.GetFlushArea(addr, size)' 'Vulkan selective buffer flush-area query'
+
+$dmaPath = 'src/video_core/dma_pusher.cpp'
+$dma = Read-Required $dmaPath
+Require-ExactlyOne $dma 'bool DmaPusher::FlushGpuWrittenCommands(' 'DmaPusher GPU-written command coherency helper'
+$commandFlush = Get-Section $dma 'bool DmaPusher::FlushGpuWrittenCommands(' "`nvoid DmaPusher::ReportUnboundSubchannel()" 'DmaPusher::FlushGpuWrittenCommands'
+foreach ($marker in @(
+    'VideoCommon::GpuSplit::Get().Drain();',
+    'memory_manager.IsMemoryDirty(address, size, VideoCommon::CacheType::BufferCache)',
+    'memory_manager.FlushRegion(address, size, VideoCommon::CacheType::BufferCache);'
+)) {
+    if (-not $commandFlush.Contains($marker)) {
+        throw "Legacy audit: GPU-written command coherency marker missing: $marker"
+    }
+}
+$dirtyPos = $commandFlush.IndexOf('memory_manager.IsMemoryDirty(address, size, VideoCommon::CacheType::BufferCache)', [StringComparison]::Ordinal)
+$flushRegionPos = $commandFlush.IndexOf('memory_manager.FlushRegion(address, size, VideoCommon::CacheType::BufferCache);', [StringComparison]::Ordinal)
+if ($dirtyPos -lt 0 -or $flushRegionPos -lt $dirtyPos) {
+    throw 'Legacy audit: command-buffer FlushRegion is no longer guarded by IsMemoryDirty'
+}
+Require-ExactlyOne $commandFlush 'memory_manager.FlushRegion(address, size, VideoCommon::CacheType::BufferCache);' 'conditional command-buffer FlushRegion call'
+Write-Host '[CURRENT] one dirty-guarded GPU-written command readback path'
+
+# PR163 coalesces all BufferCache pieces belonging to one FlushRegion into a single host-GPU wait.
+# The detailed donor regression validates every component; keep the critical legacy invariant here.
+Require-Text $bufferCachePath 'void BufferCache<P>::BeginDownloadBatch()' 'coalesced buffer download batch begin'
+Require-Text $bufferCachePath 'void BufferCache<P>::FinishDownloadBatch()' 'coalesced buffer download batch finish'
+$finishBatch = Get-Section $bufferCache 'void BufferCache<P>::FinishDownloadBatch()' "`ntemplate <class P>" 'BufferCache::FinishDownloadBatch'
+Require-ExactlyOne $finishBatch 'runtime.Finish();' 'coalesced buffer batch GPU wait'
+Require-Text 'src/video_core/memory_manager.cpp' 'const bool is_buffer_only = which == VideoCommon::CacheType::BufferCache;' 'buffer-only FlushRegion batching gate'
+Write-Host '[ABSENT] duplicate per-piece GPU wait in the active BufferCache flush batch'
+
+# -----------------------------------------------------------------------------
 # Vulkan pipeline lifetime: modules are temporary construction inputs, not session-long baggage.
 # -----------------------------------------------------------------------------
 Require-Text 'src/video_core/renderer_vulkan/vk_compute_pipeline.cpp' 'spv_module = {};' 'compute SPIR-V module release'
@@ -290,12 +398,11 @@ if ($configure -lt 0 -or $worker -lt 0 -or $configure -gt $worker) {
 }
 Write-Host '[CURRENT] graphics ConfigureFunc is prepared before async pipeline construction and modules are released'
 
-# Rollback/debug controls are intentional compatibility tools, not dead code. Their regression
-# tests validate behavior; keep a small audit here so cleanup cannot delete them by accident.
+# Rollback/debug controls are intentional compatibility tools, not dead code.
 Require-Text 'src/shader_recompiler/backend/spirv/emit_spirv_undefined.cpp' 'EDEN_NX2_UNDEF_ZERO' 'undefined-register rollback switch'
 Require-Text 'src/video_core/gpu_split.h' 'EDEN_NX2_SPLIT' 'GPU split rollback switch'
 
 & git diff --check
 if ($LASTEXITCODE -ne 0) { throw 'Legacy audit: integrated source contains whitespace/diff errors' }
 
-Write-Host 'NS2 legacy/dead-code audit passed: current runtime paths only, intentional rollback controls preserved, automation graph clean.'
+Write-Host 'NS2 legacy/dead-code audit passed: one selective readback/coherency path, current runtime paths only, intentional rollback controls preserved, automation graph clean.'
