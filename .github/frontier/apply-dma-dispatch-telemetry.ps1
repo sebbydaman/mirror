@@ -19,6 +19,15 @@ function Replace-Once([string]$Text, [string]$Old, [string]$New, [string]$Name) 
     return $Text.Substring(0, $first) + $New + $Text.Substring($first + $Old.Length)
 }
 
+function Insert-AfterOnce([string]$Text, [string]$Anchor, [string]$Insertion, [string]$Name) {
+    $first = $Text.IndexOf($Anchor, [StringComparison]::Ordinal)
+    if ($first -lt 0) { throw "DMA dispatch telemetry: missing anchor $Name" }
+    $second = $Text.IndexOf($Anchor, $first + $Anchor.Length, [StringComparison]::Ordinal)
+    if ($second -ge 0) { throw "DMA dispatch telemetry: ambiguous anchor $Name" }
+    $after = $first + $Anchor.Length
+    return $Text.Substring(0, $after) + $Insertion + $Text.Substring($after)
+}
+
 $profilePath = 'src/video_core/nx2_profile.h'
 $dmaPath = 'src/video_core/dma_pusher.cpp'
 foreach ($path in @($profilePath, $dmaPath)) {
@@ -49,15 +58,10 @@ if ($profile.Contains($marker) -or $dma.Contains('Counter::DmaSplitEngineWords')
     exit 0
 }
 
-$counterOld = @'
-    SkippedDraws,
-    PipelineMisses,
-    Count,
-'@
-$counterOld = $counterOld.TrimEnd("`r", "`n")
-$counterNew = @'
-    SkippedDraws,
-    PipelineMisses,
+# Do not replace the whole Counter enum. The profiler has gained counters over time; PipelineMisses
+# is the stable semantic insertion point validated by the frontier regression suite.
+$counterAnchor = '    PipelineMisses,'
+$counterInsertion = @'
     DmaIncreasingRuns,
     DmaIncreasingWords,
     DmaNonIncreasingRuns,
@@ -67,19 +71,14 @@ $counterNew = @'
     DmaInlineCommands,
     DmaPullerWords,
     DmaSplitEngineWords,
-    Count,
 '@
-$counterNew = $counterNew.TrimEnd("`r", "`n")
-$profile = Replace-Once $profile $counterOld $counterNew 'profile counter enum'
+$counterInsertion = "`n" + $counterInsertion.TrimEnd("`r", "`n")
+$profile = Insert-AfterOnce $profile $counterAnchor $counterInsertion 'PipelineMisses counter insertion point'
 
-$reportOld = @'
-    line += fmt::format(" | draws skipped (rejected program) {:.0f}", rate(Counter::SkippedDraws));
-    line += fmt::format(" | pipeline cache misses {:.0f}", rate(Counter::PipelineMisses));
-'@
-$reportOld = $reportOld.TrimEnd("`r", "`n")
-$reportNew = @'
-    line += fmt::format(" | draws skipped (rejected program) {:.0f}", rate(Counter::SkippedDraws));
-    line += fmt::format(" | pipeline cache misses {:.0f}", rate(Counter::PipelineMisses));
+# Likewise append DMA reporting after the existing pipeline-miss report instead of assuming the
+# complete report block has a frozen shape.
+$reportAnchor = '    line += fmt::format(" | pipeline cache misses {:.0f}", rate(Counter::PipelineMisses));'
+$reportInsertion = @'
     const auto average_run = [&](Counter words, Counter runs) {
         const double run_rate = rate(runs);
         return run_rate > 0.0 ? rate(words) / run_rate : 0.0;
@@ -96,8 +95,8 @@ $reportNew = @'
         rate(Counter::DmaInlineCommands), rate(Counter::DmaPullerWords),
         rate(Counter::DmaSplitEngineWords));
 '@
-$reportNew = $reportNew.TrimEnd("`r", "`n")
-$profile = Replace-Once $profile $reportOld $reportNew 'profile report output'
+$reportInsertion = "`n" + $reportInsertion.TrimEnd("`r", "`n")
+$profile = Insert-AfterOnce $profile $reportAnchor $reportInsertion 'PipelineMisses report insertion point'
 Write-PatchedText $profilePath $profile
 
 $functionOld = @'
