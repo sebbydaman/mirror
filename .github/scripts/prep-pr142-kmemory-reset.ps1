@@ -156,9 +156,9 @@ foreach ($marker in @($resetMarker, $allocMarker, $resizeMarker, $freedPagesMark
 
 Write-Host 'Prepared PR142 KMemoryManager semantic adapters.'
 
-# 5) VMA block slack: our integrated VRAM accounting already differs from the donor around this
-# function, so patch only the missing semantic. VMA reserves blocks larger than live allocations;
-# those empty bytes still consume the driver's budget even though AllocatedUsage omits them.
+# 5) VMA block slack: the newer precise-VRAM path already gathers VMA budgets, but deliberately
+# excludes main-heap block slack from the result. PR142's missing semantic is to subtract that
+# reserved-but-empty main-heap space before secondary-heap usage is added.
 $vmaPath = 'src/video_core/vulkan_common/vulkan_device.cpp'
 $vmaMarker = 'main_statistics.blockBytes - main_statistics.allocationBytes'
 $vmaText = (Get-Content $vmaPath -Raw) -replace "`r`n", "`n"
@@ -178,10 +178,15 @@ if (-not $vmaText.Contains($vmaMarker)) {
         throw 'Could not locate valid-heap loop inside GetDeviceMemoryBudget for PR142 VMA adapter'
     }
 
-    # Sanity-check the integrated function still computes its main-heap budget before this point.
-    $mainHeapUse = $vmaText.IndexOf('heap_budgets[main_heap]', $budgetStart, [StringComparison]::Ordinal)
-    if ($mainHeapUse -lt 0 -or $mainHeapUse -gt $heapLoop) {
-        throw 'GetDeviceMemoryBudget no longer references main-heap VMA statistics before heap aggregation'
+    # Validate the newer 2065b143-style precise budget setup rather than requiring the very
+    # main-heap reference this adapter is about to add.
+    $budgetArray = $vmaText.IndexOf('std::array<VmaBudget, VK_MAX_MEMORY_HEAPS> heap_budgets{};', $budgetStart, [StringComparison]::Ordinal)
+    $budgetFetch = $vmaText.IndexOf('vmaGetHeapBudgets(allocator, heap_budgets.data());', $budgetStart, [StringComparison]::Ordinal)
+    $mainBudget = $vmaText.IndexOf('u64 result = budget.heapBudget[main_heap];', $budgetStart, [StringComparison]::Ordinal)
+    if ($budgetArray -lt 0 -or $budgetArray -gt $heapLoop -or
+        $budgetFetch -lt 0 -or $budgetFetch -gt $heapLoop -or
+        $mainBudget -lt 0 -or $mainBudget -gt $heapLoop) {
+        throw 'GetDeviceMemoryBudget no longer matches the precise-VRAM VMA setup expected by PR142'
     }
 
     $vmaInsert = @'
@@ -193,7 +198,7 @@ if (-not $vmaText.Contains($vmaMarker)) {
     $vmaText = $vmaText.Substring(0, $heapLoop) + $vmaInsert.TrimEnd("`r", "`n") + "`n" +
                $vmaText.Substring($heapLoop)
     [IO.File]::WriteAllText($vmaPath, $vmaText, [Text.UTF8Encoding]::new($false))
-    Write-Host '[ADAPTED] PR142 VMA block-slack budget accounting at GetDeviceMemoryBudget heap boundary'
+    Write-Host '[ADAPTED] PR142 VMA block-slack budget accounting over precise-VRAM path'
 } else {
     Write-Host '[PRESENT] PR142 VMA block-slack budget accounting'
 }
