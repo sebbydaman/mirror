@@ -7,8 +7,10 @@ $rangeNotify = Join-Path $PSScriptRoot 'apply-memory-manager-range-notify.ps1'
 $jitTelemetry = Join-Path $PSScriptRoot 'apply-cpu-jit-telemetry.ps1'
 $legacyCleanup = Join-Path $PSScriptRoot 'apply-ns2-legacy-hotpath-cleanup.ps1'
 $dispatchTelemetry = Join-Path $PSScriptRoot 'apply-dma-dispatch-telemetry.ps1'
+$increasingRunFastPath = Join-Path $PSScriptRoot 'apply-dma-increasing-run-fastpath.ps1'
 
-foreach ($path in @($rangeNotify, $jitTelemetry, $legacyCleanup, $dispatchTelemetry)) {
+foreach ($path in @($rangeNotify, $jitTelemetry, $legacyCleanup, $dispatchTelemetry,
+                    $increasingRunFastPath)) {
     if (-not (Test-Path $path -PathType Leaf)) {
         throw "Post-Build31 CPU frontier: missing $path"
     }
@@ -18,5 +20,6 @@ foreach ($path in @($rangeNotify, $jitTelemetry, $legacyCleanup, $dispatchTeleme
 & $jitTelemetry
 & $legacyCleanup
 & $dispatchTelemetry
+& $increasingRunFastPath
 
-Write-Host '[APPLIED] Post-Build31 CPU frontier: range-batched GMMU notifications + opt-in Dynarmic duplicate-compile telemetry + stale reactive-read diagnostic cleanup + opt-in DmaDispatch traffic-shape telemetry'
+Write-Host '[APPLIED] Post-Build31 CPU frontier: range-batched GMMU notifications + opt-in Dynarmic duplicate-compile telemetry + stale reactive-read diagnostic cleanup + opt-in DmaDispatch traffic-shape telemetry + tight pure-Increasing engine-run dispatch'
