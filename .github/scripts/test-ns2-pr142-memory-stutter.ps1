@@ -8,7 +8,7 @@ function Require-Text([string]$Path, [string]$Needle, [string]$Name) {
 }
 
 function Write-PatchedText([string]$Path, [string]$Text) {
-    $normalized = $Text.TrimEnd("`r", "`n") + "`n"
+    $normalized = $Text.Replace("`r`n", "`n").TrimEnd("`r", "`n") + "`n"
     $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
     [System.IO.File]::WriteAllText((Resolve-Path $Path).Path, $normalized, $utf8NoBom)
 }
@@ -23,7 +23,10 @@ foreach ($path in @($profilePath, $macroPath, $bufferPath)) {
     if (-not (Test-Path $path -PathType Leaf)) { throw "NX2 profiler hardening: missing $path" }
 }
 
-$profile = Get-Content $profilePath -Raw
+# Earlier frontier adapters intentionally normalize generated source to LF. Normalize both the
+# current profiler and these multi-line here-string anchors so profiler counter additions cannot
+# make the page-history hardening fail only because the Windows checkout uses CRLF.
+$profile = (Get-Content $profilePath -Raw).Replace("`r`n", "`n")
 if (-not $profile.Contains('EDEN_NX2_GPU_PROFILE_PAGES')) {
     $oldProfile = @'
 inline const bool g_enabled = std::getenv("EDEN_NX2_GPU_PROFILE") != nullptr;
@@ -46,6 +49,8 @@ inline bool TrackDmaPages() {
     return g_enabled && g_track_dma_pages;
 }
 '@
+    $oldProfile = $oldProfile.Replace("`r`n", "`n").TrimEnd("`r", "`n")
+    $newProfile = $newProfile.Replace("`r`n", "`n").TrimEnd("`r", "`n")
     if (-not $profile.Contains($oldProfile)) {
         throw 'NX2 profiler hardening: enable anchor changed in nx2_profile.h'
     }
