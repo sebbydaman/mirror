@@ -1,5 +1,9 @@
 $ErrorActionPreference = "Stop"
 
+# Fail before touching the Eglantine source if the automation repository contains a missing
+# transitive helper, a reintroduced dead generation, or an uncatalogued script/payload.
+& "$PSScriptRoot\audit-ns2-legacy-dead-code.ps1" -AutomationOnly
+
 # Build from the newer nx2-experimental merge that contains the Mario Kart World
 # sparse-region, sparse-layer and per-layer ASTC upload work. The workflow still
 # checks out the older known-good source first; switch before applying any local

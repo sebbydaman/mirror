@@ -1,12 +1,18 @@
+param(
+    [switch]$AutomationOnly
+)
+
 $ErrorActionPreference = 'Stop'
 
 # Dedicated legacy/dead-code audit for the fully integrated NS2 source tree plus the automation
-# repository that assembled it. Functional regression tests prove the wanted paths are present;
-# this audit proves known superseded paths and dormant automation generations stay gone.
+# repository that assembles it. This has two modes:
+#   -AutomationOnly: prove the live script/payload inventory and transitive call graph before any
+#                    integration work touches the Eglantine tree.
+#   default:          repeat the automation checks, then reject known superseded runtime shapes.
 
 function Read-Required([string]$Path) {
     if (-not (Test-Path $Path -PathType Leaf)) {
-        throw "Legacy audit: missing required source file $Path"
+        throw "Legacy audit: missing required file $Path"
     }
     return Get-Content $Path -Raw
 }
@@ -27,13 +33,28 @@ function Forbid-Text([string]$Path, [string]$Needle, [string]$Name) {
     Write-Host "[ABSENT] $Name"
 }
 
+function Require-ScriptReference([string]$Parent, [string[]]$Children) {
+    $path = Join-Path $PSScriptRoot $Parent
+    $text = Read-Required $path
+    foreach ($child in $Children) {
+        if (-not $text.Contains($child)) {
+            throw "Legacy audit: transitive automation edge disappeared: $Parent -> $child"
+        }
+        if (-not (Test-Path (Join-Path $PSScriptRoot $child) -PathType Leaf)) {
+            throw "Legacy audit: $Parent references missing live helper $child"
+        }
+        Write-Host "[EDGE] $Parent -> $child"
+    }
+}
+
 # -----------------------------------------------------------------------------
 # Automation reachability/inventory
 # -----------------------------------------------------------------------------
-# These are the scripts reachable from the active build/baseline workflows, including transitive
-# donor/overlay/test helpers. Keep this list explicit: adding a new script must be an intentional
-# integration decision rather than leaving another one-off repair helper in the branch forever.
+# This is the closed set reachable from the active build/baseline workflows, including transitive
+# compatibility, donor, overlay and test helpers. Old-looking names are not dead if a live parent
+# still invokes them; the explicit graph below proves those relationships.
 $expectedScripts = @(
+    'apply-bananza-blue-screen-gpu.ps1',
     'apply-bananza-generic-overlap.ps1',
     'apply-bananza-post-menu-gpu.ps1',
     'apply-eglantine-draw-state-cache.ps1',
@@ -45,15 +66,28 @@ $expectedScripts = @(
     'apply-eglantine-nx2-memory-layout.ps1',
     'apply-eglantine-positive-shader-cache.ps1',
     'apply-eglantine-pr142-memory-stutter.ps1',
+    'apply-eglantine-pr48-device-memory.ps1',
     'apply-ns2-donor-20261101.ps1',
     'apply-ns2-donor-safe-perf.ps1',
+    'apply-ns2-general-compat-batch-v2.ps1',
     'apply-ns2-geometry-stage.ps1',
     'apply-ns2-native-lowering-overlays.ps1',
+    'apply-ns2-runtime-blockers-v10.ps1',
+    'apply-ns2-runtime-blockers-v3-core.ps1',
+    'apply-ns2-runtime-blockers-v3.ps1',
+    'apply-ns2-runtime-blockers-v4.ps1',
+    'apply-ns2-runtime-blockers-v5.ps1',
+    'apply-ns2-runtime-blockers-v6.ps1',
+    'apply-ns2-runtime-blockers-v7.ps1',
+    'apply-ns2-runtime-blockers-v8.ps1',
+    'apply-ns2-runtime-blockers-v9.ps1',
     'apply-pokedinner-v2-batch.ps1',
     'audit-ns2-legacy-dead-code.ps1',
     'capture-ns2-baseline.ps1',
     'package-ns2-runtime.ps1',
     'prep-pr142-integrated.ps1',
+    'prepare-ns2-big-batch-anchors.ps1',
+    'prepare-pr52-selective-copyback.ps1',
     'stage-ns2-runtime-checkpoint.ps1',
     'test-ns2-donor-20261101.ps1',
     'test-ns2-donor-safe-perf.ps1',
@@ -73,7 +107,7 @@ if ($missingScripts.Count -gt 0) {
 if ($unexpectedScripts.Count -gt 0) {
     throw "Legacy audit: unreachable/uncatalogued automation script(s) present: $($unexpectedScripts -join ', ')"
 }
-Write-Host "[CLEAN] automation inventory: $($actualScripts.Count) live PowerShell scripts, no dormant generations"
+Write-Host "[CLEAN] automation inventory: $($actualScripts.Count) live PowerShell scripts"
 
 $patchDir = Join-Path $PSScriptRoot '..\patches'
 $expectedPayloads = @(
@@ -87,7 +121,85 @@ $unexpectedPayloads = @($actualPayloads | Where-Object { $_ -notin $expectedPayl
 if ($missingPayloads.Count -gt 0 -or $unexpectedPayloads.Count -gt 0) {
     throw "Legacy audit: patch payload inventory mismatch; missing=[$($missingPayloads -join ', ')] unexpected=[$($unexpectedPayloads -join ', ')]"
 }
-Write-Host '[CLEAN] patch payload inventory: only the three live late-runtime/handheld/stability payloads remain'
+Write-Host '[CLEAN] patch payload inventory: only live late-runtime/handheld/stability payloads remain'
+
+# Explicit live transitive dependency graph. These edges caught the first audit's false deletion of
+# apply-bananza-blue-screen-gpu.ps1 before a compile was started.
+Require-ScriptReference 'apply-eglantine-integration.ps1' @(
+    'apply-ns2-geometry-stage.ps1'
+)
+Require-ScriptReference 'apply-eglantine-positive-shader-cache.ps1' @(
+    'apply-pokedinner-v2-batch.ps1'
+)
+Require-ScriptReference 'apply-pokedinner-v2-batch.ps1' @(
+    'apply-ns2-geometry-stage.ps1',
+    'apply-ns2-native-lowering-overlays.ps1'
+)
+Require-ScriptReference 'apply-bananza-post-menu-gpu.ps1' @(
+    'apply-bananza-blue-screen-gpu.ps1',
+    'apply-eglantine-pr48-device-memory.ps1',
+    'prepare-ns2-big-batch-anchors.ps1',
+    'prepare-pr52-selective-copyback.ps1',
+    'apply-ns2-general-compat-batch-v2.ps1',
+    'apply-ns2-runtime-blockers-v3.ps1'
+)
+Require-ScriptReference 'apply-ns2-runtime-blockers-v3.ps1' @(
+    'apply-ns2-runtime-blockers-v3-core.ps1',
+    'apply-ns2-runtime-blockers-v4.ps1'
+)
+Require-ScriptReference 'apply-ns2-runtime-blockers-v4.ps1' @('apply-ns2-runtime-blockers-v5.ps1')
+Require-ScriptReference 'apply-ns2-runtime-blockers-v5.ps1' @('apply-ns2-runtime-blockers-v6.ps1')
+Require-ScriptReference 'apply-ns2-runtime-blockers-v6.ps1' @('apply-ns2-runtime-blockers-v7.ps1')
+Require-ScriptReference 'apply-ns2-runtime-blockers-v7.ps1' @('apply-ns2-runtime-blockers-v8.ps1')
+Require-ScriptReference 'apply-ns2-runtime-blockers-v8.ps1' @(
+    'apply-ns2-runtime-blockers-v9.ps1',
+    'apply-ns2-runtime-blockers-v10.ps1'
+)
+Require-ScriptReference 'apply-eglantine-late-stability.ps1' @(
+    'apply-ns2-donor-20261101.ps1',
+    'apply-ns2-donor-safe-perf.ps1',
+    'prep-pr142-integrated.ps1',
+    'apply-eglantine-pr142-memory-stutter.ps1'
+)
+Require-ScriptReference 'test-ns2-stability-regressions.ps1' @(
+    'test-ns2-donor-20261101.ps1',
+    'test-ns2-donor-safe-perf.ps1',
+    'test-ns2-pr142-memory-stutter.ps1',
+    'audit-ns2-legacy-dead-code.ps1'
+)
+
+# Proven-unreachable generations. Fail if any surviving automation/workflow starts referring to one
+# again; that would mean the file is no longer safe to keep deleted.
+$knownDead = @(
+    'apply-glasm-task-mesh-guard.ps1',
+    'apply-ns2-build-fixes-base.ps1',
+    'apply-ns2-build-fixes.ps1',
+    'package-windows-runtime.ps1',
+    'prep-pr142-kmemory-reset.ps1',
+    'prep-pr142-vma-budget.ps1',
+    'prepare-eglantine-read-trap-selective-copyback.ps1'
+)
+$workflowDir = Join-Path $PSScriptRoot '..\workflows'
+$referenceFiles = @(
+    Get-ChildItem -Path $PSScriptRoot -Filter '*.ps1' -File | Where-Object { $_.FullName -ne $PSCommandPath }
+    Get-ChildItem -Path $workflowDir -File | Where-Object { $_.Extension -in @('.yml', '.yaml') }
+)
+foreach ($dead in $knownDead) {
+    if (Test-Path (Join-Path $PSScriptRoot $dead)) {
+        throw "Legacy audit: proven-dead helper was reintroduced: $dead"
+    }
+    foreach ($file in $referenceFiles) {
+        if ((Get-Content $file.FullName -Raw).Contains($dead)) {
+            throw "Legacy audit: $($file.Name) references deleted legacy helper $dead"
+        }
+    }
+    Write-Host "[DEAD] $dead"
+}
+
+if ($AutomationOnly) {
+    Write-Host 'NS2 automation reachability audit passed before source integration.'
+    return
+}
 
 # -----------------------------------------------------------------------------
 # Shader lowering/lifetime legacy shapes
@@ -176,11 +288,11 @@ if ($configure -lt 0 -or $worker -lt 0 -or $configure -gt $worker) {
 Write-Host '[CURRENT] graphics ConfigureFunc is prepared before async pipeline construction and modules are released'
 
 # Rollback/debug controls are intentional compatibility tools, not dead code. Their regression
-# tests validate behavior; keep a small audit here so a cleanup does not delete them by accident.
+# tests validate behavior; keep a small audit here so cleanup cannot delete them by accident.
 Require-Text 'src/shader_recompiler/backend/spirv/emit_spirv_undefined.cpp' 'EDEN_NX2_UNDEF_ZERO' 'undefined-register rollback switch'
 Require-Text 'src/video_core/gpu_split.h' 'EDEN_NX2_SPLIT' 'GPU split rollback switch'
 
 & git diff --check
 if ($LASTEXITCODE -ne 0) { throw 'Legacy audit: integrated source contains whitespace/diff errors' }
 
-Write-Host 'NS2 legacy/dead-code audit passed: modern runtime paths only, intentional rollback controls preserved, automation inventory clean.'
+Write-Host 'NS2 legacy/dead-code audit passed: current runtime paths only, intentional rollback controls preserved, automation graph clean.'
