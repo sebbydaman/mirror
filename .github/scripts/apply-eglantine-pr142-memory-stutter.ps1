@@ -79,7 +79,7 @@ function Apply-DonorFile {
     & git apply --whitespace=error-all $patchPath
     if ($LASTEXITCODE -ne 0) { throw "Failed to apply PR #142 donor patch for $Name ($Path)" }
     if (-not (Get-Content $Path -Raw).Contains($Marker)) {
-        throw "PR #142 validation failed after applying $Name: marker '$Marker' missing from $Path"
+        throw "PR #142 validation failed after applying ${Name}: marker '$Marker' missing from $Path"
     }
     Write-Host "[APPLIED] $Name"
     return $true
