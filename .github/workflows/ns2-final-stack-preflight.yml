@@ -9,6 +9,10 @@ on:
       - '.github/workflows/ns2-final-stack-preflight.yml'
       - '.github/frontier/**'
       - '.github/experiments/**'
+      - '.github/scripts/test-ns2-regressions.ps1'
+      - '.github/scripts/test-pokedinner-performance.ps1'
+      - '.github/scripts/test-ns2-late-regressions.ps1'
+      - '.github/scripts/test-ns2-stability-regressions.ps1'
 
 permissions:
   contents: read
@@ -135,3 +139,23 @@ jobs:
           git diff --check
           if ($LASTEXITCODE -ne 0) { throw 'Combined performance stack failed git diff --check' }
           Write-Host '[PASS] All final production performance patches applied cleanly.'
+
+      - name: Regression 01 core NS2
+        shell: pwsh
+        working-directory: eden
+        run: '& "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-ns2-regressions.ps1"'
+
+      - name: Regression 02 PokeDinner performance
+        shell: pwsh
+        working-directory: eden
+        run: '& "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-pokedinner-performance.ps1"'
+
+      - name: Regression 03 late NS2
+        shell: pwsh
+        working-directory: eden
+        run: '& "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-ns2-late-regressions.ps1"'
+
+      - name: Regression 04 stability
+        shell: pwsh
+        working-directory: eden
+        run: '& "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-ns2-stability-regressions.ps1"'
