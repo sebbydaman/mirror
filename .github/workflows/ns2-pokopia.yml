@@ -79,6 +79,27 @@ jobs:
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-ns2-late-regressions.ps1"
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-ns2-stability-regressions.ps1"
 
+      - name: Packaging workflow preflight
+        shell: pwsh
+        run: |
+          $scripts = @(
+            "$env:GITHUB_WORKSPACE\automation\.github\scripts\stage-ns2-runtime-checkpoint.ps1",
+            "$env:GITHUB_WORKSPACE\automation\.github\scripts\package-ns2-runtime.ps1"
+          )
+          foreach ($script in $scripts) {
+            if (-not (Test-Path $script -PathType Leaf)) { throw "Required packaging script is missing: $script" }
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($script, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              $messages = ($errors | ForEach-Object { $_.Message }) -join '; '
+              throw "PowerShell syntax error in $script: $messages"
+            }
+          }
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere -PathType Leaf)) { throw 'Visual Studio locator is unavailable on the Windows runner.' }
+          Write-Host 'Packaging scripts and Windows runner prerequisites passed preflight.'
+
       - name: Restore CPM dependency cache
         uses: actions/cache@v4
         with:
@@ -165,7 +186,7 @@ jobs:
 
       - name: Upload compiler logs
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: Eden-NS2-Pokopia-build-log
           path: |
@@ -225,6 +246,53 @@ jobs:
           GPU-split session reset.
           '@ | Set-Content -Path "$bin\NX2_PERFORMANCE_NOTES.txt" -Encoding UTF8
 
+      - name: Stage reusable compiled runtime checkpoint
+        shell: pwsh
+        working-directory: eden
+        run: |
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\stage-ns2-runtime-checkpoint.ps1"
+
+      - name: Upload compiled Windows checkpoint
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-NS2-Pokopia-compiled-${{ github.sha }}
+          path: eden/build/bin/**
+          if-no-files-found: error
+          retention-days: 14
+
+  package-windows:
+    needs: build-windows
+    runs-on: windows-2025
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout packaging automation
+        uses: actions/checkout@v5
+        with:
+          path: automation
+          fetch-depth: 1
+
+      - name: Download compiled Windows checkpoint
+        uses: actions/download-artifact@v8
+        with:
+          name: Eden-NS2-Pokopia-compiled-${{ github.sha }}
+          path: eden/build/bin
+
+      - name: Validate downloaded compile checkpoint
+        shell: pwsh
+        run: |
+          $bin = "$env:GITHUB_WORKSPACE\eden\build\bin"
+          if (-not (Test-Path $bin -PathType Container)) { throw "Compiled checkpoint directory is missing: $bin" }
+          $gui = @('eglantine.exe', 'eden.exe', 'yuzu.exe') |
+            ForEach-Object { Join-Path $bin $_ } |
+            Where-Object { Test-Path $_ -PathType Leaf } |
+            Select-Object -First 1
+          if (-not $gui) { throw 'Downloaded checkpoint does not contain an Eden GUI executable.' }
+          if (-not (Test-Path (Join-Path $bin 'COMPILED_CHECKPOINT.txt') -PathType Leaf)) {
+            throw 'Downloaded artifact is not a reusable compiled checkpoint.'
+          }
+          Write-Host "Reusing compiled GUI: $gui"
+
       - name: Package portable Windows runtime
         shell: pwsh
         working-directory: eden
@@ -232,7 +300,7 @@ jobs:
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\package-ns2-runtime.ps1"
 
       - name: Upload Windows build
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: Eden-NS2-Pokopia-Windows
           path: eden/dist/Eden-NS2-Pokopia-Windows/**
