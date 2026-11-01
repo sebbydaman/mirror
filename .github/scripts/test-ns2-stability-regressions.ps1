@@ -1,9 +1,68 @@
 $ErrorActionPreference = 'Stop'
 
+function Replace-ExactlyOnce([string]$Text, [string]$Old, [string]$New, [string]$Label) {
+    $Old = $Old.Replace("`r`n", "`n")
+    $New = $New.Replace("`r`n", "`n")
+    $normalized = $Text.Replace("`r`n", "`n")
+    $at = $normalized.IndexOf($Old)
+    if ($at -lt 0) { throw "NS2 post-stack guard: could not locate $Label" }
+    if ($normalized.IndexOf($Old, $at + $Old.Length) -ge 0) {
+        throw "NS2 post-stack guard: ambiguous anchor for $Label"
+    }
+    return $normalized.Substring(0, $at) + $New + $normalized.Substring($at + $Old.Length)
+}
+
 # This validation is deliberately the last source-stack checkpoint in every normal/PGO/JIT path.
-# Apply tiny upstream guards here, after all compressed donor/frontier payloads have finished, so
-# those payloads keep their exact checked contexts and the compiler sees the normalized final tree.
-& "$PSScriptRoot\apply-ns2-post-stack-upstream-guards.ps1"
+# Apply the tiny post-build31 sparse-residency correctness guard here, after all compressed donor
+# and frontier payloads have finished, so those payloads keep their exact checked contexts. Huge
+# virtual images may only be forced into the unbacked sparse path when the host can actually provide
+# sparse residency for that VkImageType and the image is single-sampled.
+$deviceSparsePath = 'src/video_core/vulkan_common/vulkan_device.h'
+$deviceSparse = (Get-Content $deviceSparsePath -Raw).Replace("`r`n", "`n")
+if (-not $deviceSparse.Contains('bool IsSparseResidencyImageSupported(VkImageType type) const {')) {
+    $deviceSparse = Replace-ExactlyOnce $deviceSparse @'
+    /// 2D images whose memory can be bound in parts, on the graphics queue.
+    bool IsSparseResidencyImage2DSupported() const {
+        return IsSparseBindingSupported() && features.features.sparseResidencyImage2D;
+    }
+'@ @'
+    /// Returns whether sparse residency is available for the requested image type.
+    bool IsSparseResidencyImageSupported(VkImageType type) const {
+        if (!IsSparseBindingSupported()) {
+            return false;
+        }
+        switch (type) {
+        case VK_IMAGE_TYPE_2D:
+            return features.features.sparseResidencyImage2D;
+        case VK_IMAGE_TYPE_3D:
+            return features.features.sparseResidencyImage3D;
+        default:
+            return false;
+        }
+    }
+'@ 'generic sparse-residency capability helper'
+    Set-Content -Path $deviceSparsePath -Value $deviceSparse -Encoding utf8 -NoNewline
+}
+
+$textureSparsePath = 'src/video_core/renderer_vulkan/vk_texture_cache.cpp'
+$textureSparse = (Get-Content $textureSparsePath -Raw).Replace("`r`n", "`n")
+if (-not $textureSparse.Contains('device.IsSparseResidencyImageSupported(VK_IMAGE_TYPE_2D)')) {
+    $textureSparse = Replace-ExactlyOnce $textureSparse `
+        'device.IsSparseResidencyImage2DSupported()' `
+        'device.IsSparseResidencyImageSupported(VK_IMAGE_TYPE_2D)' `
+        'sparse-layer residency capability query'
+    Set-Content -Path $textureSparsePath -Value $textureSparse -Encoding utf8 -NoNewline
+}
+
+$allocatorSparsePath = 'src/video_core/vulkan_common/vulkan_memory_allocator.cpp'
+$allocatorSparse = (Get-Content $allocatorSparsePath -Raw).Replace("`r`n", "`n")
+if (-not $allocatorSparse.Contains('device.IsSparseResidencyImageSupported(ci.imageType);')) {
+    $allocatorSparse = Replace-ExactlyOnce $allocatorSparse `
+        '    const bool huge = texels > (u64{1} << 28);' `
+        "    const bool huge = texels > (u64{1} << 28) && ci.samples == VK_SAMPLE_COUNT_1_BIT &&`n                      device.IsSparseResidencyImageSupported(ci.imageType);" `
+        'huge-image sparse-residency capability guard'
+    Set-Content -Path $allocatorSparsePath -Value $allocatorSparse -Encoding utf8 -NoNewline
+}
 
 function Require-Text([string]$Path, [string]$Needle, [string]$Name) {
     if (-not (Test-Path $Path)) { throw "NS2 stability regression: missing required file $Path" }
@@ -36,13 +95,12 @@ Require-Text $workerHeader 'void Stop();' 'game-list worker synchronous stop API
 Require-Text $worker 'stop_requested.exchange(true)' 'idempotent game-list worker shutdown'
 Require-Text $worker 'while (model->current_worker.get() == this)' 'nested-event worker replacement guard'
 
-# Do not regress the post-stack sparse-residency capability guard. Huge virtual images may only
-# take the unbacked sparse fallback when the host supports sparse residency for that image type.
-Require-Text 'src/video_core/vulkan_common/vulkan_device.h' 'bool IsSparseResidencyImageSupported(VkImageType type) const {' 'generic sparse image capability helper'
-Require-Text 'src/video_core/vulkan_common/vulkan_device.h' 'return features.features.sparseResidencyImage3D;' '3D sparse residency capability'
-Require-Text 'src/video_core/renderer_vulkan/vk_texture_cache.cpp' 'device.IsSparseResidencyImageSupported(VK_IMAGE_TYPE_2D)' 'sparse-layer generic capability query'
-Require-Text 'src/video_core/vulkan_common/vulkan_memory_allocator.cpp' 'ci.samples == VK_SAMPLE_COUNT_1_BIT' 'single-sample huge sparse fallback guard'
-Require-Text 'src/video_core/vulkan_common/vulkan_memory_allocator.cpp' 'device.IsSparseResidencyImageSupported(ci.imageType);' 'image-type huge sparse fallback guard'
+# Guard the exact new source shape so a later donor merge cannot silently restore the unsafe path.
+Require-Text $deviceSparsePath 'bool IsSparseResidencyImageSupported(VkImageType type) const {' 'generic sparse image capability helper'
+Require-Text $deviceSparsePath 'return features.features.sparseResidencyImage3D;' '3D sparse residency capability'
+Require-Text $textureSparsePath 'device.IsSparseResidencyImageSupported(VK_IMAGE_TYPE_2D)' 'sparse-layer generic capability query'
+Require-Text $allocatorSparsePath 'ci.samples == VK_SAMPLE_COUNT_1_BIT' 'single-sample huge sparse fallback guard'
+Require-Text $allocatorSparsePath 'device.IsSparseResidencyImageSupported(ci.imageType);' 'image-type huge sparse fallback guard'
 
 # Reject the old unsafe shapes if a later donor merge accidentally resurrects them. Search for the
 # actual controller call rather than the word CreateFactories, because the explanatory comment above
