@@ -60,12 +60,19 @@ void ReportNx2JitCompileProfile() {
     }
     auto& tracker = Nx2JitTracker();
     std::scoped_lock lock{tracker.mutex};
+    const double total = static_cast<double>(tracker.total);
+    const double cross_core_pct = total != 0.0 ? (100.0 * static_cast<double>(tracker.cross_core_duplicates) / total) : 0.0;
+    const double same_core_pct = total != 0.0 ? (100.0 * static_cast<double>(tracker.same_core_recompiles) / total) : 0.0;
+    const double duplicate_pct = cross_core_pct + same_core_pct;
     std::fprintf(stderr,
                  "[NX2 JIT] compile profile: total=%llu unique=%llu cross_core_duplicates=%llu same_core_recompiles=%llu\n",
                  static_cast<unsigned long long>(tracker.total),
                  static_cast<unsigned long long>(tracker.unique),
                  static_cast<unsigned long long>(tracker.cross_core_duplicates),
                  static_cast<unsigned long long>(tracker.same_core_recompiles));
+    std::fprintf(stderr,
+                 "[NX2 JIT] compile ratios: cross_core_pct=%.2f same_core_pct=%.2f duplicate_pct=%.2f\n",
+                 cross_core_pct, same_core_pct, duplicate_pct);
     for (std::size_t core = 0; core < tracker.per_core.size(); ++core) {
         if (tracker.per_core[core] != 0) {
             std::fprintf(stderr, "[NX2 JIT] core %zu compilations=%llu\n", core,
@@ -140,8 +147,10 @@ foreach ($required in @(
     'EDEN_NX2_CPU_JIT_PROFILE',
     'RecordNx2JitCompile(descriptor.Value(), conf.processor_id);',
     '[NX2 JIT] compile profile:',
+    '[NX2 JIT] compile ratios:',
     'cross_core_duplicates',
-    'same_core_recompiles'
+    'same_core_recompiles',
+    'duplicate_pct'
 )) {
     if (-not $check.Contains($required)) {
         throw "CPU JIT telemetry marker missing: $required"
