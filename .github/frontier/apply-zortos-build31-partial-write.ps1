@@ -8,13 +8,19 @@ $ErrorActionPreference = 'Stop'
 # no MarkPartialWrite/partial_dirty_pages path at all. Do not force an unverified rewrite into that
 # architecture. If the old path exists, preserve it; if it is absent, this frontier is inapplicable.
 #
-# Legacy donor/test flows can still hand off to the post-Build31 CPU frontier. The composed final
-# stack sets EDEN_SKIP_POST_BUILD31_FRONTIER=1 because it applies the production frontier patches
-# explicitly and must not silently reapply telemetry/optimizations underneath itself.
+# The old helper used to chain the entire post-Build31 CPU frontier implicitly. That frontier now
+# contains telemetry/experimental adapters that are intentionally excluded from the final production
+# composition, so an ordinary validation call must not mutate the tree by installing them. Legacy
+# experiments can still request the old handoff explicitly with EDEN_ENABLE_POST_BUILD31_FRONTIER=1.
+# EDEN_SKIP_POST_BUILD31_FRONTIER=1 remains the stronger override used by the composed final stack.
 
 function Invoke-PostBuild31CpuFrontier {
     if ($env:EDEN_SKIP_POST_BUILD31_FRONTIER -eq '1') {
         Write-Host '[SKIP] post-Build31 CPU frontier handoff disabled by composed final stack'
+        return
+    }
+    if ($env:EDEN_ENABLE_POST_BUILD31_FRONTIER -ne '1') {
+        Write-Host '[SKIP] legacy post-Build31 CPU frontier handoff is opt-in'
         return
     }
     $postFrontier = Join-Path $PSScriptRoot 'apply-post-build31-cpu-frontier.ps1'
