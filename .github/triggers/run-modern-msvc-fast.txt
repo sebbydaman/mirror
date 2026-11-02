@@ -1,1 +1,1 @@
-Build modern MSVC fast-start candidate with all current fixes: modern 60 FPS source stack, loose RomFS reuse, proven Windows/MSVC runtime, and restored donor pipeline worker capacity.
+Retry modern MSVC fast-start candidate after fixing the checkpoint staging contract: provide NX2_PERFORMANCE_NOTES.txt and validate all required checkpoint files before staging. Preserve the green modern stack, loose RomFS reuse, donor pipeline capacity, and MSVC runtime path.
