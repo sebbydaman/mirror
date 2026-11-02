@@ -1,0 +1,1 @@
+Trigger the full modern-only LLVM PGO + Zen4 build after video_core diagnostic passed.
