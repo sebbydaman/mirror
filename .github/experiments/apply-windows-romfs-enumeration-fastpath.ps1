@@ -131,8 +131,6 @@ RealVfsDirectory::GetEntriesForRomFSBuild() const {
     HANDLE handle = FindFirstFileExW(search_path.c_str(), FindExInfoBasic, &entry,
                                      FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH);
     if (handle == INVALID_HANDLE_VALUE && GetLastError() == ERROR_INVALID_PARAMETER) {
-        // Some filesystems do not accept FIND_FIRST_EX_LARGE_FETCH. Keep the native path but retry
-        // without that advisory flag before considering the std::filesystem fallback.
         handle = FindFirstFileExW(search_path.c_str(), FindExInfoBasic, &entry,
                                   FindExSearchNameMatch, nullptr, 0);
     }
@@ -141,7 +139,6 @@ RealVfsDirectory::GetEntriesForRomFSBuild() const {
         if (error == ERROR_FILE_NOT_FOUND) {
             return {std::move(files), std::move(directories)};
         }
-
         LOG_WARNING(Common_Filesystem,
                     "Win32 RomFS enumeration failed for {}, error={}; using std::filesystem fallback",
                     path, error);
@@ -153,9 +150,6 @@ RealVfsDirectory::GetEntriesForRomFSBuild() const {
         if (name == L"." || name == L"..") {
             continue;
         }
-
-        // Preserve generic VFS semantics for unusual junction/symlink trees rather than guessing
-        // at reparse-point behavior. Normal extracted NS2 RomFS directories never take this path.
         if ((entry.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
             FindClose(handle);
             return {GetFiles(), GetSubdirectories()};
@@ -163,7 +157,6 @@ RealVfsDirectory::GetEntriesForRomFSBuild() const {
 
         const std::filesystem::path entry_path = directory_path / entry.cFileName;
         const std::string full_path = FS::PathToUTF8String(entry_path);
-
         if ((entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
             directories.emplace_back(std::make_shared<RealVfsDirectory>(base, full_path, perms));
             continue;
@@ -180,7 +173,6 @@ RealVfsDirectory::GetEntriesForRomFSBuild() const {
         LOG_WARNING(Common_Filesystem,
                     "Win32 RomFS enumeration ended early for {}, error={}", path, final_error);
     }
-
     return {std::move(files), std::move(directories)};
 #else
     return {GetFiles(), GetSubdirectories()};
@@ -196,29 +188,24 @@ RealVfsDirectory::GetEntriesForRomFSBuild() const {
 # ---- Route RomFS construction through the pair-enumeration hook -------------------------------
 $r = Normalize (Get-Content $romfs -Raw)
 if (-not $r.Contains('GetEntriesForRomFSBuild();')) {
-    $visitAnchor = @'
-void RomFSBuildContext::VisitDirectory(VirtualDir romfs_dir, VirtualDir ext_dir,
-                                       std::shared_ptr<RomFSBuildDirectoryContext> parent) {
-    for (auto& child_romfs_file : romfs_dir->GetFiles()) {
-'@
-    if (-not $r.Contains($visitAnchor.TrimEnd("`r", "`n"))) {
-        throw 'Windows RomFS enumeration fast path: VisitDirectory file-loop anchor missing'
+    # Match the loop itself rather than the whole VisitDirectory signature. Earlier compatibility
+    # layers may reflow the function declaration without changing this semantic anchor.
+    $fileLoopPattern = '(?m)^(?<indent>[ \t]*)for \(auto& child_romfs_file : romfs_dir->GetFiles\(\)\) \{[ \t]*$'
+    $fileLoopMatches = [regex]::Matches($r, $fileLoopPattern)
+    if ($fileLoopMatches.Count -ne 1) {
+        throw "Windows RomFS enumeration fast path: expected exactly one VisitDirectory file loop, found $($fileLoopMatches.Count)"
     }
-    $visitReplacement = @'
-void RomFSBuildContext::VisitDirectory(VirtualDir romfs_dir, VirtualDir ext_dir,
-                                       std::shared_ptr<RomFSBuildDirectoryContext> parent) {
-    auto [child_files, child_directories] = romfs_dir->GetEntriesForRomFSBuild();
+    $indent = $fileLoopMatches[0].Groups['indent'].Value
+    $fileLoopReplacement = $indent + 'auto [child_files, child_directories] = romfs_dir->GetEntriesForRomFSBuild();' + "`n`n" +
+                           $indent + 'for (auto& child_romfs_file : child_files) {'
+    $r = [regex]::Replace($r, $fileLoopPattern, $fileLoopReplacement, 1)
 
-    for (auto& child_romfs_file : child_files) {
-'@
-    $r = $r.Replace($visitAnchor.TrimEnd("`r", "`n"),
-                    $visitReplacement.TrimEnd("`r", "`n"))
-
-    $dirLoopAnchor = '    for (auto& child_romfs_dir : romfs_dir->GetSubdirectories()) {'
-    if (-not $r.Contains($dirLoopAnchor)) {
-        throw 'Windows RomFS enumeration fast path: VisitDirectory directory-loop anchor missing'
+    $dirLoopPattern = '(?m)^(?<indent>[ \t]*)for \(auto& child_romfs_dir : romfs_dir->GetSubdirectories\(\)\) \{[ \t]*$'
+    $dirLoopMatches = [regex]::Matches($r, $dirLoopPattern)
+    if ($dirLoopMatches.Count -ne 1) {
+        throw "Windows RomFS enumeration fast path: expected exactly one VisitDirectory directory loop, found $($dirLoopMatches.Count)"
     }
-    $r = $r.Replace($dirLoopAnchor, '    for (auto& child_romfs_dir : child_directories) {')
+    $r = [regex]::Replace($r, $dirLoopPattern, '${indent}for (auto& child_romfs_dir : child_directories) {', 1)
 }
 [IO.File]::WriteAllText((Resolve-Path $romfs).Path,
     $r.TrimEnd("`r", "`n") + "`n", [Text.UTF8Encoding]::new($false))
