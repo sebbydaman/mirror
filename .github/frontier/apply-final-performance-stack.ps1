@@ -63,6 +63,16 @@ try {
     Write-Host '[FINAL PERF] Applying Windows loose RomFS enumeration fast path'
     & $romfsWin32
 
+    # Preserve the golden VFS semantics inside the accelerated walk. The normal RealVfsFilesystem
+    # path sanitizes subdirectory paths through OpenDirectory(); constructing RealVfsDirectory
+    # directly can subtly change lookup behavior even though the final RomFS metadata is sorted.
+    $romfsDirSemantics = Join-Path $experiments 'apply-romfs-fastpath-directory-semantics-fix.ps1'
+    if (-not (Test-Path $romfsDirSemantics -PathType Leaf)) {
+        throw "Final NS2 performance stack: missing $romfsDirSemantics"
+    }
+    Write-Host '[FINAL PERF] Restoring golden VFS subdirectory semantics inside Win32 RomFS fast path'
+    & $romfsDirSemantics
+
     # The validated ebf4d44d gameplay run accidentally exercised HostMemory's fallback path because
     # Windows could not commit the 20 GiB fastmem backing store. Keep default behavior unchanged,
     # but add an explicit runtime A/B toggle so the startup-fast binary can reproduce that exact
