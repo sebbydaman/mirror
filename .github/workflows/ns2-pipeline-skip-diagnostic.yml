@@ -86,6 +86,10 @@ jobs:
           }
           function Context([string]$path, [int]$start, [int]$end) {
             Emit "`n===== CONTEXT ${path}:$start-$end ====="
+            if (-not (Test-Path $path -PathType Leaf)) {
+              Emit '[MISSING FILE]'
+              return
+            }
             $lines = Get-Content $path
             $lo = [Math]::Max(1, $start)
             $hi = [Math]::Min($end, $lines.Count)
@@ -95,6 +99,10 @@ jobs:
           }
           function FunctionContext([string]$path, [string]$pattern, [int]$before = 8, [int]$after = 80) {
             Emit "`n===== FUNCTION $pattern in $path ====="
+            if (-not (Test-Path $path -PathType Leaf)) {
+              Emit '[MISSING FILE]'
+              return
+            }
             $hits = @(Select-String -Path $path -Pattern $pattern)
             if ($hits.Count -eq 0) {
               Emit '[NO MATCH]'
@@ -106,7 +114,7 @@ jobs:
           }
           Emit "Base=f362528c0447c491bfe00c0bdd5d8c245396a24c automation=$env:GITHUB_SHA"
           Scan 'Async translation / draw skip' @('CanSkipDraw','CurrentGraphicsPipelineSlowPath','WaitForGraphicsTranslation','QueueGraphicsTranslation','AdoptTranslatedGraphicsPipelines','EDEN_NX2_TRANSLATION_WORKERS','reuse_rejects')
-          Scan 'Task mesh opcode and stage buffers' @('0x927','ISBEWR','StageBuffer|stage_buffer','Task|Mesh')
+          Scan 'Task mesh opcode and stage buffers' @('0x923|0x927','ISBERD|ISBEWR|ISBE_nx2','IsbeRead|IsbeWrite|EmitIsbe','StageBuffer|stage_buffer','MeshPrologue|MeshEpilogue|EmitMeshTasks|SetMeshOutputs','Task|Mesh')
           Scan 'Selevet synchronization candidates' @('EDEN_NX2_CMD_BATCH','BeginDownloadBatch|EndDownloadBatch','EDEN_NX2_ACQUIRE_QUEUED','NoteQueuedRelease','QMD_ACQUIRE_SKIP')
           Scan 'Submission policy' @('DRAWS_TO_DISPATCH','4096','submit_threshold|submission_threshold|draw_threshold','FlushCommands')
           Scan 'Cache restore and prewarm' @('pipeline_cache_filename','LoadDiskResources','LoadPipelines','CACHE_VERSION','Total Pipeline Count','SerializePipeline','vulkan_static_pipelines','StaticPipeline|static_pipeline')
@@ -122,6 +130,18 @@ jobs:
           FunctionContext 'src/video_core/shader_environment.cpp' '^void SerializePipeline' 12 90
           FunctionContext 'src/video_core/renderer_vulkan/vk_pipeline_cache.cpp' 'pipeline_cache_filename = ' 15 40
           FunctionContext 'src/video_core/renderer_vulkan/vk_pipeline_cache.cpp' 'constexpr u32 CACHE_VERSION' 5 15
+
+          # Build-142 task/mesh donor audit: dump the connected feature, not merely the 0x927 token.
+          FunctionContext 'src/shader_recompiler/frontend/ampere/lower_to_maxwell.h' 'case 0x923|case 0x927' 14 65
+          FunctionContext 'src/shader_recompiler/frontend/maxwell/maxwell.inc' 'ISBERD|ISBE_nx2' 6 12
+          FunctionContext 'src/shader_recompiler/frontend/maxwell/translate/impl/internal_stage_buffer_entry_read.cpp' 'TranslatorVisitor::ISBERD|TranslatorVisitor::ISBE_nx2' 10 120
+          FunctionContext 'src/shader_recompiler/frontend/maxwell/translate_program.cpp' 'ISBE_nx2|ISBERD' 8 28
+          FunctionContext 'src/shader_recompiler/frontend/ir/ir_emitter.h' 'IsbeRead|IsbeWrite' 8 30
+          FunctionContext 'src/shader_recompiler/frontend/ir/ir_emitter.cpp' 'IREmitter::IsbeRead|IREmitter::IsbeWrite' 8 45
+          FunctionContext 'src/shader_recompiler/frontend/ir/opcodes.inc' 'IsbeRead|IsbeWrite' 8 20
+          FunctionContext 'src/shader_recompiler/backend/spirv/emit_spirv_mesh.cpp' 'EmitIsbeRead|EmitIsbeWrite|EmitMeshPrologue|EmitMeshEpilogue' 10 90
+          FunctionContext 'src/shader_recompiler/backend/spirv/emit_spirv.cpp' 'PatchMeshInstructions|ExecutionModel::TaskEXT|ExecutionModel::MeshEXT' 10 55
+
           Context 'src/video_core/renderer_vulkan/vk_rasterizer.cpp' 1065 1100
           Context 'src/video_core/renderer_vulkan/vk_rasterizer.cpp' 1450 1490
           Context 'src/video_core/buffer_cache/buffer_cache.h' 2125 2185
