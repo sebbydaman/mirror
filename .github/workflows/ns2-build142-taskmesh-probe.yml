@@ -131,14 +131,32 @@ jobs:
           $ampere = [regex]::Replace($ampere, $oldPattern, $isbe.TrimEnd("`r", "`n"), 1)
           [IO.File]::WriteAllText((Resolve-Path $amperePath).Path, $ampere.TrimEnd("`r", "`n") + "`n", [Text.UTF8Encoding]::new($false))
           Emit 'Replaced narrow direct ISBE lowering with donor 0xefc0 pseudo-op semantics.'
+
+          $resolvedText = Get-Content $amperePath -Raw
           foreach ($needle in @('case 0x923: case 0x927:', '0xefc0000000000000ULL', '(region != 0 && region != 3)', 'case 0x2bf:')) {
-            if (-not ((Get-Content $amperePath -Raw).Contains($needle))) { throw "Manual donor-1 semantic resolution missing $needle" }
+            $present = $resolvedText.Contains($needle)
+            Emit "validate[$needle]=$present"
+            if (-not $present) { throw "Manual donor-1 semantic resolution missing $needle" }
           }
-          git diff --check -- $amperePath
-          if ($LASTEXITCODE -ne 0) { throw 'Manual donor-1 semantic resolution failed diff check' }
+
+          $diffCheckOutput = @(git diff --check -- $amperePath 2>&1)
+          $diffCheck = $LASTEXITCODE
+          $diffCheckOutput | ForEach-Object { Emit "diff-check: $_" }
+          Emit "manual_diff_check_exit=$diffCheck"
+          if ($diffCheck -ne 0) { throw 'Manual donor-1 semantic resolution failed diff check' }
+
           git add $amperePath
-          git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'Probe: resolve build142 ISBE lowering over current Pokopia lowerer' --no-verify
-          if ($LASTEXITCODE -ne 0) { throw 'Could not checkpoint manual donor-1 semantics' }
+          $addCode = $LASTEXITCODE
+          Emit "manual_git_add_exit=$addCode"
+          @(git status --short -- $amperePath 2>&1) | ForEach-Object { Emit "status: $_" }
+          @(git diff --cached --stat -- $amperePath 2>&1) | ForEach-Object { Emit "cached-stat: $_" }
+          if ($addCode -ne 0) { throw 'Could not stage manual donor-1 semantics' }
+
+          $commitOutput = @(git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'Probe: resolve build142 ISBE lowering over current Pokopia lowerer' --no-verify 2>&1)
+          $commitCode = $LASTEXITCODE
+          $commitOutput | ForEach-Object { Emit "commit: $_" }
+          Emit "manual_commit_exit=$commitCode"
+          if ($commitCode -ne 0) { throw 'Could not checkpoint manual donor-1 semantics' }
           $resolvedFirst = (git rev-parse HEAD).Trim()
           Emit "resolved_first=$resolvedFirst"
 
