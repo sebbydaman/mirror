@@ -60,7 +60,10 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $false
-          $report = Join-Path $PWD 'build142-taskmesh-probe.txt'
+          # Keep the report outside the git worktree: reset --hard is part of this destructive
+          # applicability probe and must not roll back the evidence we are trying to upload.
+          $report = Join-Path $env:RUNNER_TEMP 'build142-taskmesh-probe.txt'
+          if (Test-Path $report) { Remove-Item $report -Force }
           function Emit([string]$text = '') { $text | Tee-Object -FilePath $report -Append }
           Emit "automation=$env:GITHUB_SHA"
           Emit 'Donor 1: eb02d1dd53a03d0bb6ce541694243579a4c10c6f'
@@ -121,7 +124,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: build142-taskmesh-probe-${{ github.sha }}
-          path: eden/build142-taskmesh-probe.txt
+          path: ${{ runner.temp }}/build142-taskmesh-probe.txt
           if-no-files-found: warn
           retention-days: 3
 
