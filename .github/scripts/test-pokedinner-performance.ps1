@@ -58,11 +58,11 @@ Require-Text $vkScheduler 'worker_waiting' 'wake Vulkan worker only when waiting
 Require-Text $vkSchedulerHeader 'WaitForSubmission' 'async-present scheduler no-cross-thread-flush guard'
 Require-Text $vkPresent 'AcquireNextImage(!use_present_thread)' 'async-present safe acquire path'
 
-# Native graphics translation is independent from the builder budget. On a 12-thread 7600X the
-# final stack should retain 3 builders while allowing two native translators to drain Pokopia's
-# race-start bursts. Keep the override so the exact count can be A/B tested without rebuilding.
+# Native graphics translation is independent from the builder budget. The two-worker experiment
+# produced visual regressions, so one translator is the correctness baseline. Keep the override
+# for later controlled A/B testing without rebuilding; builders remain independently budgeted.
 Require-Text $vkPipelineCache 'EDEN_NX2_TRANSLATION_WORKERS' 'independent Switch 2 native translation-worker override'
-Require-Text $vkPipelineCache 'constexpr size_t DefaultNx2TranslationWorkers = 2ULL;' 'two-worker Switch 2 native translation default'
+Require-Text $vkPipelineCache 'constexpr size_t DefaultNx2TranslationWorkers = 1ULL;' 'one-worker Switch 2 native translation correctness default'
 Require-Text $vkPipelineCache 'std::min(pipeline_workers, DefaultNx2TranslationWorkers)' 'translation workers bounded by builder pool'
 
 # Buffer/inline hot paths. Per-fence downloads stay disabled by default for native-tiled Switch 2
