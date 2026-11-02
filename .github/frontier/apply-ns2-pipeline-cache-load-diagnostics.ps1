@@ -80,12 +80,12 @@ if (($text.Split($filenameAnchor).Count - 1) -ne 1) {
 }
 $text = $text.Replace($filenameAnchor, $filenameReplacement)
 
+# Only pin the stable state prefix. The assembled donor stack legitimately inserts its own
+# statistics fields after built{}, so replacing the whole struct layout was unnecessarily brittle.
 $stateAnchor = @'
         std::mutex mutex;
         size_t total{};
         size_t built{};
-        bool has_loaded{};
-        std::unique_ptr<PipelineStatistics> statistics;
 '@
 $stateAnchor = $stateAnchor.TrimEnd("`r", "`n")
 $stateReplacement = @'
@@ -108,12 +108,13 @@ $stateReplacement = @'
         size_t restored_graphics{};
         size_t failed_compute{};
         size_t failed_graphics{};
-        bool has_loaded{};
-        std::unique_ptr<PipelineStatistics> statistics;
 '@
 $stateReplacement = $stateReplacement.TrimEnd("`r", "`n")
 if (-not $text.Contains($stateAnchor)) {
-    throw 'NX2 pipeline-cache diagnostics: LoadDiskResources state anchor changed'
+    throw 'NX2 pipeline-cache diagnostics: LoadDiskResources state-prefix anchor changed'
+}
+if (($text.Split($stateAnchor).Count - 1) -ne 1) {
+    throw 'NX2 pipeline-cache diagnostics: LoadDiskResources state-prefix anchor is not unique'
 }
 $text = $text.Replace($stateAnchor, $stateReplacement)
 
@@ -221,8 +222,6 @@ if (-not $text.Contains($graphicsReadAnchor)) {
 }
 $text = $text.Replace($graphicsReadAnchor, $graphicsReadReplacement)
 
-# Build result accounting: both anchors are deliberately small so PipelineStats role lines from the
-# PokeDinner composition remain untouched.
 $computeBuildAnchor = @'
             if (pipeline) {
                 compute_cache.emplace(key, std::move(pipeline));
