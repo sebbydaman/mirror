@@ -1,13 +1,8 @@
 $ErrorActionPreference = 'Stop'
 
-# Second-stage Switch 2 DmaDispatch optimization. The tight Increasing-run parser already removes
-# one outer ProcessCommands iteration per data word, but split-active runs still repeat subchannel,
-# split-state, engine-type and front-macro routing checks in DmaPusher::CallMethod for every word.
-# Cache that routing once per pure Increasing run. Maxwell3D native-Turing and Kepler-compute front
-# macro paths call their existing FrontCallMethod implementations directly; other bound split
-# engines call the existing GpuSplit::Method encoder directly. Non-split, unbound and diagnostic
-# paths fall back to CallMethod unchanged. EDEN_NX2_SEM_WATCH disables all shortcuts so its logging
-# remains exact. Profiling counts the whole split run once instead of once per word.
+# Second-stage Switch 2 DmaDispatch optimization. Cache split routing once per pure Increasing run.
+# Production composition intentionally excludes telemetry/diagnostic adapters, so this patch must
+# not depend on Profile or g_semaphore_watch symbols supplied only by those adapters.
 
 function Write-PatchedText([string]$Path, [string]$Text) {
     $normalized = $Text.Replace("`r`n", "`n").TrimEnd("`r", "`n") + "`n"
@@ -27,9 +22,7 @@ function Replace-Once([string]$Text, [string]$Old, [string]$New, [string]$Name) 
 }
 
 $path = 'src/video_core/dma_pusher.cpp'
-if (-not (Test-Path $path -PathType Leaf)) {
-    throw "DMA increasing run-cache: missing $path"
-}
+if (-not (Test-Path $path -PathType Leaf)) { throw "DMA increasing run-cache: missing $path" }
 
 $text = (Get-Content $path -Raw).Replace("`r`n", "`n")
 $marker = 'run_split_engine'
@@ -39,11 +32,6 @@ if (-not $text.Contains($marker)) {
                 do {
                     dma_state.dma_word_offset = u64((word_offset + index) * sizeof(u32));
                     dma_state.is_last_call = dma_state.method_count <= 1;
-                    if (Profile::Enabled()) [[unlikely]] {
-                        if (VideoCommon::GpuSplit::Get().Active()) {
-                            Profile::Add(Profile::Counter::DmaSplitEngineWords, 1);
-                        }
-                    }
                     CallMethod(commands[index].argument);
                     ++dma_state.method;
                     --dma_state.method_count;
@@ -54,17 +42,13 @@ if (-not $text.Contains($marker)) {
                 const size_t end_index = index + available_words;
                 auto& run_split = VideoCommon::GpuSplit::Get();
                 const bool run_split_active = run_split.Active();
-                const bool run_profile_enabled = Profile::Enabled();
-                if (run_profile_enabled && run_split_active) [[unlikely]] {
-                    Profile::Add(Profile::Counter::DmaSplitEngineWords, available_words);
-                }
 
                 Engines::EngineInterface* run_split_engine = nullptr;
                 Engines::Maxwell3D* front_run_maxwell = nullptr;
                 Engines::KeplerCompute* front_run_compute = nullptr;
                 bool run_compute_segment = false;
                 bool run_maxwell_segment = false;
-                if (g_semaphore_watch == 0 && run_split_active) {
+                if (run_split_active) {
                     if (auto* const run_engine = subchannels[dma_state.subchannel];
                         run_engine != nullptr) {
                         const auto run_type = subchannel_type[dma_state.subchannel];
@@ -116,9 +100,7 @@ if (-not $text.Contains($marker)) {
                     ++index;
                 } while (index < end_index);
 '@
-    $old = $old.Replace("`r`n", "`n").TrimEnd("`r", "`n")
-    $new = $new.Replace("`r`n", "`n").TrimEnd("`r", "`n")
-    $text = Replace-Once $text $old $new 'tight Increasing-run loop'
+    $text = Replace-Once $text $old.TrimEnd("`r", "`n") $new.TrimEnd("`r", "`n") 'tight Increasing-run loop'
     Write-PatchedText $path $text
     Write-Host '[APPLIED] cached split routing for pure Increasing engine runs'
 } else {
@@ -127,11 +109,10 @@ if (-not $text.Contains($marker)) {
 
 $final = (Get-Content $path -Raw).Replace("`r`n", "`n")
 foreach ($needle in @(
-    'Profile::Add(Profile::Counter::DmaSplitEngineWords, available_words);',
     'Engines::EngineInterface* run_split_engine = nullptr;',
     'Engines::Maxwell3D* front_run_maxwell = nullptr;',
     'Engines::KeplerCompute* front_run_compute = nullptr;',
-    'g_semaphore_watch == 0 && run_split_active',
+    'if (run_split_active)',
     'maxwell3d->GetNativeMacroEngine().native_turing',
     'compute->FrontRunsMacros()',
     'front_run_maxwell->FrontCallMethod(system, run_split, dma_state.method,',
@@ -144,14 +125,9 @@ foreach ($needle in @(
     '++dma_state.method;',
     '--dma_state.method_count;'
 )) {
-    if (-not $final.Contains($needle)) {
-        throw "DMA increasing run-cache validation failed: missing $needle"
-    }
+    if (-not $final.Contains($needle)) { throw "DMA increasing run-cache validation failed: missing $needle" }
 }
 
 & git diff --check
-if ($LASTEXITCODE -ne 0) {
-    throw 'DMA increasing run-cache introduced diff/whitespace errors'
-}
-
-Write-Host 'DMA increasing run-cache validated: existing front handlers/split Method encoder reused; diagnostics and non-split paths unchanged.'
+if ($LASTEXITCODE -ne 0) { throw 'DMA increasing run-cache introduced diff/whitespace errors' }
+Write-Host 'DMA increasing run-cache validated: production path is independent of telemetry-only symbols.'
