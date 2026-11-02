@@ -129,16 +129,19 @@ $loadPipelinesAt = $text.IndexOf('VideoCommon::LoadPipelines(', $loadComputeAt,
                                  [StringComparison]::Ordinal)
 $text = Insert-AfterRecordRead $text 'GraphicsPipelineCacheKey' 'parsed_graphics' $loadComputeAt $loadPipelinesAt
 
-$summaryAnchor = @'
-    VideoCommon::LoadPipelines(stop_loading, pipeline_cache_filename, CACHE_VERSION, load_compute,
-                               load_graphics);
-
-    LOG_INFO(Render_Vulkan, "Total Pipeline Count: {}", state.total);
-'@
-$summaryAnchor = $summaryAnchor.TrimEnd("`r", "`n")
-$summaryReplacement = @'
-    VideoCommon::LoadPipelines(stop_loading, pipeline_cache_filename, CACHE_VERSION, load_compute,
-                               load_graphics);
+# Insert the summary immediately after the real LoadPipelines statement. Do not depend on how the
+# donor stack formats the call or on which logging/statistics lines follow it.
+$loadComputeAt = $text.IndexOf('load_compute', [StringComparison]::Ordinal)
+$loadPipelinesAt = $text.IndexOf('VideoCommon::LoadPipelines(', $loadComputeAt,
+                                 [StringComparison]::Ordinal)
+if ($loadPipelinesAt -lt 0) {
+    throw 'NX2 pipeline-cache diagnostics v3: final LoadPipelines call is unavailable'
+}
+$loadPipelinesSemi = $text.IndexOf(';', $loadPipelinesAt)
+if ($loadPipelinesSemi -lt 0 -or ($loadPipelinesSemi - $loadPipelinesAt) -gt 900) {
+    throw 'NX2 pipeline-cache diagnostics v3: could not bound final LoadPipelines statement'
+}
+$summaryProbe = @'
 
     bool pipeline_cache_present_after_load{};
     {
@@ -153,14 +156,8 @@ $summaryReplacement = @'
              pipeline_cache_header_magic_ok, pipeline_cache_header_version, CACHE_VERSION,
              pipeline_cache_present_after_load, stop_loading.stop_requested(), state.parsed_compute,
              state.parsed_graphics, state.total);
-
-    LOG_INFO(Render_Vulkan, "Total Pipeline Count: {}", state.total);
 '@
-$summaryReplacement = $summaryReplacement.TrimEnd("`r", "`n")
-if (-not $text.Contains($summaryAnchor)) {
-    throw 'NX2 pipeline-cache diagnostics v3: LoadPipelines summary anchor changed'
-}
-$text = $text.Replace($summaryAnchor, $summaryReplacement)
+$text = $text.Insert($loadPipelinesSemi + 1, $summaryProbe.TrimEnd("`r", "`n"))
 
 Write-PatchedText $path $text
 
