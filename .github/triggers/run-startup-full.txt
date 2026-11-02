@@ -1,0 +1,1 @@
+Phase 1 full build trigger after green VFS semantics + golden HostMemory sanity gates.
