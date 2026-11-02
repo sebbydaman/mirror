@@ -1,4 +1,4 @@
-name: NS2 pipeline skip diagnostic
+name: NS2 pipeline and donor diagnostic
 
 on:
   push:
@@ -7,40 +7,133 @@ on:
     paths:
       - '.github/workflows/ns2-pipeline-skip-diagnostic.yml'
       - '.github/frontier/**'
+      - '.github/scripts/**'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ns2-pipeline-diagnostic-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  inspect-skip-path:
-    runs-on: windows-latest
-    timeout-minutes: 20
+  inspect-assembled-source:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    env:
+      EDEN_SKIP_POST_BUILD31_FRONTIER: '1'
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout build automation
+        uses: actions/checkout@v5
         with:
-          fetch-depth: 0
+          path: automation
+          fetch-depth: 1
 
-      - name: Apply final performance stack
-        shell: pwsh
-        run: ./.github/frontier/apply-final-performance-stack.ps1
+      - name: Checkout pinned Eglantine NS2 source
+        uses: actions/checkout@v5
+        with:
+          repository: Djihads80/Eglantine
+          ref: f362528c0447c491bfe00c0bdd5d8c245396a24c
+          path: eden
+          fetch-depth: 1
 
-      - name: Dump async translation and draw-skip context
+      - name: Apply validated base NS2 stack
         shell: pwsh
+        working-directory: eden
         run: |
-          $roots = @('src/video_core')
-          $patterns = @('CanSkipDraw','reuse_rejects','ASYNC','TRANSLATION','wait budget','wait_budget')
-          foreach ($p in $patterns) {
-            Write-Host "===== $p ====="
-            Get-ChildItem $roots -Recurse -File -Include *.cpp,*.h,*.hpp |
-              Select-String -Pattern $p -Context 12,24 |
-              ForEach-Object {
-                Write-Host ("{0}:{1}" -f $_.Path,$_.LineNumber)
-                Write-Host $_.Context.PreContext
-                Write-Host $_.Line
-                Write-Host $_.Context.PostContext
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-integration.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-positive-shader-cache.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-bananza-generic-overlap.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-draw-state-cache.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-nso-loader.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-nx2-memory-layout.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-bananza-post-menu-gpu.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-late-runtime.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-handheld-mode.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-late-stability.ps1"
+
+      - name: Apply exact final performance stack
+        shell: pwsh
+        working-directory: eden
+        run: |
+          & "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-final-performance-stack.ps1"
+          if ($LASTEXITCODE -ne 0) { throw 'Final performance stack failed to apply' }
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'Combined stack failed git diff --check' }
+
+      - name: Inspect exact assembled Pokopia source
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $PWD 'pokopia-donor-diagnostic.txt'
+          if (Test-Path $out) { Remove-Item $out }
+          function Emit([string]$text = '') {
+            $text | Tee-Object -FilePath $out -Append
+          }
+          function Scan([string]$title, [string[]]$patterns, [string[]]$roots) {
+            Emit "`n===== $title ====="
+            foreach ($pattern in $patterns) {
+              Emit "--- pattern: $pattern ---"
+              $matches = Get-ChildItem $roots -Recurse -File -Include *.cpp,*.h,*.hpp,*.inl |
+                Select-String -Pattern $pattern -Context 8,18
+              if (-not $matches) {
+                Emit '<no matches>'
+                continue
               }
+              foreach ($m in $matches) {
+                Emit ("{0}:{1}" -f $m.Path,$m.LineNumber)
+                foreach ($line in $m.Context.PreContext) { Emit $line }
+                Emit $m.Line
+                foreach ($line in $m.Context.PostContext) { Emit $line }
+              }
+            }
           }
 
-      - name: Confirm protected refs unchanged
+          Emit "Assembled source commit base: f362528c0447c491bfe00c0bdd5d8c245396a24c"
+          Emit "Automation commit: $env:GITHUB_SHA"
+          Emit "Worktree status:"
+          (git status --short) | ForEach-Object { Emit $_ }
+
+          Scan 'Async translation / draw-skip policy' @(
+            'CanSkipDraw', 'WaitForGraphicsTranslation', 'QueueGraphicsTranslation',
+            'translation_wait_budget', 'EDEN_NX2_TRANSLATION_WORKERS', 'zeta_enable'
+          ) @('src/video_core')
+
+          Scan 'Native task-mesh / opcode 0x927 / stage buffers' @(
+            '0x927', 'ISBEWR', 'Task', 'Mesh', 'stage_buffer', 'StageBuffer', 'task shader', 'mesh shader'
+          ) @('src/shader_recompiler','src/video_core')
+
+          Scan 'Selevet command batching / queued acquire overlap' @(
+            'EDEN_NX2_CMD_BATCH', 'BeginDownloadBatch', 'EndDownloadBatch',
+            'EDEN_NX2_ACQUIRE_QUEUED', 'NoteQueuedRelease', 'QMD_ACQUIRE_SKIP'
+          ) @('src/video_core')
+
+          Scan 'Submission thresholds / early submit policy' @(
+            '4096', 'submit_threshold', 'submission_threshold', 'draw_threshold',
+            'num_draws', 'draw_counter', 'FlushCommands'
+          ) @('src/video_core/renderer_vulkan','src/video_core')
+
+          Scan 'Shader capture / reuse / state snapshots' @(
+            'MaxVariants', 'Detach(', 'SnapshotSizeBytes', 'NativeInstructionReader',
+            'LoweredNative', 'ReadBlockUnsafe', 'reuse_rejects'
+          ) @('src/video_core','src/shader_recompiler')
+
+          Write-Host "Diagnostic written to $out"
+
+      - name: Upload assembled-source diagnostic
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pokopia-donor-diagnostic-${{ github.sha }}
+          path: eden/pokopia-donor-diagnostic.txt
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Confirm protected refs untouched
         shell: pwsh
+        working-directory: eden
         run: |
-          git status --short
-          Write-Host "Diagnostic only: no source commit or build is produced by this workflow."
+          Write-Host 'Diagnostic only: no source branch, golden commit, or release is modified.'
