@@ -121,7 +121,7 @@ Require-Text $bufferCache 'Tegra::Nx2MarkGpuWritten(device_addr, size);' 'PR52 s
 Require-Text $nvdrv 'Tegra::Nx2ClearGpuWrittenPages();' 'PR52 per-session GPU-write reset'
 Require-Text $dmaHeader 'std::vector<CommandHeader> submitted_words;' 'PR28 submitted pushbuffer snapshot storage'
 Require-Text $nvhostGpu 'EDEN_NX2_PB_SNAPSHOT' 'PR28 submission snapshot capture'
-Require-Text $dmaPusher 'const bool gpu_written = FlushGpuWrittenCommands' 'combined PR52/PR28 command coherency path'
+Require-Text $dmaPusher 'const bool gpu_written = has_copy || FlushGpuWrittenCommands' 'combined PR52/PR28 command coherency path'
 Require-Text $dmaPusher 'IsMemoryDirty(address, size, VideoCommon::CacheType::BufferCache)' 'GPU-written command freshness check'
 Require-Text $ampere 'native zero-product carry add source' 'broader 0x224 IMAD carry lowering'
 Require-Text $ampere 'case 0x234: { // HSETP2 register form' '0x234 HSETP2 register lowering'

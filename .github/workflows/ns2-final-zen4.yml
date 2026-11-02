@@ -5,8 +5,11 @@ on:
   push:
     branches:
       - ns2-pokopia-final-perf
+      - ns2-pokopia-startup-fast-win32
     paths:
       - '.github/triggers/run-final-zen4.txt'
+      - '.github/frontier/build142-runtime.patch'
+      - '.github/frontier/apply-build142-runtime.ps1'
 
 permissions:
   contents: read
@@ -181,6 +184,10 @@ jobs:
           texture caches, readback-state inheritance, memory-range notification, pushbuffer
           hardening, bounded pipeline-worker tuning, and loose-RomFS startup memoization.
           The DMA increasing-run routing cache is telemetry-independent in this final stack.
+          Build142 additions: buffer guards, ASTC submit (EDEN_NX2_ASTC_FLUSH=0 to wait),
+          old-costly texture eviction (EDEN_NX2_TC_OLD_AGE=0 to disable).
+          Experimental command-list copies are OFF unless EDEN_NX2_COMMAND_LIST_COPIES=1.
+          Keep the same save/settings and compare startup, heavy-scene frametimes and rendering.
           EOF
 
           windeployqt6 --no-translations --no-compiler-runtime --no-opengl-sw \

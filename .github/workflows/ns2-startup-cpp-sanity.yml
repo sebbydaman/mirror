@@ -106,10 +106,10 @@ jobs:
         run: |
           set -euo pipefail
           ninja -C build-startup-sanity -t targets all > startup-sanity-targets.txt
-          mapfile -t targets < <(sed 's/: .*//' startup-sanity-targets.txt | grep -E '(^|/)vfs_real\.cpp\.(o|obj)$|(^|/)fsmitm_romfsbuild\.cpp\.(o|obj)$|(^|/)host_memory\.cpp\.(o|obj)$|(^|/)vk_pipeline_cache\.cpp\.(o|obj)$' || true)
+          mapfile -t targets < <(sed 's/: .*//' startup-sanity-targets.txt | grep -E '(^|/)vfs_real\.cpp\.(o|obj)$|(^|/)fsmitm_romfsbuild\.cpp\.(o|obj)$|(^|/)host_memory\.cpp\.(o|obj)$|(^|/)(vk_pipeline_cache|vk_rasterizer|vk_compute_pass|gpu_split|dma_pusher|gl_rasterizer)\.cpp\.(o|obj)$' || true)
           printf 'Matched startup/golden-memory/pipeline-cache sanity targets:\n%s\n' "${targets[*]:-<none>}"
-          if [ "${#targets[@]}" -ne 4 ]; then
-            echo "Expected exactly four startup/golden-memory/pipeline-cache translation-unit targets, found ${#targets[@]}" >&2
+          if [ "${#targets[@]}" -ne 9 ]; then
+            echo "Expected exactly nine startup/golden-memory/pipeline-cache translation-unit targets, found ${#targets[@]}" >&2
             grep -E 'vfs_real|fsmitm_romfsbuild|host_memory|vk_pipeline_cache' startup-sanity-targets.txt || true
             exit 1
           fi

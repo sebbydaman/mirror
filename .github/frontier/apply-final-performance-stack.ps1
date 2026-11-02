@@ -87,6 +87,8 @@ try {
     Write-Host '[FINAL PERF] Applying optional golden HostMemory fallback toggle'
     & $goldenHostmem
 
+    & (Join-Path $root 'apply-build142-runtime.ps1')
+
     git diff --check
     if ($LASTEXITCODE -ne 0) {
         throw 'Final NS2 performance stack introduced diff/whitespace errors'

@@ -1,0 +1,897 @@
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -162,6 +162,7 @@
+ 
+ template <class P>
+ void BufferCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t size) {
++    Nx2InvalidateListCopies();
+     if constexpr (requires { runtime.BindMultiRangeStorageBuffer(u64{}, bool{}); }) {
+         virtual_ranges.Unmap(as_id, gpu_addr, size);
+     }
+@@ -169,6 +170,7 @@
+ 
+ template <class P>
+ void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size) {
++    Nx2NoteListHostWrite(device_addr, size);
+     if (IsRegionGpuModified(device_addr, size)) {
+         ClearDownload(device_addr, size);
+         gpu_modified_ranges.Subtract(device_addr, size);
+@@ -189,6 +191,7 @@
+         return;
+     }
+ 
++    Nx2NoteListHostWrite(device_addr, size);
+     tmp_buffer.resize_destructive(size);
+     device_memory.ReadBlockUnsafe(device_addr, tmp_buffer.data(), size);
+ 
+@@ -318,6 +321,7 @@
+     const auto& copy = copies[0];
+     src_buffer.MarkUsage(copy.src_offset, copy.size);
+     dest_buffer.MarkUsage(copy.dst_offset, copy.size);
++    Nx2NoteListWrite(buffer_b, *cpu_dest_address, amount);
+     runtime.CopyBuffer(dest_buffer, src_buffer, copies, true);
+     if (has_new_downloads) {
+         memory_tracker.MarkRegionAsGpuModified(*cpu_dest_address, amount);
+@@ -351,6 +355,7 @@
+     const BufferId buffer = FindBuffer(*cpu_dst_address, static_cast<u32>(size), false);
+     Buffer& dest_buffer = slot_buffers[buffer];
+     const u32 offset = dest_buffer.Offset(*cpu_dst_address);
++    Nx2NoteListWrite(buffer, *cpu_dst_address, size);
+     runtime.ClearBuffer(dest_buffer, offset, size, value);
+     dest_buffer.MarkUsage(offset, size);
+     return true;
+@@ -402,6 +407,10 @@
+ void BufferCache<P>::BindGraphicsUniformBuffer(size_t stage, u32 index, GPUVAddr gpu_addr,
+                                                u32 size) {
+     const std::optional<DAddr> device_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
++    if (!device_addr) {
++        channel_state->uniform_buffers[stage][index] = NULL_BINDING;
++        return;
++    }
+     const Binding binding{
+         .device_addr = *device_addr,
+         .size = size,
+@@ -412,7 +421,11 @@
+ 
+ template <class P>
+ void BufferCache<P>::DisableGraphicsUniformBuffer(size_t stage, u32 index) {
+-    channel_state->uniform_buffers[stage][index] = NULL_BINDING;
++    auto& current = channel_state->uniform_buffers[stage][index];
++    if (current.device_addr == 0 && current.size == 0 && !current.buffer_id) {
++        return;
++    }
++    current = NULL_BINDING;
+ }
+ 
+ template <class P>
+@@ -1553,6 +1566,9 @@
+ 
+ template <class P>
+ void BufferCache<P>::UpdateUniformBuffers(size_t stage) {
++    if (channel_state->enabled_uniform_buffer_masks[stage] == 0) {
++        return;
++    }
+     ForEachEnabledBit(channel_state->enabled_uniform_buffer_masks[stage], [&](u32 index) {
+         Binding& binding = channel_state->uniform_buffers[stage][index];
+         if (binding.buffer_id) {
+@@ -1570,6 +1586,9 @@
+ 
+ template <class P>
+ void BufferCache<P>::UpdateStorageBuffers(size_t stage) {
++    if (channel_state->enabled_storage_buffers[stage] == 0) {
++        return;
++    }
+     ForEachEnabledBit(channel_state->enabled_storage_buffers[stage], [&](u32 index) {
+         // Resolve buffer
+         Binding& binding = channel_state->storage_buffers[stage][index];
+@@ -1582,6 +1601,9 @@
+ 
+ template <class P>
+ void BufferCache<P>::UpdateTextureBuffers(size_t stage) {
++    if (channel_state->enabled_texture_buffers[stage] == 0) {
++        return;
++    }
+     ForEachEnabledBit(channel_state->enabled_texture_buffers[stage], [&](u32 index) {
+         Binding& binding = channel_state->texture_buffers[stage][index];
+         binding.buffer_id = FindBuffer(binding.device_addr, binding.size, false);
+@@ -1667,16 +1689,206 @@
+     QueueDownload(device_addr, size);
+     if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
+         Tegra::Nx2MarkGpuWritten(device_addr, size);
++        Nx2NoteListWrite(buffer_id, device_addr, size);
++    }
++}
++
++template <class P>
++void BufferCache<P>::Nx2InvalidateListCopies() {
++    if constexpr (!IS_OPENGL) {
++        std::scoped_lock lock{nx2_list_mutex};
++        for (auto& [page, entry] : nx2_list_pages) {
++            if (entry.copy) {
++                nx2_retired_list_copies.emplace_back(entry.copy_tick, std::move(*entry.copy));
++            }
++        }
++        nx2_list_pages.clear();
++        nx2_list_copy_requests.clear();
++    }
++}
++
++template <class P>
++void BufferCache<P>::Nx2NoteListWrite(BufferId buffer_id, DAddr device_addr, u64 size) {
++    if constexpr (!IS_OPENGL) {
++        if (size == 0 || !Tegra::g_nx2_has_command_list_pages.load(std::memory_order_relaxed)) {
++            return;
++        }
++        constexpr u64 page_bits = Tegra::Nx2WrittenPageBits;
++        const u64 last = (std::min<u64>)((device_addr + size - 1) >> page_bits,
++                                         Tegra::g_nx2_command_list_pages.size() * 64 - 1);
++        for (u64 page = device_addr >> page_bits; page <= last;) {
++            // Storage buffers can be large: skip 64 pages at a time where none is a list page.
++            const u64 word =
++                Tegra::g_nx2_command_list_pages[page / 64].load(std::memory_order_relaxed) >>
++                (page % 64);
++            if (word == 0) {
++                page = (page / 64 + 1) * 64;
++                continue;
++            }
++            if (word & 1) {
++                const DAddr page_addr = page << page_bits;
++                {
++                    std::scoped_lock lock{nx2_list_mutex};
++                    if (!nx2_list_pages.contains(page_addr) && nx2_list_pages.size() >= 1024) {
++                        ++page;
++                        continue;
++                    }
++                    Nx2ListPage& entry = nx2_list_pages[page_addr];
++                    ++entry.writes;
++                    if (!nx2_collect_list_copies && !entry.draw_written) {
++                        entry.draw_written = true;
++                        LOG_INFO(HW_GPU, "Command list page {:#x} is written by draws too: its "
++                                         "lists drain the split",
++                                 page_addr);
++                    }
++                }
++                if (nx2_collect_list_copies) {
++                    nx2_list_copy_requests.emplace_back(buffer_id, page_addr);
++                }
++            }
++            ++page;
++        }
++    }
++}
++
++template <class P>
++bool BufferCache<P>::Nx2CopyListPages(u64 tick) {
++    if constexpr (IS_OPENGL) {
++        return false;
++    } else {
++        if (nx2_list_copy_requests.empty()) {
++            return false;
++        }
++        std::ranges::sort(nx2_list_copy_requests, {}, &std::pair<BufferId, DAddr>::second);
++        constexpr DAddr page_size = DAddr{1} << Tegra::Nx2WrittenPageBits;
++        bool recorded = false;
++        for (size_t i = 0; i < nx2_list_copy_requests.size(); ++i) {
++            const auto [buffer_id, page] = nx2_list_copy_requests[i];
++            if (i + 1 < nx2_list_copy_requests.size() &&
++                nx2_list_copy_requests[i + 1].second == page) {
++                continue;
++            }
++            Buffer& buffer = slot_buffers[buffer_id];
++            const DAddr begin = (std::max<DAddr>)(page, buffer.CpuAddr());
++            const DAddr end =
++                (std::min<DAddr>)(page + page_size, buffer.CpuAddr() + buffer.SizeBytes());
++            if (begin >= end) {
++                continue;
++            }
++            Nx2Staging staging = runtime.DownloadStagingBuffer(page_size, true);
++            const BufferCopy copy{
++                .src_offset = buffer.Offset(begin),
++                .dst_offset = staging.offset + (begin - page),
++                .size = end - begin,
++            };
++            buffer.MarkUsage(copy.src_offset, copy.size);
++            runtime.CopyBuffer(staging.buffer, buffer, std::span{&copy, 1}, true);
++            recorded = true;
++            std::scoped_lock lock{nx2_list_mutex};
++            Nx2ListPage& entry = nx2_list_pages[page];
++            if (entry.copy) {
++                nx2_retired_list_copies.emplace_back(entry.copy_tick, std::move(*entry.copy));
++            }
++            entry.copy = staging;
++            entry.copy_writes = entry.writes;
++            entry.copy_tick = tick;
++            entry.copy_begin = static_cast<u32>(begin - page);
++            entry.copy_end = static_cast<u32>(end - page);
++        }
++        nx2_list_copy_requests.clear();
++        std::erase_if(nx2_retired_list_copies, [this](auto& retired) {
++            if (!runtime.IsFree(retired.first)) {
++                return false;
++            }
++            runtime.FreeDeferredStagingBuffer(retired.second);
++            return true;
++        });
++        return recorded;
++    }
++}
++
++template <class P>
++auto BufferCache<P>::Nx2ReadListCopy(DAddr device_addr, std::span<u8> out) -> Nx2ListRead {
++    if constexpr (IS_OPENGL) {
++        return Nx2ListRead::Unknown;
++    } else {
++        constexpr DAddr page_size = DAddr{1} << Tegra::Nx2WrittenPageBits;
++        const DAddr page = device_addr & ~(page_size - 1);
++        const u64 offset = device_addr - page;
++        if (offset + out.size() > page_size) {
++            return Nx2ListRead::Unknown;
++        }
++        const auto current = [&](const Nx2ListPage& entry) {
++            return entry.copy && !entry.draw_written && entry.copy_writes == entry.writes &&
++                   offset >= entry.copy_begin && offset + out.size() <= entry.copy_end;
++        };
++        u64 tick{};
++        u64 writes{};
++        {
++            std::scoped_lock lock{nx2_list_mutex};
++            const auto it = nx2_list_pages.find(page);
++            if (it == nx2_list_pages.end()) {
++                return Nx2ListRead::Unknown;
++            }
++            const Nx2ListPage& entry = it->second;
++            if (!current(entry)) {
++                return Nx2ListRead::Unknown;
++            }
++            // The lists after the first of a batch find the copy done: read it at once.
++            if (runtime.IsFree(entry.copy_tick)) {
++                std::memcpy(out.data(), entry.copy->mapped_span.data() + offset, out.size());
++                return Nx2ListRead::Copied;
++            }
++            tick = entry.copy_tick;
++            writes = entry.copy_writes;
++        }
++        // Submitted with the work that wrote the page (Nx2CopyListPages's caller flushes).
++        runtime.WaitSubmittedTick(tick);
++        std::scoped_lock lock{nx2_list_mutex};
++        const auto it = nx2_list_pages.find(page);
++        if (it == nx2_list_pages.end() || !current(it->second) || it->second.copy_tick != tick ||
++            it->second.copy_writes != writes) {
++            return Nx2ListRead::Unknown;
++        }
++        std::memcpy(out.data(), it->second.copy->mapped_span.data() + offset, out.size());
++        return Nx2ListRead::Copied;
++    }
++}
++
++template <class P>
++void BufferCache<P>::Nx2NoteListHostWrite(DAddr device_addr, u64 size) {
++    if constexpr (!IS_OPENGL) {
++        if (size == 0 || !Tegra::g_nx2_has_command_list_pages.load(std::memory_order_relaxed)) {
++            return;
++        }
++        constexpr u64 page_bits = Tegra::Nx2WrittenPageBits;
++        const u64 last = (std::min<u64>)((device_addr + size - 1) >> page_bits,
++                                         Tegra::g_nx2_command_list_pages.size() * 64 - 1);
++        for (u64 page = device_addr >> page_bits; page <= last; ++page) {
++            if (!((Tegra::g_nx2_command_list_pages[page / 64].load(std::memory_order_relaxed) >>
++                   (page % 64)) &
++                  1)) {
++                continue;
++            }
++            std::scoped_lock lock{nx2_list_mutex};
++            const auto it = nx2_list_pages.find(page << page_bits);
++            if (it == nx2_list_pages.end()) {
++                continue;
++            }
++            Nx2ListPage& entry = it->second;
++            ++entry.writes;
++        }
+     }
+ }
+ 
+ template <class P>
+ BufferId BufferCache<P>::FindBuffer
+ (DAddr device_addr, u32 size, bool sparse_compatible) {
+-    if (device_addr == 0) {
++    const u64 page = device_addr >> CACHING_PAGEBITS;
++    if (device_addr == 0 || page >= page_table.size() ||
++        size > (u64{1} << 36) - device_addr) {
+         return NULL_BUFFER_ID;
+     }
+-    const u64 page = device_addr >> CACHING_PAGEBITS;
+     const BufferId buffer_id = page_table[page];
+     if (buffer_id) {
+         Buffer& buffer = slot_buffers[buffer_id];
+@@ -2198,6 +2410,7 @@
+ 
+ template <class P>
+ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
++    Nx2InvalidateListCopies();
+     read_trapped_ranges.Subtract(slot_buffers[buffer_id].CpuAddr(),
+                                  slot_buffers[buffer_id].SizeBytes());
+     if constexpr (requires { runtime.OnBufferDeleted(slot_buffers[buffer_id]); }) {
+--- a/src/video_core/buffer_cache/buffer_cache_base.h
++++ b/src/video_core/buffer_cache/buffer_cache_base.h
+@@ -14,7 +14,9 @@
+ #include <memory>
+ #include <mutex>
+ #include <numeric>
++#include <optional>
+ #include <span>
++#include <unordered_map>
+ #include <vector>
+ 
+ #include "common/container/unordered_map.h"
+@@ -327,6 +329,23 @@
+ 
+     bool DMAClear(GPUVAddr src_address, u64 amount, u32 value);
+ 
++    /// Switch 2 GPU-written command lists (nx2.h, g_nx2_command_list_pages). While collecting (a
++    /// compute dispatch or a DMA copy being recorded), writes to command list pages are noted;
++    /// Nx2CopyListPages then records copies of those pages into host memory after the work.
++    void Nx2CollectListCopies(bool collect) {
++        nx2_collect_list_copies = collect;
++        if (!collect) {
++            nx2_list_copy_requests.clear();
++        }
++    }
++    /// True when it recorded copies, which the GPU completes at `tick` (the caller submits).
++    bool Nx2CopyListPages(u64 tick);
++    enum class Nx2ListRead { Unknown, Copied };
++    /// Front thread: read a current completed copy, otherwise use the existing flush path.
++    Nx2ListRead Nx2ReadListCopy(DAddr device_addr, std::span<u8> out);
++    /// CPU and inline writes invalidate snapshots.
++    void Nx2NoteListHostWrite(DAddr device_addr, u64 size);
++
+     /// Return true when a CPU region is modified from the GPU
+     [[nodiscard]] bool IsRegionGpuModified(DAddr addr, size_t size);
+ 
+@@ -449,6 +468,11 @@
+     void UpdateComputeTextureBuffers();
+ 
+     void MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u32 size, bool needs_sync = false);
++
++    /// Counts a GPU write to the command list pages in the range (invalidating their copies) and,
++    /// while collecting, asks for new copies.
++    void Nx2NoteListWrite(BufferId buffer_id, DAddr device_addr, u64 size);
++    void Nx2InvalidateListCopies();
+ 
+     [[nodiscard]] BufferId FindBuffer(DAddr device_addr, u32 size, bool sparse_compatible);
+ 
+@@ -647,6 +671,27 @@
+     // Covers the device address space (MaxwellDeviceTraits::device_virtual_bits).
+     std::array<BufferId, ((1ULL << 36) >> CACHING_PAGEBITS)> page_table;
+     Common::ScratchBuffer<u8> tmp_buffer;
++
++    /// A command list page (Nx2CopyListPages): the GPU writes noted to it and the last copy.
++    using Nx2Staging = decltype(std::declval<Runtime&>().DownloadStagingBuffer(size_t{}, true));
++    struct Nx2ListPage {
++        u64 writes{};      ///< GPU writes noted to the page
++        u64 copy_writes{}; ///< `writes` when the copy was made: the copy is current while equal
++        u64 copy_tick{};   ///< GPU tick that completes the copy
++        u32 copy_begin{};  ///< Bytes of the page the copy holds (a buffer can end inside it)
++        u32 copy_end{};
++        /// Written outside a compute dispatch or a DMA copy (a draw's storage writes) at least
++        /// once: the front can't tell from what it sent whether such a write is still queued, so
++        /// the page's lists always drain the split instead of reading a copy.
++        bool draw_written{};
++        std::optional<Nx2Staging> copy;
++    };
++    std::mutex nx2_list_mutex; ///< nx2_list_pages: the split's front reads the copies
++    std::unordered_map<DAddr, Nx2ListPage> nx2_list_pages;
++    /// Copies replaced while the GPU may still write them: freed once it is past their tick.
++    std::vector<std::pair<u64, Nx2Staging>> nx2_retired_list_copies;
++    boost::container::small_vector<std::pair<BufferId, DAddr>, 8> nx2_list_copy_requests;
++    bool nx2_collect_list_copies{};
+ };
+ 
+ } // namespace VideoCommon
+--- a/src/video_core/dma_pusher.cpp
++++ b/src/video_core/dma_pusher.cpp
+@@ -9,6 +9,7 @@
+ #include <cstdlib>
+ #include <cstdio>
+ 
++#include "common/scope_exit.h"
+ #include "common/settings.h"
+ #include "core/core.h"
+ #include "core/memory.h"
+@@ -188,7 +189,8 @@
+         // A resumed entry is read again: the words after the acquire may be new by now.
+         // A safe read flushes the caches, which belong to the split's back thread while it runs
+         // (the split only starts with unsafe reads; the settings can change mid-game).
+-        const bool gpu_written = FlushGpuWrittenCommands(
++        const bool has_copy = ReadGpuWrittenCommands(dma_state.dma_get, header.size);
++        const bool gpu_written = has_copy || FlushGpuWrittenCommands(
+             dma_state.dma_get, size_t{header.size} * sizeof(CommandHeader));
+         const bool has_snapshot =
+             command_resume_offset == 0 && !gpu_written &&
+@@ -197,7 +199,15 @@
+                 command_list.submitted_words.size();
+         const bool use_safe = !VideoCommon::GpuSplit::Get().Active() &&
+                               (Settings::IsDMALevelDefault() ? Settings::IsGPULevelHigh() : Settings::IsDMALevelSafe());
+-        if (has_snapshot) {
++        if (has_copy) {
++            pb_cached_ptr = nullptr;
++            pb_cached_size = 0;
++            pb_cached_mapping_generation = ~u64{0};
++            const std::span<const CommandHeader> commands{command_headers.data(), header.size};
++            RecordParsedEntry(header, commands);
++            command_resume_offset +=
++                ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
++        } else if (has_snapshot) {
+             const std::span<const CommandHeader> submitted{command_list.submitted_words};
+             const auto commands = submitted.subspan(
+                 command_list.submitted_offsets[dma_pushbuffer_subindex], header.size);
+@@ -347,6 +357,15 @@
+                 const size_t end_index = index + available_words;
+                 auto& run_split = VideoCommon::GpuSplit::Get();
+                 const bool run_split_active = run_split.Active();
++                const auto writer_type = subchannel_type[dma_state.subchannel];
++                SCOPE_EXIT {
++                    if (run_split_active &&
++                        (writer_type == Engines::EngineTypes::KeplerCompute ||
++                         writer_type == Engines::EngineTypes::MaxwellDMA ||
++                         writer_type == Engines::EngineTypes::Maxwell3D)) {
++                        run_split.NoteWriter();
++                    }
++                };
+ 
+                 Engines::EngineInterface* run_split_engine = nullptr;
+                 Engines::Maxwell3D* front_run_maxwell = nullptr;
+@@ -566,6 +585,16 @@
+             ReportUnboundSubchannel();
+             return;
+         }
++        // Include graphics work so a first draw-written page cannot use an older copy.
++        const auto engine_type = subchannel_type[dma_state.subchannel];
++        const bool writer = engine_type == Engines::EngineTypes::KeplerCompute ||
++                            engine_type == Engines::EngineTypes::MaxwellDMA ||
++                            engine_type == Engines::EngineTypes::Maxwell3D;
++        SCOPE_EXIT {
++            if (writer) {
++                split.NoteWriter();
++            }
++        };
+         if (split.Active()) {
+             const GPUVAddr segment = dma_state.dma_get + dma_state.dma_word_offset;
+             if (split.FrontMacros()) {
+@@ -616,6 +645,16 @@
+             ReportUnboundSubchannel();
+             return;
+         }
++        // Include graphics work so a first draw-written page cannot use an older copy.
++        const auto engine_type = subchannel_type[dma_state.subchannel];
++        const bool writer = engine_type == Engines::EngineTypes::KeplerCompute ||
++                            engine_type == Engines::EngineTypes::MaxwellDMA ||
++                            engine_type == Engines::EngineTypes::Maxwell3D;
++        SCOPE_EXIT {
++            if (writer) {
++                split.NoteWriter();
++            }
++        };
+         if (split.Active()) {
+             const GPUVAddr segment = dma_state.dma_get + dma_state.dma_word_offset;
+             if (split.FrontMacros()) {
+@@ -645,6 +684,64 @@
+         subchannel->current_dma_segment = dma_state.dma_get + dma_state.dma_word_offset;
+         subchannel->CallMultiMethod(system, dma_state.method, base_start, num_methods, dma_state.method_count);
+     }
++}
++
++bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count) {
++    // This opt-in path reuses only completed copies; unknown pages use the existing
++    // dirty-guarded flush, without claiming the remainder of a page is synchronized.
++    static const bool enabled = [] {
++        const char* value = std::getenv("EDEN_NX2_COMMAND_LIST_COPIES");
++        return value != nullptr && value[0] == '1';
++    }();
++    if (!enabled || !VideoCommon::GpuSplit::Get().Active()) {
++        return false;
++    }
++    const u64 generation = memory_manager.MappingGeneration();
++    if (generation & 1) {
++        return false;
++    }
++    if (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) || count == 0 ||
++        rasterizer == nullptr) {
++        return false;
++    }
++    const GPUVAddr end = address + u64{count} * sizeof(u32);
++    bool written = false;
++    for (GPUVAddr page = address & ~GPUVAddr{0xfff}; page < end; page += 0x1000) {
++        if (const auto device = memory_manager.GpuToCpuAddress(page);
++            device && Tegra::Nx2IsGpuWritten(*device)) {
++            Tegra::Nx2MarkCommandListPage(*device);
++            written = true;
++        }
++    }
++    if (!written) {
++        return false;
++    }
++    if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
++        split.WaitForWriters();
++    }
++    using GpuWrittenList = VideoCore::RasterizerInterface::GpuWrittenList;
++    command_headers.resize_destructive(count);
++    u8* const out = reinterpret_cast<u8*>(command_headers.data());
++    for (GPUVAddr chunk = address; chunk < end;) {
++        const GPUVAddr chunk_end = (std::min)(end, (chunk & ~GPUVAddr{0xfff}) + 0x1000);
++        const std::span<u8> part{out + (chunk - address), static_cast<size_t>(chunk_end - chunk)};
++        const auto device = memory_manager.GpuToCpuAddress(chunk);
++        if (!device) {
++            return false;
++        }
++        GpuWrittenList where = GpuWrittenList::Synced;
++        if (Tegra::Nx2IsGpuWritten(*device)) {
++            where = rasterizer->ReadGpuWrittenCommandList(*device, part);
++        }
++        if (where == GpuWrittenList::Unknown) {
++            return false;
++        }
++        if (where == GpuWrittenList::Synced) {
++            memory_manager.ReadBlockUnsafe(chunk, part.data(), part.size());
++        }
++        chunk = chunk_end;
++    }
++    return memory_manager.MappingGeneration() == generation;
+ }
+ 
+ bool DmaPusher::FlushGpuWrittenCommands(GPUVAddr address, size_t size) {
+--- a/src/video_core/dma_pusher.h
++++ b/src/video_core/dma_pusher.h
+@@ -185,7 +185,8 @@
+     void DumpCurrentEntry(const char* reason);
+     void CheckSubmitHash(const CommandListHeader& header, u64 submit_hash);
+     void RecordParsedEntry(const CommandListHeader& header, std::span<const CommandHeader> commands);
+-    [[nodiscard]] bool FlushGpuWrittenCommands(GPUVAddr address, size_t size);
++    bool ReadGpuWrittenCommands(GPUVAddr address, u32 count);
++    bool FlushGpuWrittenCommands(GPUVAddr address, size_t size);
+ 
+ private:
+ 
+--- a/src/video_core/gpu_split.cpp
++++ b/src/video_core/gpu_split.cpp
+@@ -138,6 +138,8 @@
+     // never ran, it waited on its syncpoint forever), and the engines it held were freed.
+     ring.reset();
+     write_position = 0;
++    last_writer_position = 0;
++    wait_target.store(~u64{0}, std::memory_order_relaxed);
+     published_local = 0;
+     consumed_cache = 0;
+     publish_every = PublishEvery;
+@@ -206,6 +208,28 @@
+         consumed_cache = consumed.load(std::memory_order_acquire);
+         if (consumed_cache == write_position) {
+             publish_every = 8;
++            return;
++        }
++        if (spins < 16384) {
++            Pause();
++        } else {
++            std::this_thread::yield();
++        }
++    }
++}
++
++void GpuSplit::WaitForWriters() {
++    const u64 target = std::min(last_writer_position, write_position);
++    consumed_cache = consumed.load(std::memory_order_acquire);
++    if (consumed_cache >= target) {
++        return;
++    }
++    wait_target.store(target, std::memory_order_seq_cst);
++    Publish();
++    for (u32 spins = 0;; ++spins) {
++        consumed_cache = consumed.load(std::memory_order_acquire);
++        if (consumed_cache >= target) {
++            wait_target.store(~u64{0}, std::memory_order_relaxed);
+             return;
+         }
+         if (spins < 16384) {
+@@ -347,8 +371,11 @@
+             const size_t index = read_position & RingMask;
+             const size_t size = Execute(&ring[index]);
+             read_position += size != 0 ? size : RingWords - index;
+-            // Hand ring space back now and then while working through a long batch.
+-            if (read_position - last_store >= 4096 && read_position != available) {
++            // Hand ring space back now and then while working through a long batch, and at once
++            // when the front waits for this position (WaitForWriters).
++            if ((read_position - last_store >= 4096 ||
++                 read_position >= wait_target.load(std::memory_order_relaxed)) &&
++                read_position != available) {
+                 consumed.store(read_position, std::memory_order_release);
+                 last_store = read_position;
+             }
+--- a/src/video_core/gpu_split.h
++++ b/src/video_core/gpu_split.h
+@@ -100,6 +100,13 @@
+     /// Waits until the back executed everything sent so far.
+     void Drain();
+ 
++    /// Work that can write command memory was just sent.
++    void NoteWriter() {
++        last_writer_position = write_position;
++    }
++    /// Waits until the back executed the last possible command-memory writer.
++    void WaitForWriters();
++
+ private:
+     enum class Kind : u64 {
+         Wrap,   ///< The rest of the ring is unused: continue at its start
+@@ -156,6 +163,7 @@
+ 
+     // Front side.
+     u64 write_position{};
++    u64 last_writer_position{};
+     u64 published_local{};
+     u64 consumed_cache{};
+     /// Words between publishes: small right after a drain, while the back has nothing to do.
+@@ -169,6 +177,7 @@
+ 
+     alignas(128) std::atomic<u64> published{};
+     alignas(128) std::atomic<u64> consumed{};
++    alignas(128) std::atomic<u64> wait_target{~u64{0}};
+     alignas(128) std::atomic<bool> back_waiting{};
+     std::atomic<u32> wake{};
+     std::jthread back_thread;
+--- a/src/video_core/nx2.h
++++ b/src/video_core/nx2.h
+@@ -40,7 +40,37 @@
+         }
+     }
+ }
++// GPU-written device pages the front has read command lists from (same layout as above). The
++// buffer cache copies these pages into host memory right after the compute or copy work that
++// writes them and submits, so the front reads the copy once the GPU is done instead of draining
++// the split and flushing the caches (BufferCache::Nx2ReadListCopy).
++inline std::array<std::atomic<u64>, (u64{1} << (36 - Nx2WrittenPageBits)) / 64> g_nx2_command_list_pages{};
++inline std::atomic<bool> g_nx2_has_command_list_pages{false};
++
++inline void Nx2MarkCommandListPage(u64 device_address) {
++    const u64 page = device_address >> Nx2WrittenPageBits;
++    if (page >= g_nx2_command_list_pages.size() * 64) {
++        return;
++    }
++    auto& word = g_nx2_command_list_pages[page / 64];
++    const u64 bit = u64{1} << (page % 64);
++    if ((word.load(std::memory_order_relaxed) & bit) == 0) {
++        word.fetch_or(bit, std::memory_order_relaxed);
++        g_nx2_has_command_list_pages.store(true, std::memory_order_relaxed);
++    }
++}
++
++[[nodiscard]] inline bool Nx2IsCommandListPage(u64 device_address) {
++    const u64 page = device_address >> Nx2WrittenPageBits;
++    if (page >= g_nx2_command_list_pages.size() * 64) {
++        return false;
++    }
++    return (g_nx2_command_list_pages[page / 64].load(std::memory_order_relaxed) >> (page % 64)) & 1;
++}
++
+ inline void Nx2ClearGpuWrittenPages() {
++    for (auto& word : g_nx2_command_list_pages) word.store(0, std::memory_order_relaxed);
++    g_nx2_has_command_list_pages.store(false, std::memory_order_relaxed);
+     for (auto& word : g_nx2_gpu_written_pages) word.store(0, std::memory_order_relaxed);
+ }
+ [[nodiscard]] inline bool Nx2IsGpuWritten(u64 device_address) {
+--- a/src/video_core/rasterizer_interface.h
++++ b/src/video_core/rasterizer_interface.h
+@@ -93,6 +93,17 @@
+     virtual void FlushRegion(DAddr addr, u64 size,
+                              VideoCommon::CacheType which = VideoCommon::CacheType::All) = 0;
+ 
++    /// Switch 2, from the GPU thread's front: where a GPU-written command list's words are.
++    enum class GpuWrittenList {
++        Unknown, ///< Neither: the caller drains, flushes the page and notes it synced
++        Copied,  ///< `out` (within one 4 KiB page) is filled from the copy made after its writer
++        Synced,  ///< Guest memory holds the page: no GPU work wrote it since it was flushed
++    };
++    virtual GpuWrittenList ReadGpuWrittenCommandList([[maybe_unused]] DAddr addr,
++                                                     [[maybe_unused]] std::span<u8> out) {
++        return GpuWrittenList::Unknown;
++    }
++
+     /// Group buffer-cache FlushRegion downloads so the outermost EndFlushBatch performs one
+     /// host-GPU wait. Default no-ops keep non-Vulkan rasterizers source-compatible.
+     virtual void BeginFlushBatch() {}
+--- a/src/video_core/renderer_vulkan/vk_buffer_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_buffer_cache.cpp
+@@ -430,6 +430,10 @@
+     scheduler.Wait(tick);
+ }
+ 
++void BufferCacheRuntime::WaitSubmittedTick(u64 tick) {
++    scheduler.GetMasterSemaphore().Wait(tick);
++}
++
+ void BufferCacheRuntime::Finish() {
+     scheduler.Finish();
+ }
+--- a/src/video_core/renderer_vulkan/vk_buffer_cache.h
++++ b/src/video_core/renderer_vulkan/vk_buffer_cache.h
+@@ -115,6 +115,9 @@
+     bool IsFree(u64 tick);
+ 
+     void Wait(u64 tick);
++
++    /// Waits for a submitted tick without flushing: safe on threads other than the GPU thread.
++    void WaitSubmittedTick(u64 tick);
+ 
+     void Finish();
+ 
+--- a/src/video_core/renderer_vulkan/vk_compute_pass.cpp
++++ b/src/video_core/renderer_vulkan/vk_compute_pass.cpp
+@@ -743,11 +743,11 @@
+         cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        vk::PIPELINE_STAGE_GRAPHICS_COMPUTE, 0, image_barrier);
+     });
+-    // Each decode ends with the GPU thread waiting for the host GPU to go idle. Measured here
+-    // (count and time per 5 s); EDEN_NX2_ASTC_FLUSH=1 submits without waiting instead.
++    // Each decode ends with a submit to the host GPU. Measured here
++    // (count and time per 5 s); EDEN_NX2_ASTC_FLUSH=0 waits for the host GPU to go idle instead.
+     static const bool flush_only = [] {
+         const char* value = std::getenv("EDEN_NX2_ASTC_FLUSH");
+-        return value != nullptr && value[0] == '1';
++        return value == nullptr || value[0] != '0';
+     }();
+     if (!target.wait) {
+         return;
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -975,6 +975,11 @@
+         return;
+     }
+     std::scoped_lock lock{texture_cache.mutex, buffer_cache.mutex};
++    // Command list pages the dispatch writes are copied for the split's front right after it.
++    buffer_cache.Nx2CollectListCopies(true);
++    SCOPE_EXIT {
++        buffer_cache.Nx2CollectListCopies(false);
++    };
+     if (!pipeline->Configure(*kepler_compute, *gpu_memory, scheduler, buffer_cache,
+                              texture_cache)) {
+         if (kepler_compute->IsNativeMode()) throw Shader::RuntimeError("Native compute resources unavailable");
+@@ -997,6 +1002,7 @@
+             }
+             cmdbuf.DispatchIndirect(indirect_buffer, indirect_offset);
+         });
++        SubmitNx2ListCopies();
+         return;
+     }
+     const std::array<u32, 3> dim{qmd.grid_dim_x, qmd.grid_dim_y, qmd.grid_dim_z};
+@@ -1019,6 +1025,7 @@
+         }
+         cmdbuf.Dispatch(dim[0], dim[1], dim[2]);
+     });
++    SubmitNx2ListCopies();
+ 
+     // Log compute dispatch
+     if (GPU::Logging::IsActive() &&
+@@ -1063,6 +1070,23 @@
+ }
+ 
+ void RasterizerVulkan::FlushAll() {}
++
++void RasterizerVulkan::SubmitNx2ListCopies() {
++    if (buffer_cache.Nx2CopyListPages(scheduler.CurrentTick())) {
++        scheduler.Flush();
++    }
++}
++
++VideoCore::RasterizerInterface::GpuWrittenList RasterizerVulkan::ReadGpuWrittenCommandList(
++    DAddr addr, std::span<u8> out) {
++    // No cache lock: the front only reads the copies, under their own lock.
++    switch (buffer_cache.Nx2ReadListCopy(addr, out)) {
++    case BufferCache::Nx2ListRead::Copied:
++        return GpuWrittenList::Copied;
++    default:
++        return GpuWrittenList::Unknown;
++    }
++}
+ 
+ void RasterizerVulkan::FlushRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
+     if (addr == 0 || size == 0) {
+@@ -1399,6 +1423,8 @@
+     bool uploaded;
+     {
+         std::scoped_lock lock{buffer_cache.mutex};
++        // Guest memory has the words now: a command list copy of the page no longer does.
++        buffer_cache.Nx2NoteListHostWrite(*cpu_addr, copy_size);
+         uploaded = buffer_cache.InlineMemory(*cpu_addr, copy_size, memory);
+         if (!uploaded && !defer) {
+             buffer_cache.WriteMemory(*cpu_addr, copy_size);
+@@ -1494,7 +1520,13 @@
+ 
+ bool AccelerateDMA::BufferCopy(GPUVAddr src_address, GPUVAddr dest_address, u64 amount) {
+     std::scoped_lock lock{buffer_cache.mutex};
+-    return buffer_cache.DMACopy(src_address, dest_address, amount);
++    buffer_cache.Nx2CollectListCopies(true);
++    const bool copied = buffer_cache.DMACopy(src_address, dest_address, amount);
++    if (buffer_cache.Nx2CopyListPages(scheduler.CurrentTick())) {
++        scheduler.Flush();
++    }
++    buffer_cache.Nx2CollectListCopies(false);
++    return copied;
+ }
+ 
+ template <bool IS_IMAGE_UPLOAD>
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.h
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.h
+@@ -100,6 +100,7 @@
+     void FlushAll() override;
+     void FlushRegion(DAddr addr, u64 size,
+                      VideoCommon::CacheType which = VideoCommon::CacheType::All) override;
++    GpuWrittenList ReadGpuWrittenCommandList(DAddr addr, std::span<u8> out) override;
+     void BeginFlushBatch() override;
+     void EndFlushBatch() override;
+     bool MustFlushRegion(DAddr addr, u64 size,
+@@ -164,6 +165,10 @@
+ 
+     void FlushWork();
+ 
++    /// Records the copies of the command list pages the work just recorded wrote and submits, so
++    /// the GPU makes them now (BufferCache::Nx2CopyListPages).
++    void SubmitNx2ListCopies();
++
+     void UpdateDynamicStates();
+ 
+     void HandleTransformFeedback();
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+@@ -3712,7 +3712,7 @@
+             .aspect_mask = VK_IMAGE_ASPECT_COLOR_BIT,
+             .initialized = false,
+             .level_view = [&pending](s32 level) { return *pending.views[level]; },
+-            .wait = false,
++            .wait = true,
+         },
+         map, swizzles);
+ 
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -132,6 +132,7 @@
+ void TextureCache<P>::RunGarbageCollector() {
+     bool high_priority_mode = false;
+     bool aggressive_mode = false;
++    bool evict_old_costly = false;
+     u64 ticks_to_destroy = 0;
+     size_t num_iterations = 0;
+     const auto Configure = [&](bool allow_aggressive) {
+@@ -146,7 +147,8 @@
+         ticks_to_destroy = (std::max)(ticks_to_destroy, min_age);
+         num_iterations = aggressive_mode ? 40 : (high_priority_mode ? 20 : 10);
+     };
+-    const auto Cleanup = [this, &num_iterations, &high_priority_mode, &aggressive_mode](ImageId image_id) {
++    const auto Cleanup = [this, &num_iterations, &high_priority_mode, &aggressive_mode,
++                          &evict_old_costly](ImageId image_id) {
+         if (num_iterations == 0) {
+             return true;
+         }
+@@ -156,7 +158,8 @@
+             return false;
+         }
+         const bool must_download = IsDownloadable(image) && False(image.flags & ImageFlagBits::BadOverlap);
+-        if ((!aggressive_mode && True(image.flags & ImageFlagBits::CostlyLoad)) || (!high_priority_mode && must_download)) {
++        if ((!aggressive_mode && !evict_old_costly && True(image.flags & ImageFlagBits::CostlyLoad)) ||
++            (!high_priority_mode && must_download)) {
+             return false;
+         }
+         if (must_download) {
+@@ -183,6 +186,15 @@
+         return false;
+     };
+     Configure(false);
++    static const u64 old_age = [] {
++        const char* value = std::getenv("EDEN_NX2_TC_OLD_AGE");
++        return value != nullptr ? std::strtoull(value, nullptr, 10) : 1800ULL;
++    }();
++    if (high_priority_mode && old_age != 0 && frame_tick > old_age) {
++        evict_old_costly = true;
++        lru_cache.ForEachItemBelow(frame_tick - old_age, Cleanup);
++        evict_old_costly = false;
++    }
+     lru_cache.ForEachItemBelow(frame_tick - ticks_to_destroy, Cleanup);
+     if (total_used_memory >= critical_memory) {
+         Configure(true);
