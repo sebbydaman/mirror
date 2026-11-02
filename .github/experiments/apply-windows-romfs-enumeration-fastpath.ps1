@@ -52,8 +52,8 @@ if (-not $h.Contains('#include <utility>')) {
 $s = Normalize (Get-Content $source -Raw)
 
 if (-not $s.Contains('FindFirstFileExW(')) {
-    # Use a deliberately small anchor. Earlier versions matched the whole _WIN32/#else block,
-    # which was unnecessarily brittle once integration scripts adjusted nearby preprocessor text.
+    # Match only the stable include itself. Integration scripts are allowed to alter the surrounding
+    # preprocessor layout without breaking this startup-only patch.
     $cstdioAnchor = '#include <cstdio> // _getmaxstdio'
     if (-not $s.Contains($cstdioAnchor)) {
         throw 'Windows RomFS enumeration fast path: _getmaxstdio include anchor missing'
@@ -87,20 +87,16 @@ if (-not $s.Contains('FindFirstFileExW(')) {
 '@
     $s = $s.Replace($cstdioAnchor, $windowsIncludes.TrimEnd("`r", "`n"))
 
-    $methodAnchor = @'
-std::vector<VirtualDir> RealVfsDirectory::GetSubdirectories() const {
-    return IterateEntries<RealVfsDirectory, VfsDirectory>();
-}
-'@
-    if (-not $s.Contains($methodAnchor.TrimEnd("`r", "`n"))) {
-        throw 'Windows RomFS enumeration fast path: GetSubdirectories implementation anchor missing'
+    # Insert before IsWritable rather than replacing GetSubdirectories. Several NS2 integration
+    # layers legitimately touch the directory-iteration functions, so using the following stable
+    # method boundary makes the patch insensitive to whitespace/body changes above it.
+    $insertAnchor = 'bool RealVfsDirectory::IsWritable() const {'
+    $anchorIndex = $s.IndexOf($insertAnchor, [StringComparison]::Ordinal)
+    if ($anchorIndex -lt 0) {
+        throw 'Windows RomFS enumeration fast path: RealVfsDirectory::IsWritable insertion anchor missing'
     }
 
-    $methodReplacement = @'
-std::vector<VirtualDir> RealVfsDirectory::GetSubdirectories() const {
-    return IterateEntries<RealVfsDirectory, VfsDirectory>();
-}
-
+    $methodImplementation = @'
 std::pair<std::vector<VirtualFile>, std::vector<VirtualDir>>
 RealVfsDirectory::GetEntriesForRomFSBuild() const {
 #ifdef _WIN32
@@ -166,9 +162,10 @@ RealVfsDirectory::GetEntriesForRomFSBuild() const {
     return {GetFiles(), GetSubdirectories()};
 #endif
 }
+
 '@
-    $s = $s.Replace($methodAnchor.TrimEnd("`r", "`n"),
-                    $methodReplacement.TrimEnd("`r", "`n"))
+
+    $s = $s.Insert($anchorIndex, $methodImplementation)
 }
 
 [IO.File]::WriteAllText((Resolve-Path $source).Path,
