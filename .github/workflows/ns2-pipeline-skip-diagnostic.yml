@@ -66,14 +66,22 @@ jobs:
         working-directory: eden
         run: |
           $ErrorActionPreference = 'Stop'
+          # A git-grep no-match is an expected diagnostic result, not a workflow failure.
+          $PSNativeCommandUseErrorActionPreference = $false
           $out = Join-Path $PWD 'pokopia-donor-diagnostic.txt'
           function Emit([string]$text = '') { $text | Tee-Object -FilePath $out -Append }
           function Scan([string]$title, [string[]]$patterns) {
             Emit "`n===== $title ====="
             foreach ($pattern in $patterns) {
               Emit "--- $pattern ---"
-              git grep -n -I -E $pattern -- src/video_core src/shader_recompiler 2>$null | Select-Object -First 80 | ForEach-Object { Emit $_ }
-              if ($LASTEXITCODE -gt 1) { throw "git grep failed for $pattern" }
+              $matches = @(git grep -n -I -E $pattern -- src/video_core src/shader_recompiler 2>$null)
+              $code = $LASTEXITCODE
+              if ($code -gt 1) { throw "git grep failed for $pattern with exit code $code" }
+              if ($matches.Count -eq 0) {
+                Emit '[NO MATCH]'
+              } else {
+                $matches | Select-Object -First 80 | ForEach-Object { Emit $_ }
+              }
             }
           }
           function Context([string]$path, [int]$start, [int]$end) {
@@ -85,19 +93,40 @@ jobs:
               Emit ("{0}:{1}:{2}" -f $path, $i, $lines[$i - 1])
             }
           }
+          function FunctionContext([string]$path, [string]$pattern, [int]$before = 8, [int]$after = 80) {
+            Emit "`n===== FUNCTION $pattern in $path ====="
+            $hits = @(Select-String -Path $path -Pattern $pattern)
+            if ($hits.Count -eq 0) {
+              Emit '[NO MATCH]'
+              return
+            }
+            foreach ($hit in ($hits | Select-Object -First 3)) {
+              Context $path ($hit.LineNumber - $before) ($hit.LineNumber + $after)
+            }
+          }
           Emit "Base=f362528c0447c491bfe00c0bdd5d8c245396a24c automation=$env:GITHUB_SHA"
-          Scan 'Async translation / draw skip' @('CanSkipDraw','WaitForGraphicsTranslation','QueueGraphicsTranslation','EDEN_NX2_TRANSLATION_WORKERS','reuse_rejects')
+          Scan 'Async translation / draw skip' @('CanSkipDraw','CurrentGraphicsPipelineSlowPath','WaitForGraphicsTranslation','QueueGraphicsTranslation','AdoptTranslatedGraphicsPipelines','EDEN_NX2_TRANSLATION_WORKERS','reuse_rejects')
           Scan 'Task mesh opcode and stage buffers' @('0x927','ISBEWR','StageBuffer|stage_buffer','Task|Mesh')
           Scan 'Selevet synchronization candidates' @('EDEN_NX2_CMD_BATCH','BeginDownloadBatch|EndDownloadBatch','EDEN_NX2_ACQUIRE_QUEUED','NoteQueuedRelease','QMD_ACQUIRE_SKIP')
           Scan 'Submission policy' @('DRAWS_TO_DISPATCH','4096','submit_threshold|submission_threshold|draw_threshold','FlushCommands')
-          Scan 'Cache restore and prewarm' @('pipeline_cache_filename','LoadPipelines','CACHE_VERSION','vulkan_static_pipelines','StaticPipeline|static_pipeline','SerializePipeline|SavePipeline')
+          Scan 'Cache restore and prewarm' @('pipeline_cache_filename','LoadDiskResources','LoadPipelines','CACHE_VERSION','Total Pipeline Count','SerializePipeline','vulkan_static_pipelines','StaticPipeline|static_pipeline')
           Scan 'Reuse and snapshots' @('MaxVariants','Detach\(','SnapshotSizeBytes','NativeInstructionReader','LoweredNative','ReadBlockUnsafe')
-          Context 'src/video_core/renderer_vulkan/vk_pipeline_cache.cpp' 990 1055
-          Context 'src/video_core/renderer_vulkan/vk_pipeline_cache.cpp' 1405 1505
+
+          FunctionContext 'src/video_core/renderer_vulkan/vk_pipeline_cache.cpp' 'PipelineCache::CurrentGraphicsPipelineSlowPath' 10 70
+          FunctionContext 'src/video_core/renderer_vulkan/vk_pipeline_cache.cpp' 'PipelineCache::CanSkipDraw' 10 55
+          FunctionContext 'src/video_core/renderer_vulkan/vk_pipeline_cache.cpp' 'PipelineCache::QueueGraphicsTranslation' 10 70
+          FunctionContext 'src/video_core/renderer_vulkan/vk_pipeline_cache.cpp' 'PipelineCache::WaitForGraphicsTranslation' 10 55
+          FunctionContext 'src/video_core/renderer_vulkan/vk_pipeline_cache.cpp' 'PipelineCache::AdoptTranslatedGraphicsPipelines' 10 70
+          FunctionContext 'src/video_core/renderer_vulkan/vk_pipeline_cache.cpp' 'PipelineCache::LoadDiskResources' 12 140
+          FunctionContext 'src/video_core/shader_environment.cpp' '^void LoadPipelines' 12 110
+          FunctionContext 'src/video_core/shader_environment.cpp' '^void SerializePipeline' 12 90
+          FunctionContext 'src/video_core/renderer_vulkan/vk_pipeline_cache.cpp' 'pipeline_cache_filename = ' 15 40
+          FunctionContext 'src/video_core/renderer_vulkan/vk_pipeline_cache.cpp' 'constexpr u32 CACHE_VERSION' 5 15
           Context 'src/video_core/renderer_vulkan/vk_rasterizer.cpp' 1065 1100
           Context 'src/video_core/renderer_vulkan/vk_rasterizer.cpp' 1450 1490
           Context 'src/video_core/buffer_cache/buffer_cache.h' 2125 2185
           git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'Assembled diagnostic source failed git diff --check' }
 
       - name: Upload assembled-source diagnostic
         if: always()
