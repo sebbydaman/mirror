@@ -2,14 +2,14 @@ $ErrorActionPreference = 'Stop'
 
 # PokeDinner's native graphics translation pool is derived from half of the Vulkan pipeline-builder
 # pool. The Switch 2 CPU-contention budget intentionally reduces a Ryzen 5 7600X from 11 builders to
-# 3 builders, which accidentally also reduces native translation to one worker. Pokopia's warmed
-# race logs show repeated bursts of 50-130+ new native graphics translations, so keep the proven
-# three-builder budget but give Switch 2 two dedicated translators.
+# 3 builders. A two-translator experiment drained Pokopia race-start translation bursts faster, but
+# the user A/B exposed visual regressions, so Phase 1 must keep one native translator as the safe
+# correctness baseline.
 #
-# EDEN_NX2_TRANSLATION_WORKERS=<N> independently overrides the translator count for A/B testing.
-# Switch 1 keeps PokeDinner's original half-builder policy. The count is always clamped to the
-# pipeline-builder count so translators cannot outnumber the threads that service normal pipeline
-# work.
+# EDEN_NX2_TRANSLATION_WORKERS=<N> independently overrides the translator count for controlled A/B
+# testing after correctness is stable. Switch 1 keeps PokeDinner's original half-builder policy.
+# The count is always clamped to the pipeline-builder count so translators cannot outnumber the
+# threads that service normal pipeline work.
 
 function Write-PatchedText([string]$Path, [string]$Text) {
     $normalized = $Text.TrimEnd("`r", "`n") + "`n"
@@ -27,7 +27,7 @@ $marker = 'EDEN_NX2_TRANSLATION_WORKERS'
 if ($text.Contains($marker)) {
     foreach ($needle in @(
         'Settings::CurrentProgramIsSwitch2()',
-        'constexpr size_t DefaultNx2TranslationWorkers = 2ULL;',
+        'constexpr size_t DefaultNx2TranslationWorkers = 1ULL;',
         'std::strtoul(value, &end, 10)',
         'std::min(pipeline_workers, DefaultNx2TranslationWorkers)'
     )) {
@@ -83,10 +83,9 @@ size_t GetTotalTranslationWorkers() {
         }
     }
 
-    // Ryzen 5 7600X target: the separate NX2 builder budget is 3, while two translators can drain
-    // race-start bursts without returning to PokeDinner's original 11-builder + 5-translator host
-    // oversubscription. Smaller hosts remain bounded by their builder pool.
-    constexpr size_t DefaultNx2TranslationWorkers = 2ULL;
+    // Phase-1 correctness baseline: the two-translator A/B produced rendering regressions in
+    // Pokopia. Keep one translator by default and retain the override for later controlled tests.
+    constexpr size_t DefaultNx2TranslationWorkers = 1ULL;
     return std::max<size_t>(1ULL, std::min(pipeline_workers, DefaultNx2TranslationWorkers));
 }
 '@
@@ -98,7 +97,7 @@ $final = Get-Content $path -Raw
 foreach ($needle in @(
     'EDEN_NX2_TRANSLATION_WORKERS',
     'Settings::CurrentProgramIsSwitch2()',
-    'constexpr size_t DefaultNx2TranslationWorkers = 2ULL;',
+    'constexpr size_t DefaultNx2TranslationWorkers = 1ULL;',
     'std::strtoul(value, &end, 10)',
     'std::min(pipeline_workers, DefaultNx2TranslationWorkers)'
 )) {
@@ -112,5 +111,5 @@ if ($LASTEXITCODE -ne 0) {
     throw 'NX2 translation-worker budget introduced diff/whitespace errors'
 }
 
-Write-Host '[APPLIED] Switch 2 native graphics translators: independent default 2 workers (7600X: builders 3, translators 2)'
-Write-Host '[INFO] EDEN_NX2_TRANSLATION_WORKERS=<N> overrides translator count for A/B testing.'
+Write-Host '[APPLIED] Switch 2 native graphics translators: correctness default 1 worker; builders remain independently budgeted'
+Write-Host '[INFO] EDEN_NX2_TRANSLATION_WORKERS=<N> overrides translator count for later controlled A/B testing.'
