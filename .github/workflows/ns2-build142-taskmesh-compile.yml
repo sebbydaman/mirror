@@ -1,0 +1,126 @@
+name: NS2 build142 task-mesh compile gate
+
+on:
+  push:
+    branches:
+      - ns2-pokopia-startup-fast-win32
+    paths:
+      - '.github/workflows/ns2-build142-taskmesh-compile.yml'
+      - '.github/frontier/probe-apply-build142-taskmesh.ps1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ns2-build142-taskmesh-compile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compile-taskmesh:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      EDEN_SKIP_POST_BUILD31_FRONTIER: '1'
+
+    steps:
+      - name: Checkout build automation
+        uses: actions/checkout@v5
+        with:
+          path: automation
+          fetch-depth: 1
+
+      - name: Checkout pinned Eglantine source
+        uses: actions/checkout@v5
+        with:
+          repository: Djihads80/Eglantine
+          ref: f362528c0447c491bfe00c0bdd5d8c245396a24c
+          path: eden
+          fetch-depth: 1
+
+      - name: Assemble exact current Pokopia stack
+        shell: pwsh
+        working-directory: eden
+        run: |
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-integration.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-positive-shader-cache.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-bananza-generic-overlap.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-draw-state-cache.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-nso-loader.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-nx2-memory-layout.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-bananza-post-menu-gpu.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-late-runtime.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-handheld-mode.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-late-stability.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-final-performance-stack.ps1"
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'Current assembled stack failed diff check' }
+
+      - name: Apply coherent build142 Task-Mesh donor tree
+        shell: pwsh
+        working-directory: eden
+        run: |
+          & "$env:GITHUB_WORKSPACE\automation\.github\frontier\probe-apply-build142-taskmesh.ps1"
+          if ($LASTEXITCODE -ne 0) { throw 'Task/Mesh donor helper failed' }
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'Task/Mesh donor tree failed diff check' }
+
+      - name: Set up MSYS2 Clang task-mesh toolchain
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq pactoys ninja
+          pacboy: >-
+            toolchain:p clang:p lld:p cmake:p python-pip:p
+            qt6-base:p qt6-charts:p qt6-tools:p qt6-translations:p qt6-svg:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p enet:p opus:p
+            libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p
+            lerc:p graphite2:p libwebp:p libtiff:p brotli:p
+
+      - name: Configure shader-recompiler compile gate
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-taskmesh -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF -DYUZU_TESTS=OFF -DYUZU_CMD=OFF \
+            -DYUZU_ROOM=OFF -DYUZU_ROOM_STANDALONE=OFF \
+            -DYUZU_USE_BUNDLED_QT=OFF -DYUZU_USE_BUNDLED_SDL3=ON \
+            -DYUZU_USE_BUNDLED_FFMPEG=ON \
+            -DVulkanHeaders_FORCE_BUNDLED=ON -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
+            -DENABLE_UPDATE_CHECKER=OFF -DUSE_DISCORD_PRESENCE=OFF \
+            -DENABLE_WEB_SERVICE=OFF -DENABLE_CUBEB=OFF -DENABLE_LIBUSB=OFF \
+            -DENABLE_WERROR=OFF \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld \
+            '-DCMAKE_C_FLAGS=-mtune=znver4' \
+            '-DCMAKE_CXX_FLAGS=-mtune=znver4'
+
+      - name: Compile shader_recompiler target
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set +e
+          cmake --build build-taskmesh --target shader_recompiler --parallel 4 --verbose 2>&1 | tee build-taskmesh.log
+          status=${PIPESTATUS[0]}
+          set -e
+          grep -n -m1 -E 'fatal error:| error:|undefined reference|FAILED:' build-taskmesh.log > taskmesh-first-error.txt || true
+          if [ ! -s taskmesh-first-error.txt ]; then
+            echo 'No compiler/linker error pattern found in build-taskmesh.log.' > taskmesh-first-error.txt
+          fi
+          exit $status
+
+      - name: Upload task-mesh compile diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: taskmesh-compile-${{ github.sha }}
+          path: |
+            eden/build-taskmesh.log
+            eden/taskmesh-first-error.txt
+          if-no-files-found: warn
+          retention-days: 5
