@@ -14,7 +14,6 @@ $scripts = @(
     'apply-ns2-pipeline-worker-budget.ps1',
     'apply-ns2-translation-worker-budget.ps1',
     'apply-ns2-shader-reuse-variants.ps1',
-    'apply-ns2-pipeline-cache-load-diagnostics.ps1',
     'apply-ns2-broken-driver-worker-budget.ps1',
     'apply-dma-increasing-run-fastpath.ps1',
     'apply-dma-increasing-front-cache.ps1',
