@@ -1,1 +1,1 @@
-Build modern MSVC fast-start candidate: retain the modern 60 FPS source stack and loose RomFS reuse while restoring the proven Windows/MSVC runtime and packaging path.
+Build modern MSVC fast-start candidate with all current fixes: modern 60 FPS source stack, loose RomFS reuse, proven Windows/MSVC runtime, and restored donor pipeline worker capacity.
