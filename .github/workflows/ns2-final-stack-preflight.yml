@@ -61,11 +61,36 @@ jobs:
         shell: pwsh
         working-directory: eden
         run: |
-          & "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-final-performance-stack.ps1"
-          if ($LASTEXITCODE -ne 0) { throw 'Final performance stack failed to apply' }
-          git diff --check
-          if ($LASTEXITCODE -ne 0) { throw 'Combined performance stack failed git diff --check' }
-          Write-Host '[PASS] Canonical final performance stack applied cleanly.'
+          try {
+            & "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-final-performance-stack.ps1"
+            if ($LASTEXITCODE -ne 0) { throw 'Final performance stack failed to apply' }
+            git diff --check
+            if ($LASTEXITCODE -ne 0) { throw 'Combined performance stack failed git diff --check' }
+            Write-Host '[PASS] Canonical final performance stack applied cleanly.'
+          } catch {
+            $diagnostic = @(
+              "Message: $($_.Exception.Message)"
+              "ScriptStackTrace: $($_.ScriptStackTrace)"
+              "Position: $($_.InvocationInfo.PositionMessage)"
+              "Category: $($_.CategoryInfo)"
+              "FullyQualifiedErrorId: $($_.FullyQualifiedErrorId)"
+            ) -join "`r`n"
+            $diagnosticPath = Join-Path $env:GITHUB_WORKSPACE 'startup-fast-preflight-error.txt'
+            [IO.File]::WriteAllText($diagnosticPath, $diagnostic + "`r`n", [Text.UTF8Encoding]::new($false))
+            Write-Host '--- STARTUP FAST PRECHECK DIAGNOSTIC ---'
+            Write-Host $diagnostic
+            Write-Host '--- END STARTUP FAST PRECHECK DIAGNOSTIC ---'
+            throw
+          }
+
+      - name: Upload startup preflight diagnostic
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: startup-fast-preflight-error-${{ github.sha }}
+          path: startup-fast-preflight-error.txt
+          if-no-files-found: warn
+          retention-days: 3
 
       - name: Regression 01 core NS2
         shell: pwsh
