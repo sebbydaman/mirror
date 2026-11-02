@@ -43,15 +43,25 @@ try {
         Write-Host "[FINAL PERF] Completed $script"
     }
 
-    # The user log showed three repeated 20-30 second loose-RomFS construction gaps before boot.
-    # Keep this isolated loader optimization outside the older frontier chain but include it in the
-    # final candidate so the same source path is packed once and reused during frontend probing.
+    # Keep the already-proven in-process memoization: frontend probing should still construct a
+    # given loose RomFS only once per Eden process.
     $romfsMemo = Join-Path $experiments 'apply-loose-romfs-memoization.ps1'
     if (-not (Test-Path $romfsMemo -PathType Leaf)) {
         throw "Final NS2 performance stack: missing $romfsMemo"
     }
     Write-Host '[FINAL PERF] Applying loose RomFS memoization'
     & $romfsMemo
+
+    # The Zen4/Clang Windows build regressed the *first* loose-RomFS construction from the older
+    # MSVC build's ~1-3 seconds to ~40 seconds for the same Pokopia title. Use a Windows-native,
+    # one-pass physical-directory enumerator only for RomFSBuildContext so we keep the final
+    # gameplay stack untouched while removing libstdc++ filesystem/status/file_size overhead.
+    $romfsWin32 = Join-Path $experiments 'apply-windows-romfs-enumeration-fastpath.ps1'
+    if (-not (Test-Path $romfsWin32 -PathType Leaf)) {
+        throw "Final NS2 performance stack: missing $romfsWin32"
+    }
+    Write-Host '[FINAL PERF] Applying Windows loose RomFS enumeration fast path'
+    & $romfsWin32
 
     git diff --check
     if ($LASTEXITCODE -ne 0) {
