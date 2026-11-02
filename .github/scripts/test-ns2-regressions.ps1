@@ -121,7 +121,13 @@ Require-Text $bufferCache 'Tegra::Nx2MarkGpuWritten(device_addr, size);' 'PR52 s
 Require-Text $nvdrv 'Tegra::Nx2ClearGpuWrittenPages();' 'PR52 per-session GPU-write reset'
 Require-Text $dmaHeader 'std::vector<CommandHeader> submitted_words;' 'PR28 submitted pushbuffer snapshot storage'
 Require-Text $nvhostGpu 'EDEN_NX2_PB_SNAPSHOT' 'PR28 submission snapshot capture'
-Require-Text $dmaPusher 'const bool gpu_written = has_copy || FlushGpuWrittenCommands' 'combined PR52/PR28 command coherency path'
+# Preserve the combined PR52/PR28 coherency semantics without pinning the test to one source layout.
+# Current GPU-written command memory must be refreshed first; only clean/non-GPU-written commands may
+# fall back to the submission snapshot. Accept both the older combined expression and the newer split form.
+Require-Regex $dmaPusher 'const\s+bool\s+gpu_written\s*=\s*(?:has_copy\s*\|\|\s*)?FlushGpuWrittenCommands\s*\(' 'PR52 GPU-written command refresh decision'
+Require-Regex $dmaPusher 'has_snapshot\s*=\s*command_resume_offset\s*==\s*0\s*&&\s*!gpu_written' 'PR28 snapshot gated behind fresh GPU-written command data'
+Require-Text $dmaPusher 'submitted_words' 'PR28 submitted command snapshot consumption'
+Require-Text $dmaPusher 'submitted_offsets' 'PR28 submitted command offset snapshot consumption'
 Require-Text $dmaPusher 'IsMemoryDirty(address, size, VideoCommon::CacheType::BufferCache)' 'GPU-written command freshness check'
 Require-Text $ampere 'native zero-product carry add source' 'broader 0x224 IMAD carry lowering'
 Require-Text $ampere 'case 0x234: { // HSETP2 register form' '0x234 HSETP2 register lowering'
