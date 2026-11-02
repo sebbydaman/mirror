@@ -84,7 +84,9 @@ git diff --check -- $amperePath
 Require-NativeSuccess 'task-mesh donor-1 diff check'
 git add -- $amperePath
 Require-NativeSuccess 'stage task-mesh donor-1 semantics'
-if (git diff --cached --quiet) {
+git diff --cached --quiet
+$donor1HasChanges = $LASTEXITCODE -ne 0
+if (-not $donor1HasChanges) {
     Write-Host '[TASKMESH] Donor-1 lowerer semantics were already present.'
 } else {
     git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'Apply build142 stage-buffer pseudo-op lowering' --no-verify
@@ -152,11 +154,15 @@ git diff --check
 Require-NativeSuccess 'resolved task-mesh donor diff check'
 git add -A
 Require-NativeSuccess 'stage connected task-mesh donor tree'
-if (-not (git diff --cached --quiet)) {
+git diff --cached --quiet
+$donor2HasChanges = $LASTEXITCODE -ne 0
+if ($donor2HasChanges) {
     git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'Apply coherent build142 Task-Mesh shader path' --no-verify
     Require-NativeSuccess 'task-mesh connected donor commit'
 }
-if (Test-Path '.git/CHERRY_PICK_HEAD') {
+$cherryPickHead = (git rev-parse --git-path CHERRY_PICK_HEAD).Trim()
+Require-NativeSuccess 'resolve task-mesh cherry-pick metadata path'
+if (Test-Path $cherryPickHead) {
     git cherry-pick --quit
     Require-NativeSuccess 'clear task-mesh cherry-pick state'
 }
