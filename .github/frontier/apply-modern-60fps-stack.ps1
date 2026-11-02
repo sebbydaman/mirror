@@ -3,14 +3,16 @@ $ErrorActionPreference = 'Stop'
 # Modern-only NS2 performance composition for the dedicated 60 FPS / low-frametime candidate.
 # Keep the newest production hot-path improvements exactly once and intentionally leave out:
 #   - the broken-driver-only pipeline worker exception (compatibility-specific)
-#   - loose RomFS memoization (startup/filesystem optimization, not sustained frame time)
 #   - telemetry-only adapters, experimental split-ring work, and superseded meta-wrappers
+# Include the loose RomFS process cache because extracted Switch 2 titles may probe the same large
+# RomFS several times during one launch; the cache changes startup cost, not emulation semantics.
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $scripts = @(
     'apply-zortos-build31-perf.ps1',
     'apply-zortos-build31-partial-write.ps1',
     'apply-ns2-legacy-hotpath-cleanup.ps1',
+    'apply-loose-romfs-cache.ps1',
     'apply-ns2-pipeline-worker-budget.ps1',
     'apply-dma-increasing-run-fastpath.ps1',
     'apply-dma-increasing-front-cache.ps1',
