@@ -36,28 +36,12 @@ if ($text.Contains($marker)) {
     exit 0
 }
 
-# Record the file/header state before VideoCommon::LoadPipelines can reject/delete it. This is
-# observation only and intentionally does not participate in the loader's acceptance decisions.
-$filenameAnchor = @'
-    pipeline_cache_filename = base_dir / "vulkan.bin";
-
-    if (use_vulkan_pipeline_cache) {
-        vulkan_pipeline_cache_filename = base_dir / "vulkan_pipelines.bin";
-        vulkan_pipeline_cache =
-            LoadVulkanPipelineCache(vulkan_pipeline_cache_filename, CACHE_VERSION);
-    }
-
-    struct {
-'@
-$filenameAnchor = $filenameAnchor.TrimEnd("`r", "`n")
+# Record the file/header state immediately after the serialized cache filename is selected. Keep
+# this anchor deliberately narrow: the assembled PokeDinner/build31 stack can place extra Vulkan
+# driver-cache setup between this assignment and the LoadDiskResources state block.
+$filenameAnchor = '    pipeline_cache_filename = base_dir / "vulkan.bin";'
 $filenameReplacement = @'
     pipeline_cache_filename = base_dir / "vulkan.bin";
-
-    if (use_vulkan_pipeline_cache) {
-        vulkan_pipeline_cache_filename = base_dir / "vulkan_pipelines.bin";
-        vulkan_pipeline_cache =
-            LoadVulkanPipelineCache(vulkan_pipeline_cache_filename, CACHE_VERSION);
-    }
 
     bool pipeline_cache_file_present{};
     size_t pipeline_cache_file_bytes{};
@@ -68,8 +52,8 @@ $filenameReplacement = @'
         std::ifstream diagnostic_cache(pipeline_cache_filename, std::ios::binary | std::ios::ate);
         if (diagnostic_cache.is_open()) {
             pipeline_cache_file_present = true;
-            const auto end = diagnostic_cache.tellg();
-            if (end >= std::streamoff{0}) {
+            const std::streamoff end = diagnostic_cache.tellg();
+            if (end >= 0) {
                 pipeline_cache_file_bytes = static_cast<size_t>(end);
             }
             constexpr size_t SerializedHeaderBytes = 8 + sizeof(u32);
@@ -86,12 +70,13 @@ $filenameReplacement = @'
             }
         }
     }
-
-    struct {
 '@
 $filenameReplacement = $filenameReplacement.TrimEnd("`r", "`n")
 if (-not $text.Contains($filenameAnchor)) {
-    throw 'NX2 pipeline-cache diagnostics: pipeline-cache filename/load anchor changed'
+    throw 'NX2 pipeline-cache diagnostics: pipeline-cache filename anchor changed'
+}
+if (($text.Split($filenameAnchor).Count - 1) -ne 1) {
+    throw 'NX2 pipeline-cache diagnostics: pipeline-cache filename anchor is not unique'
 }
 $text = $text.Replace($filenameAnchor, $filenameReplacement)
 
