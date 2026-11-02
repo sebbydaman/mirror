@@ -6,8 +6,6 @@ on:
       - ns2-pokopia-startup-fast-win32
     paths:
       - '.github/workflows/ns2-pipeline-skip-diagnostic.yml'
-      - '.github/frontier/**'
-      - '.github/scripts/**'
   workflow_dispatch:
 
 permissions:
@@ -69,59 +67,22 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $out = Join-Path $PWD 'pokopia-donor-diagnostic.txt'
-          if (Test-Path $out) { Remove-Item $out }
-          function Emit([string]$text = '') {
-            $text | Tee-Object -FilePath $out -Append
-          }
-          function Scan([string]$title, [string[]]$patterns, [string[]]$roots) {
+          function Emit([string]$text = '') { $text | Tee-Object -FilePath $out -Append }
+          function Scan([string]$title, [string[]]$patterns) {
             Emit "`n===== $title ====="
             foreach ($pattern in $patterns) {
-              Emit "--- pattern: $pattern ---"
-              $matches = Get-ChildItem $roots -Recurse -File -Include *.cpp,*.h,*.hpp,*.inl |
-                Select-String -Pattern $pattern -Context 8,18
-              if (-not $matches) {
-                Emit '<no matches>'
-                continue
-              }
-              foreach ($m in $matches) {
-                Emit ("{0}:{1}" -f $m.Path,$m.LineNumber)
-                foreach ($line in $m.Context.PreContext) { Emit $line }
-                Emit $m.Line
-                foreach ($line in $m.Context.PostContext) { Emit $line }
-              }
+              Emit "--- $pattern ---"
+              git grep -n -I -E $pattern -- src/video_core src/shader_recompiler 2>$null | Select-Object -First 80 | ForEach-Object { Emit $_ }
+              if ($LASTEXITCODE -gt 1) { throw "git grep failed for $pattern" }
             }
           }
-
-          Emit "Assembled source commit base: f362528c0447c491bfe00c0bdd5d8c245396a24c"
-          Emit "Automation commit: $env:GITHUB_SHA"
-          Emit "Worktree status:"
-          (git status --short) | ForEach-Object { Emit $_ }
-
-          Scan 'Async translation / draw-skip policy' @(
-            'CanSkipDraw', 'WaitForGraphicsTranslation', 'QueueGraphicsTranslation',
-            'translation_wait_budget', 'EDEN_NX2_TRANSLATION_WORKERS', 'zeta_enable'
-          ) @('src/video_core')
-
-          Scan 'Native task-mesh / opcode 0x927 / stage buffers' @(
-            '0x927', 'ISBEWR', 'Task', 'Mesh', 'stage_buffer', 'StageBuffer', 'task shader', 'mesh shader'
-          ) @('src/shader_recompiler','src/video_core')
-
-          Scan 'Selevet command batching / queued acquire overlap' @(
-            'EDEN_NX2_CMD_BATCH', 'BeginDownloadBatch', 'EndDownloadBatch',
-            'EDEN_NX2_ACQUIRE_QUEUED', 'NoteQueuedRelease', 'QMD_ACQUIRE_SKIP'
-          ) @('src/video_core')
-
-          Scan 'Submission thresholds / early submit policy' @(
-            '4096', 'submit_threshold', 'submission_threshold', 'draw_threshold',
-            'num_draws', 'draw_counter', 'FlushCommands'
-          ) @('src/video_core/renderer_vulkan','src/video_core')
-
-          Scan 'Shader capture / reuse / state snapshots' @(
-            'MaxVariants', 'Detach(', 'SnapshotSizeBytes', 'NativeInstructionReader',
-            'LoweredNative', 'ReadBlockUnsafe', 'reuse_rejects'
-          ) @('src/video_core','src/shader_recompiler')
-
-          Write-Host "Diagnostic written to $out"
+          Emit "Base=f362528c0447c491bfe00c0bdd5d8c245396a24c automation=$env:GITHUB_SHA"
+          Scan 'Async translation / draw skip' @('CanSkipDraw','WaitForGraphicsTranslation','QueueGraphicsTranslation','EDEN_NX2_TRANSLATION_WORKERS','reuse_rejects')
+          Scan 'Task mesh opcode and stage buffers' @('0x927','ISBEWR','StageBuffer|stage_buffer','Task|Mesh')
+          Scan 'Selevet synchronization candidates' @('EDEN_NX2_CMD_BATCH','BeginDownloadBatch|EndDownloadBatch','EDEN_NX2_ACQUIRE_QUEUED','NoteQueuedRelease','QMD_ACQUIRE_SKIP')
+          Scan 'Submission policy' @('4096','submit_threshold|submission_threshold|draw_threshold','FlushCommands')
+          Scan 'Reuse and snapshots' @('MaxVariants','Detach\(','SnapshotSizeBytes','NativeInstructionReader','LoweredNative','ReadBlockUnsafe')
+          git diff --check
 
       - name: Upload assembled-source diagnostic
         if: always()
@@ -134,6 +95,4 @@ jobs:
 
       - name: Confirm protected refs untouched
         shell: pwsh
-        working-directory: eden
-        run: |
-          Write-Host 'Diagnostic only: no source branch, golden commit, or release is modified.'
+        run: Write-Host 'Diagnostic only; protected golden and final-perf refs untouched.'
