@@ -27,7 +27,7 @@ $marker = 'EDEN_NX2_TRANSLATION_WORKERS'
 if ($text.Contains($marker)) {
     foreach ($needle in @(
         'Settings::CurrentProgramIsSwitch2()',
-        'const size_t DefaultNx2TranslationWorkers = 2ULL;',
+        'constexpr size_t DefaultNx2TranslationWorkers = 2ULL;',
         'std::strtoul(value, &end, 10)',
         'std::min(pipeline_workers, DefaultNx2TranslationWorkers)'
     )) {
@@ -98,7 +98,7 @@ $final = Get-Content $path -Raw
 foreach ($needle in @(
     'EDEN_NX2_TRANSLATION_WORKERS',
     'Settings::CurrentProgramIsSwitch2()',
-    'const size_t DefaultNx2TranslationWorkers = 2ULL;',
+    'constexpr size_t DefaultNx2TranslationWorkers = 2ULL;',
     'std::strtoul(value, &end, 10)',
     'std::min(pipeline_workers, DefaultNx2TranslationWorkers)'
 )) {
