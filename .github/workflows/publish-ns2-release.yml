@@ -1,13 +1,13 @@
-name: Publish Eden NS2 Pokopia Release
+name: Publish Eden NS2 Final Release
 
 on:
   workflow_run:
     workflows:
-      - Build Eden NS2 Pokopia
+      - Build Eden NS2 Final Zen4 PGO
     types:
       - completed
     branches:
-      - ns2-pokopia
+      - ns2-pokopia-final-perf
   workflow_dispatch:
 
 permissions:
@@ -19,7 +19,7 @@ jobs:
     if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: windows-2025
     steps:
-      - name: Select validated NS2 build
+      - name: Select validated final NS2 build
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -32,27 +32,24 @@ jobs:
             $runNumber = $env:EVENT_RUN_NUMBER
             $sha = $env:EVENT_HEAD_SHA
 
-            # Rapid integration work can leave an older long compile finishing after the branch has
-            # advanced. Such a build can still be useful as an artifact, but it must not become the
-            # newly advertised release while a newer source revision is pending or building.
-            $branchSha = gh api "repos/$env:GITHUB_REPOSITORY/branches/ns2-pokopia" --jq '.commit.sha'
+            $branchSha = gh api "repos/$env:GITHUB_REPOSITORY/branches/ns2-pokopia-final-perf" --jq '.commit.sha'
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             if ($sha -ne $branchSha) {
-              Write-Host "Skipping superseded successful run #$runNumber ($sha); current ns2-pokopia head is $branchSha."
+              Write-Host "Skipping superseded successful run #$runNumber ($sha); current final-performance head is $branchSha."
               'SKIP_PUBLISH=1' | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
               exit 0
             }
           } else {
-            $latestJson = gh run list --repo $env:GITHUB_REPOSITORY --workflow ns2-pokopia.yml --branch ns2-pokopia --status success --limit 1 --json databaseId,number,headSha
+            $latestJson = gh run list --repo $env:GITHUB_REPOSITORY --workflow ns2-final-zen4.yml --branch ns2-pokopia-final-perf --status success --limit 1 --json databaseId,number,headSha
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             $latest = @($latestJson | ConvertFrom-Json) | Select-Object -First 1
-            if (-not $latest) { throw 'No successful ns2-pokopia build was found for manual publication.' }
+            if (-not $latest) { throw 'No successful final Zen4 NS2 build was found for manual publication.' }
             $runId = [string]$latest.databaseId
             $runNumber = [string]$latest.number
             $sha = [string]$latest.headSha
           }
 
-          if (-not $runId -or -not $sha) { throw 'Unable to identify validated NS2 build metadata.' }
+          if (-not $runId -or -not $sha) { throw 'Unable to identify validated final NS2 build metadata.' }
           $shortSha = $sha.Substring(0, 8)
           'SKIP_PUBLISH=0' | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "VALIDATED_RUN_ID=$runId" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -60,28 +57,29 @@ jobs:
           "VALIDATED_SHA=$sha" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "VALIDATED_SHORT_SHA=$shortSha" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Download validated Windows artifact
+      - name: Download final optimized Windows artifact
         if: ${{ env.SKIP_PUBLISH != '1' }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh run download $env:VALIDATED_RUN_ID --repo $env:GITHUB_REPOSITORY --name Eden-NS2-Pokopia-Windows --dir package
+          $artifact = "Eden-NS2-Final-PGO-Zen4-Windows-$env:VALIDATED_SHA"
+          gh run download $env:VALIDATED_RUN_ID --repo $env:GITHUB_REPOSITORY --name $artifact --dir package
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (-not (Test-Path 'package' -PathType Container)) { throw 'Validated Windows artifact was not downloaded.' }
+          if (-not (Test-Path 'package' -PathType Container)) { throw 'Final Windows artifact was not downloaded.' }
           $gui = @('eglantine.exe', 'eden.exe', 'yuzu.exe') |
             ForEach-Object { Join-Path 'package' $_ } |
             Where-Object { Test-Path $_ -PathType Leaf } |
             Select-Object -First 1
-          if (-not $gui) { throw 'Validated artifact does not contain an Eden GUI executable.' }
-          if (-not (Test-Path 'package\RUNTIME_MANIFEST.txt' -PathType Leaf)) { throw 'Validated artifact is missing RUNTIME_MANIFEST.txt.' }
-          Write-Host "Validated release GUI: $gui"
+          if (-not $gui) { throw 'Final artifact does not contain an Eden GUI executable.' }
+          if (-not (Test-Path 'package\FINAL_BUILD_NOTES.txt' -PathType Leaf)) { throw 'Final artifact is missing FINAL_BUILD_NOTES.txt.' }
+          Write-Host "Validated final release GUI: $gui"
 
       - name: Package release ZIP
         if: ${{ env.SKIP_PUBLISH != '1' }}
         shell: pwsh
         run: |
-          $zip = "Eden-NS2-Pokopia-$env:VALIDATED_SHORT_SHA-Windows.zip"
+          $zip = "Eden-NS2-Final-PGO-Zen4-$env:VALIDATED_SHORT_SHA-Windows.zip"
           Compress-Archive -Path package\* -DestinationPath $zip -CompressionLevel Optimal
           Get-Item $zip | Format-List Name,Length
           "RELEASE_ZIP=$zip" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -92,15 +90,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "ns2-pokopia-$env:VALIDATED_SHORT_SHA"
-          $title = "Eden NS2 Pokopia validated build $env:VALIDATED_SHORT_SHA"
+          $tag = "ns2-final-zen4-$env:VALIDATED_SHORT_SHA"
+          $title = "Eden NS2 Final Zen4 PGO $env:VALIDATED_SHORT_SHA"
           $notes = @"
-          Validated Eden Switch 2 / Pokopia Windows build from CI run #$env:VALIDATED_RUN_NUMBER.
+          Validated Eden Switch 2 / Pokopia final optimized Windows build from CI run #$env:VALIDATED_RUN_NUMBER.
 
           Integration commit: $env:VALIDATED_SHA
           Artifact source run: $env:VALIDATED_RUN_ID
 
-          This package includes the current ns2-pokopia integration, PokeDinner/Eglantine GPU performance work, shader/runtime compatibility improvements, NS2 memory/loader work, regression validation, and portable Windows runtime dependency packaging present in the validated build.
+          This package uses the canonical final NS2 performance stack, the validated PokeDinner/Eglantine and Build-31 performance work, shader/runtime compatibility improvements, NS2 memory/loader fixes, LLVM profile-guided optimization, safe Zen 4 tuning with -mtune=znver4, and portable Windows runtime dependency packaging.
 
           Experimental software; compatibility and performance are still in development.
           "@
