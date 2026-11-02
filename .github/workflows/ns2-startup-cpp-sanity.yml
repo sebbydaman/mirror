@@ -127,3 +127,5 @@ jobs:
           path: eden/startup-sanity-targets.txt
           if-no-files-found: warn
           retention-days: 3
+
+# trigger: rerun one-worker assembled C++ sanity after parity correction
