@@ -1,1 +1,4 @@
-Phase 1 full build trigger after green VFS semantics + golden HostMemory sanity gates.
+Full experimental Zen4 PGO build requested.
+
+Trigger: pokopia-cold-track-worker2-20261102a
+Reason: corrected preflight and expanded Vulkan pipeline-cache C++ sanity gates are green; build exactly one isolated 7600X candidate with 3 pipeline builders + 2 native graphics translators for cold-track A/B testing.
