@@ -81,9 +81,6 @@ jobs:
           git fetch --no-tags --depth=8 eglantine-taskmesh eb02d1dd53a03d0bb6ce541694243579a4c10c6f 310dd596d0f6d48de3517cfb1bdc90a366817405
           if ($LASTEXITCODE -ne 0) { throw 'Could not fetch build142 task-mesh donor commits' }
 
-          # The exact assembled tree intentionally has newer Pokopia/PokeDinner lowering in this file,
-          # so eb02d1dd conflicts only here. Reproduce the donor's two semantic hunks manually rather
-          # than selecting theirs and losing our TEX.B/TXQ/BRX/guarded-uniform work.
           $amperePath = 'src/shader_recompiler/frontend/ampere/lower_to_maxwell.h'
           $ampere = (Get-Content $amperePath -Raw).Replace("`r`n", "`n")
           Emit "`n===== manual semantic resolution of eb02d1dd lowerer conflict ====="
@@ -92,12 +89,15 @@ jobs:
             $anchor = '        case 0x3a1: { // MATCH.ALL (.U32, or .U64 on bit 73) with only the all-equal predicate retained.'
             if (-not $ampere.Contains($anchor)) { throw 'UPOPC insertion anchor changed' }
             $upopc = @'
-        case 0x2bf: // UPOPC, as POPC of the uniform's register.
-            if (dest >= 16 || insn.words[1] >= 16 || insn.words[2] != 0x08000000 || native_predicate != 7)
-                return fail(index, "native uniform population count mode");
-            emit(0x5c08000000000000ULL | predicate | (dest + 216) | (u64{insn.words[1] + 216} << 20));
-            break;
-'@
+                  case 0x2bf: // UPOPC, as POPC of the uniform's register.
+                      if (dest >= 16 || insn.words[1] >= 16 || insn.words[2] != 0x08000000 || native_predicate != 7)
+                          return fail(index, "native uniform population count mode");
+                      emit(0x5c08000000000000ULL | predicate | (dest + 216) | (u64{insn.words[1] + 216} << 20));
+                      break;
+          '@
+            # The YAML block removes ten leading spaces; trim the extra ten used only to keep the
+            # embedded here-string inside the run scalar, leaving the intended eight-space C++ indent.
+            $upopc = ($upopc -split "`n" | ForEach-Object { if ($_.Length -ge 10) { $_.Substring(10) } else { $_ } }) -join "`n"
             $ampere = $ampere.Replace($anchor, $upopc.TrimEnd("`r", "`n") + "`n" + $anchor)
             Emit 'Added donor UPOPC lowering.'
           } else {
@@ -108,26 +108,27 @@ jobs:
           $match = [regex]::Match($ampere, $oldPattern)
           if (-not $match.Success) { throw 'Could not locate current custom ISBERD/ISBEWR pair' }
           $isbe = @'
-        case 0x923: case 0x927: { // ISBERD / ISBEWR: task and mesh programs' stage buffer.
-            // Ampere: Ra 24-31, offset 40-63, ISBERD dest 16-23, ISBEWR data 32-39; 75 = .32 (else
-            // U8), 76-77 = 3 .ATTR (0 the map region), 78 = .SKEW, 79 = .O (the output buffer).
-            // Kept as an nx2 pseudo instruction (Maxwell 0xefc0, free there) that the frontend
-            // reads for the task or mesh stage: data/dest 0-7, Ra 8-15, offset 20-43, .32 44,
-            // .ATTR 45, .SKEW 46, .O 47, write 48. Addresses are linear bytes in the region.
-            const bool write = opcode == 0x927;
-            const u32 region = insn.Bits(76, 2);
-            const bool output = insn.Bits(79, 1) != 0;
-            if ((insn.words[2] & ~0xf800U) != 0 || (region != 0 && region != 3) || write != output ||
-                (!write && region != 3) || (!write && dest == 255))
-                return fail(index, "native stage buffer access mode");
-            emit(0xefc0000000000000ULL | predicate | (write ? u64{insn.Bits(32, 8)} : dest) |
-                 (u64{insn.Bits(24, 8)} << 8) | (u64{insn.Bits(40, 24)} << 20) |
-                 (u64{insn.Bits(75, 1)} << 44) | (u64{region == 3} << 45) |
-                 (u64{insn.Bits(78, 1)} << 46) | (u64{output} << 47) | (u64{write} << 48));
-            break;
-        }
-        case 0x34e: { // LEPC:
-'@
+                  case 0x923: case 0x927: { // ISBERD / ISBEWR: task and mesh programs' stage buffer.
+                      // Ampere: Ra 24-31, offset 40-63, ISBERD dest 16-23, ISBEWR data 32-39; 75 = .32 (else
+                      // U8), 76-77 = 3 .ATTR (0 the map region), 78 = .SKEW, 79 = .O (the output buffer).
+                      // Kept as an nx2 pseudo instruction (Maxwell 0xefc0, free there) that the frontend
+                      // reads for the task or mesh stage: data/dest 0-7, Ra 8-15, offset 20-43, .32 44,
+                      // .ATTR 45, .SKEW 46, .O 47, write 48. Addresses are linear bytes in the region.
+                      const bool write = opcode == 0x927;
+                      const u32 region = insn.Bits(76, 2);
+                      const bool output = insn.Bits(79, 1) != 0;
+                      if ((insn.words[2] & ~0xf800U) != 0 || (region != 0 && region != 3) || write != output ||
+                          (!write && region != 3) || (!write && dest == 255))
+                          return fail(index, "native stage buffer access mode");
+                      emit(0xefc0000000000000ULL | predicate | (write ? u64{insn.Bits(32, 8)} : dest) |
+                           (u64{insn.Bits(24, 8)} << 8) | (u64{insn.Bits(40, 24)} << 20) |
+                           (u64{insn.Bits(75, 1)} << 44) | (u64{region == 3} << 45) |
+                           (u64{insn.Bits(78, 1)} << 46) | (u64{output} << 47) | (u64{write} << 48));
+                      break;
+                  }
+                  case 0x34e: { // LEPC:
+          '@
+          $isbe = ($isbe -split "`n" | ForEach-Object { if ($_.Length -ge 10) { $_.Substring(10) } else { $_ } }) -join "`n"
           $ampere = [regex]::Replace($ampere, $oldPattern, $isbe.TrimEnd("`r", "`n"), 1)
           [IO.File]::WriteAllText((Resolve-Path $amperePath).Path, $ampere.TrimEnd("`r", "`n") + "`n", [Text.UTF8Encoding]::new($false))
           Emit 'Replaced narrow direct ISBE lowering with donor 0xefc0 pseudo-op semantics.'
