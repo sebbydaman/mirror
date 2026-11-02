@@ -1,0 +1,146 @@
+name: Diagnose Eden NS2 Modern Zen4 video_core
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ns2-modern-60fps
+    paths:
+      - '.github/workflows/ns2-modern-zen4-diagnostic.yml'
+      - '.github/triggers/run-modern-zen4-diagnostic.txt'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ns2-modern-zen4-diagnostic-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  diagnose-video-core:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      EDEN_SKIP_POST_BUILD31_FRONTIER: '1'
+
+    steps:
+      - name: Checkout build automation
+        uses: actions/checkout@v5
+        with:
+          path: automation
+          fetch-depth: 1
+
+      - name: Checkout Eglantine NS2 source
+        uses: actions/checkout@v5
+        with:
+          repository: Djihads80/Eglantine
+          ref: f362528c0447c491bfe00c0bdd5d8c245396a24c
+          path: eden
+          fetch-depth: 1
+
+      - name: Apply validated base NS2 stack
+        shell: pwsh
+        working-directory: eden
+        run: |
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-integration.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-positive-shader-cache.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-bananza-generic-overlap.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-draw-state-cache.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-nso-loader.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-nx2-memory-layout.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-bananza-post-menu-gpu.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-late-runtime.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-handheld-mode.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-late-stability.ps1"
+
+      - name: Apply modern-only 60 FPS stack
+        shell: pwsh
+        working-directory: eden
+        run: |
+          & "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-modern-60fps-stack.ps1"
+          git diff --check
+
+      - name: Run source regression preflight
+        shell: pwsh
+        working-directory: eden
+        run: |
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-ns2-regressions.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-pokedinner-performance.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-ns2-late-regressions.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-ns2-stability-regressions.ps1"
+
+      - name: Download Eden LLVM PGO profile
+        shell: pwsh
+        working-directory: eden
+        run: |
+          Invoke-WebRequest -Uri 'https://github.com/Eden-CI/PGO/releases/latest/download/eden.profdata' -OutFile eden.profdata
+          if (-not (Test-Path eden.profdata -PathType Leaf)) { throw 'PGO profile download failed' }
+          if ((Get-Item eden.profdata).Length -lt 1024) { throw 'PGO profile is unexpectedly small' }
+
+      - name: Set up MSYS2 clang PGO toolchain
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq pactoys ninja
+          pacboy: >-
+            toolchain:p clang:p lld:p cmake:p python-pip:p
+            qt6-base:p qt6-charts:p qt6-tools:p qt6-translations:p qt6-svg:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p enet:p opus:p
+            libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p
+            lerc:p graphite2:p libwebp:p libtiff:p brotli:p
+
+      - name: Configure exact modern Zen4 PGO target
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          profile="-fprofile-use=$(cygpath -m "$PWD/eden.profdata") -Wno-backend-plugin -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date"
+          zen4="-mtune=znver4"
+          cmake -S . -B build-modern-diag -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF -DYUZU_TESTS=OFF -DYUZU_CMD=OFF \
+            -DYUZU_ROOM=OFF -DYUZU_ROOM_STANDALONE=OFF \
+            -DYUZU_USE_BUNDLED_QT=OFF -DYUZU_USE_BUNDLED_SDL3=ON \
+            -DYUZU_USE_BUNDLED_FFMPEG=ON \
+            -DVulkanHeaders_FORCE_BUNDLED=ON -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
+            -DENABLE_UPDATE_CHECKER=OFF -DUSE_DISCORD_PRESENCE=OFF \
+            -DENABLE_WEB_SERVICE=OFF -DENABLE_CUBEB=OFF -DENABLE_LIBUSB=OFF \
+            -DENABLE_WERROR=OFF \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld \
+            "-DCMAKE_C_FLAGS=$profile $zen4" \
+            "-DCMAKE_CXX_FLAGS=$profile $zen4"
+
+      - name: Build video_core and capture full compiler log
+        id: video_core
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set +e
+          cmake --build build-modern-diag --target video_core --parallel 4 --verbose 2>&1 | tee build-video-core.log
+          status=${PIPESTATUS[0]}
+          set -e
+          grep -n -m1 -E 'fatal error:| error:|undefined reference' build-video-core.log > first-error.txt || true
+          if [ -s first-error.txt ]; then
+            echo '### First compiler diagnostic' >> "$GITHUB_STEP_SUMMARY"
+            echo '```text' >> "$GITHUB_STEP_SUMMARY"
+            cat first-error.txt >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'No compiler error pattern found in build-video-core.log.' > first-error.txt
+          fi
+          exit $status
+
+      - name: Upload diagnostic compiler logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: modern-zen4-video-core-diagnostic-${{ github.sha }}
+          path: |
+            eden/build-video-core.log
+            eden/first-error.txt
+          if-no-files-found: warn
+          retention-days: 14
