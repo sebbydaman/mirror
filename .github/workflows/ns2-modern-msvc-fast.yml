@@ -1,0 +1,245 @@
+name: Build Eden NS2 Modern MSVC Fast
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ns2-modern-60fps
+    paths:
+      - '.github/triggers/run-modern-msvc-fast.txt'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ns2-modern-msvc-fast-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-modern-msvc:
+    runs-on: windows-2025
+    timeout-minutes: 120
+    env:
+      SCCACHE_DIR: ${{ github.workspace }}/eden/.sccache
+      SCCACHE_CACHE_SIZE: 1500M
+      EDEN_SKIP_POST_BUILD31_FRONTIER: '1'
+
+    steps:
+      - name: Checkout build automation
+        uses: actions/checkout@v5
+        with:
+          path: automation
+          fetch-depth: 1
+
+      - name: Checkout Eglantine NS2 source
+        uses: actions/checkout@v5
+        with:
+          repository: Djihads80/Eglantine
+          ref: f362528c0447c491bfe00c0bdd5d8c245396a24c
+          path: eden
+          fetch-depth: 1
+
+      - name: Apply validated base NS2 stack
+        shell: pwsh
+        working-directory: eden
+        run: |
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-integration.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-positive-shader-cache.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-bananza-generic-overlap.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-draw-state-cache.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-nso-loader.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-nx2-memory-layout.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-bananza-post-menu-gpu.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-late-runtime.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-handheld-mode.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-late-stability.ps1"
+
+      - name: Apply modern fast-start 60 FPS stack
+        shell: pwsh
+        working-directory: eden
+        run: |
+          & "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-modern-60fps-stack.ps1"
+          git diff --check
+
+      - name: Run source regression preflight
+        shell: pwsh
+        working-directory: eden
+        run: |
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-ns2-regressions.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-pokedinner-performance.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-ns2-late-regressions.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-ns2-stability-regressions.ps1"
+
+      - name: Restore CPM dependency cache
+        uses: actions/cache@v4
+        with:
+          path: eden/.cache/cpm
+          key: eden-modern-msvc-cpm-${{ runner.os }}-${{ hashFiles('eden/cpmfile.json') }}
+          restore-keys: |
+            eden-modern-msvc-cpm-${{ runner.os }}-
+            eden-eglantine-cpm-${{ runner.os }}-
+
+      - name: Install sccache for MSVC
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'sccache.zip'
+          Invoke-WebRequest -OutFile $zip https://github.com/mozilla/sccache/releases/download/v0.19.0/sccache-v0.19.0-x86_64-pc-windows-msvc.zip
+          $root = Join-Path $env:RUNNER_TEMP 'sccache'
+          Expand-Archive $zip -DestinationPath $root
+          $bin = (Get-ChildItem -Recurse -Filter sccache.exe $root | Select-Object -First 1).DirectoryName
+          if (-not $bin) { throw 'sccache.exe was not found after extraction' }
+          $bin | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
+      - name: Restore MSVC object cache
+        uses: actions/cache@v4
+        with:
+          path: eden/.sccache
+          key: eden-modern-msvc-sccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            eden-modern-msvc-sccache-${{ runner.os }}-
+            eden-ns2-sccache-${{ runner.os }}-
+
+      - name: Install Vulkan SDK
+        shell: pwsh
+        working-directory: eden
+        run: ./tools/windows/install-vulkan-sdk.ps1
+
+      - name: Configure modern Release build with MSVC
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere -PathType Leaf)) { throw "Visual Studio locator not found: $vswhere" }
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw 'Visual Studio C++ toolchain not found' }
+          $devcmd = Join-Path $vs 'Common7\Tools\VsDevCmd.bat'
+          $cpm = "$env:GITHUB_WORKSPACE\eden\.cache\cpm"
+          $cmake = "cmake -S . -B build-modern-msvc -G Ninja -DCMAKE_BUILD_TYPE=Release -DCPM_SOURCE_CACHE=$cpm -DYUZU_TESTS=OFF -DBUILD_TESTING=OFF -DENABLE_WERROR=OFF -DENABLE_QT_TRANSLATION=OFF -DYUZU_USE_BUNDLED_FFMPEG=ON -DENABLE_WEB_SERVICE=OFF -DENABLE_CUBEB=OFF -DENABLE_LIBUSB=OFF -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache"
+          cmd /c "`"$devcmd`" -arch=x64 -host_arch=x64 && cl 2>&1 | findstr /C:`"Version`" && $cmake"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build modern video_core first
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $devcmd = Join-Path $vs 'Common7\Tools\VsDevCmd.bat'
+          $command = "`"$devcmd`" -arch=x64 -host_arch=x64 && cmake --build build-modern-msvc --target video_core --parallel 4 --verbose > video_core-modern-msvc.log 2>&1"
+          cmd /c $command
+          $status = $LASTEXITCODE
+          if (Test-Path video_core-modern-msvc.log) { Get-Content video_core-modern-msvc.log }
+          if ($status -ne 0) { exit $status }
+
+      - name: Build modern Eden GUI
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $devcmd = Join-Path $vs 'Common7\Tools\VsDevCmd.bat'
+          $command = "`"$devcmd`" -arch=x64 -host_arch=x64 && cmake --build build-modern-msvc --target yuzu --parallel 4 --verbose > build-modern-msvc.log 2>&1"
+          cmd /c $command
+          $status = $LASTEXITCODE
+          if (Test-Path build-modern-msvc.log) { Get-Content build-modern-msvc.log }
+          if ($status -ne 0) { exit $status }
+
+      - name: Upload MSVC compiler logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: modern-msvc-build-log-${{ github.sha }}
+          path: |
+            eden/video_core-modern-msvc.log
+            eden/build-modern-msvc.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Add modern candidate notes
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $bin = 'build-modern-msvc/bin'
+          @'
+          Eden NS2 modern MSVC fast-start candidate
+          =========================================
+          Goal: restore the old MSVC launch behavior while retaining the modern sustained-frametime source stack.
+          Includes the loose-RomFS process cache, Build31 performance work, partial-write handling,
+          DMA increasing-run fast paths/routing cache, descriptor scratch reuse, sampler/image-view
+          direct-index caches, texture DMA state inheritance, descriptor-span caching, range-batched
+          memory notifications, pushbuffer mapping hardening, and the Switch 2 pipeline worker budget.
+
+          This candidate deliberately removes the MSYS2/Clang-PGO runtime as an A/B variable because
+          the real Pokopia log showed a large launch regression and no meaningful heavy-scene FPS gain.
+          '@ | Set-Content -Path "$bin\MODERN_MSVC_NOTES.txt" -Encoding UTF8
+
+          @'
+          Recommended Pokopia baseline:
+          [Core]
+          memory_layout_mode\default=false
+          memory_layout_mode=4
+
+          [Renderer]
+          backend\default=false
+          backend=1
+          '@ | Set-Content -Path "$bin\POKOPIA_CONFIG.txt" -Encoding UTF8
+
+      - name: Stage reusable compiled runtime checkpoint
+        shell: pwsh
+        working-directory: eden
+        run: |
+          if (Test-Path build) { Remove-Item build -Recurse -Force }
+          Rename-Item build-modern-msvc build
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\stage-ns2-runtime-checkpoint.ps1"
+
+      - name: Upload reusable compiled MSVC checkpoint
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-NS2-Modern-MSVC-compiled-${{ github.sha }}
+          path: eden/build/bin/**
+          if-no-files-found: error
+          retention-days: 14
+
+  package-modern-msvc:
+    needs: build-modern-msvc
+    runs-on: windows-2025
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout packaging automation
+        uses: actions/checkout@v5
+        with:
+          path: automation
+          fetch-depth: 1
+
+      - name: Download compiled MSVC checkpoint
+        uses: actions/download-artifact@v8
+        with:
+          name: Eden-NS2-Modern-MSVC-compiled-${{ github.sha }}
+          path: eden/build/bin
+
+      - name: Validate downloaded checkpoint
+        shell: pwsh
+        run: |
+          $bin = "$env:GITHUB_WORKSPACE\eden\build\bin"
+          $gui = @('eglantine.exe','eden.exe','yuzu.exe') |
+            ForEach-Object { Join-Path $bin $_ } |
+            Where-Object { Test-Path $_ -PathType Leaf } |
+            Select-Object -First 1
+          if (-not $gui) { throw 'Compiled checkpoint has no GUI executable.' }
+          if (-not (Test-Path (Join-Path $bin 'COMPILED_CHECKPOINT.txt') -PathType Leaf)) { throw 'Compiled checkpoint marker missing.' }
+          Write-Host "Reusing compiled MSVC GUI: $gui"
+
+      - name: Package portable Windows runtime
+        shell: pwsh
+        working-directory: eden
+        run: |
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\package-ns2-runtime.ps1"
+
+      - name: Upload final modern MSVC runtime
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-NS2-Modern-MSVC-Windows-${{ github.sha }}
+          path: eden/dist/Eden-NS2-Pokopia-Windows/**
+          if-no-files-found: error
+          retention-days: 14
