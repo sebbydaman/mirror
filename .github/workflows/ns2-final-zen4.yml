@@ -19,8 +19,6 @@ jobs:
   build-final-zen4:
     runs-on: windows-2022
     timeout-minutes: 120
-    env:
-      EDEN_SKIP_POST_BUILD31_FRONTIER: '1'
 
     steps:
       - name: Checkout build automation
