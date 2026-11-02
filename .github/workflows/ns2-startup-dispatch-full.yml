@@ -1,0 +1,27 @@
+name: Dispatch Startup Full Zen4 PGO
+
+on:
+  push:
+    branches:
+      - ns2-pokopia-startup-fast-win32
+    paths:
+      - '.github/workflows/ns2-startup-dispatch-full.yml'
+      - '.github/triggers/run-startup-full.txt'
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch-final-zen4:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch exact final Zen4 PGO workflow on this startup branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run ns2-final-zen4.yml \
+            --repo "${{ github.repository }}" \
+            --ref "${{ github.ref_name }}"
+          echo "Dispatched ns2-final-zen4.yml on ${{ github.ref_name }}"
