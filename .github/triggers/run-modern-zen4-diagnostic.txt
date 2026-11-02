@@ -1,1 +1,1 @@
-Retest modern-only LLVM PGO + Zen4 video_core after decoupling the DMA routing cache from excluded telemetry hooks.
+Retest modern-only LLVM PGO + Zen4 video_core after adding the process-local loose RomFS construction cache.
