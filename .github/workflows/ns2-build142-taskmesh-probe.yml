@@ -96,7 +96,6 @@ jobs:
                       emit(0x5c08000000000000ULL | predicate | (dest + 216) | (u64{insn.words[1] + 216} << 20));
                       break;
           '@
-            $upopc = ($upopc -split "`n" | ForEach-Object { if ($_.Length -ge 10) { $_.Substring(10) } else { $_ } }) -join "`n"
             $ampere = $ampere.Replace($anchor, $upopc.TrimEnd("`r", "`n") + "`n" + $anchor)
             Emit 'Added donor UPOPC lowering.'
           } else {
@@ -127,8 +126,8 @@ jobs:
                   }
                   case 0x34e: { // LEPC:
           '@
-          $isbe = ($isbe -split "`n" | ForEach-Object { if ($_.Length -ge 10) { $_.Substring(10) } else { $_ } }) -join "`n"
-          $ampere = [regex]::Replace($ampere, $oldPattern, $isbe.TrimEnd("`r", "`n"), 1)
+          $isbeRegex = [regex]::new($oldPattern)
+          $ampere = $isbeRegex.Replace($ampere, $isbe.TrimEnd("`r", "`n"), 1)
           [IO.File]::WriteAllText((Resolve-Path $amperePath).Path, $ampere.TrimEnd("`r", "`n") + "`n", [Text.UTF8Encoding]::new($false))
           Emit 'Replaced narrow direct ISBE lowering with donor 0xefc0 pseudo-op semantics.'
 
