@@ -1,0 +1,1 @@
+Trigger the modern-only LLVM PGO + Zen4 video_core diagnostic after the workflow exists on the branch.
