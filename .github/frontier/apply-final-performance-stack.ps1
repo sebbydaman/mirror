@@ -63,6 +63,17 @@ try {
     Write-Host '[FINAL PERF] Applying Windows loose RomFS enumeration fast path'
     & $romfsWin32
 
+    # The validated ebf4d44d gameplay run accidentally exercised HostMemory's fallback path because
+    # Windows could not commit the 20 GiB fastmem backing store. Keep default behavior unchanged,
+    # but add an explicit runtime A/B toggle so the startup-fast binary can reproduce that exact
+    # memory mode without relying on pagefile pressure.
+    $goldenHostmem = Join-Path $experiments 'apply-golden-hostmem-toggle.ps1'
+    if (-not (Test-Path $goldenHostmem -PathType Leaf)) {
+        throw "Final NS2 performance stack: missing $goldenHostmem"
+    }
+    Write-Host '[FINAL PERF] Applying optional golden HostMemory fallback toggle'
+    & $goldenHostmem
+
     git diff --check
     if ($LASTEXITCODE -ne 0) {
         throw 'Final NS2 performance stack introduced diff/whitespace errors'
