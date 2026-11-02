@@ -87,7 +87,7 @@ jobs:
           Emit "`n===== manual semantic resolution of eb02d1dd lowerer conflict ====="
 
           if (-not [regex]::IsMatch($ampere, '\bcase\s+0x2bf\s*:')) {
-            $anchor = '        case 0x3a1: { // MATCH.ALL (.U32, or .U64 on bit 73) with only the all-equal predicate retained.'
+            $anchor = '        case 0x3a1:'
             if (-not $ampere.Contains($anchor)) { throw 'UPOPC insertion anchor changed' }
             $upopc = @'
                   case 0x2bf: // UPOPC, as POPC of the uniform's register.
