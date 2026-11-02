@@ -14,6 +14,7 @@ $scripts = @(
     'apply-ns2-pipeline-worker-budget.ps1',
     'apply-dma-increasing-run-fastpath.ps1',
     'apply-dma-increasing-front-cache.ps1',
+    'apply-modern-dma-telemetry-decouple.ps1',
     'apply-vulkan-descriptor-scratch-reuse.ps1',
     'apply-texture-sampler-id-vector-cache.ps1',
     'apply-texture-image-view-id-vector-cache.ps1',
