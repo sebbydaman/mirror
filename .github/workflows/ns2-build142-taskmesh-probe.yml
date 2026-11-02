@@ -1,0 +1,130 @@
+name: NS2 build142 task-mesh donor probe
+
+on:
+  push:
+    branches:
+      - ns2-pokopia-startup-fast-win32
+    paths:
+      - '.github/workflows/ns2-build142-taskmesh-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ns2-build142-taskmesh-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe-donor:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    env:
+      EDEN_SKIP_POST_BUILD31_FRONTIER: '1'
+    steps:
+      - name: Checkout build automation
+        uses: actions/checkout@v5
+        with:
+          path: automation
+          fetch-depth: 1
+
+      - name: Checkout pinned Eglantine source
+        uses: actions/checkout@v5
+        with:
+          repository: Djihads80/Eglantine
+          ref: f362528c0447c491bfe00c0bdd5d8c245396a24c
+          path: eden
+          fetch-depth: 1
+
+      - name: Assemble exact current Pokopia stack
+        shell: pwsh
+        working-directory: eden
+        run: |
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-integration.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-positive-shader-cache.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-bananza-generic-overlap.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-draw-state-cache.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-nso-loader.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-nx2-memory-layout.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-bananza-post-menu-gpu.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-late-runtime.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-handheld-mode.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-late-stability.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-final-performance-stack.ps1"
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'Current assembled stack failed diff check' }
+
+      - name: Probe coherent build142 task-mesh donor chain
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $report = Join-Path $PWD 'build142-taskmesh-probe.txt'
+          function Emit([string]$text = '') { $text | Tee-Object -FilePath $report -Append }
+          Emit "automation=$env:GITHUB_SHA"
+          Emit 'Donor 1: eb02d1dd53a03d0bb6ce541694243579a4c10c6f'
+          Emit 'Donor 2: 310dd596d0f6d48de3517cfb1bdc90a366817405'
+
+          git add -A
+          if (git status --porcelain) {
+            git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'CI checkpoint exact assembled stack before build142 task-mesh probe' --no-verify
+            if ($LASTEXITCODE -ne 0) { throw 'Could not checkpoint assembled source' }
+          }
+          $checkpoint = (git rev-parse HEAD).Trim()
+          Emit "checkpoint=$checkpoint"
+
+          if (-not (git remote | Select-String -SimpleMatch 'eglantine-taskmesh')) {
+            git remote add eglantine-taskmesh https://github.com/Djihads80/Eglantine.git
+          }
+          git fetch --no-tags --depth=8 eglantine-taskmesh eb02d1dd53a03d0bb6ce541694243579a4c10c6f 310dd596d0f6d48de3517cfb1bdc90a366817405
+          if ($LASTEXITCODE -ne 0) { throw 'Could not fetch build142 task-mesh donor commits' }
+
+          $clean = $true
+          foreach ($commit in @('eb02d1dd53a03d0bb6ce541694243579a4c10c6f','310dd596d0f6d48de3517cfb1bdc90a366817405')) {
+            Emit "`n===== cherry-pick --no-commit $commit ====="
+            git cherry-pick --no-commit $commit 2>&1 | ForEach-Object { Emit $_ }
+            $code = $LASTEXITCODE
+            Emit "exit=$code"
+            if ($code -ne 0) {
+              $clean = $false
+              Emit '--- conflicts ---'
+              @(git diff --name-only --diff-filter=U) | ForEach-Object { Emit $_ }
+              Emit '--- status ---'
+              git status --short | ForEach-Object { Emit $_ }
+              break
+            }
+            Emit '--- touched files after donor ---'
+            git diff --name-only $checkpoint | ForEach-Object { Emit $_ }
+          }
+
+          Emit "`nclean_pair=$clean"
+          if ($clean) {
+            Emit '--- final donor diff stat ---'
+            git diff --stat $checkpoint | ForEach-Object { Emit $_ }
+            Emit '--- required connected symbols ---'
+            foreach ($pattern in @('ISBE_nx2','IsbeRead','IsbeWriteMapU32','EmitMeshPrologue','ExecutionModel::TaskEXT','ExecutionModel::MeshEXT')) {
+              Emit "[$pattern]"
+              $hits = @(git grep -n -I $pattern -- src/shader_recompiler src/video_core 2>$null)
+              if ($hits.Count) { $hits | Select-Object -First 20 | ForEach-Object { Emit $_ } } else { Emit '[NO MATCH]' }
+            }
+            git diff --check
+            Emit "diff_check_exit=$LASTEXITCODE"
+          }
+
+          git reset --hard $checkpoint | Out-Null
+          git clean -fd | Out-Null
+          Emit 'Probe complete; ephemeral source reset to checkpoint.'
+
+      - name: Upload donor probe
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: build142-taskmesh-probe-${{ github.sha }}
+          path: eden/build142-taskmesh-probe.txt
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Confirm protected refs untouched
+        shell: pwsh
+        run: Write-Host 'Diagnostic probe only; golden refs untouched.'
