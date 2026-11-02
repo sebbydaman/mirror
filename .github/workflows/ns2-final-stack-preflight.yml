@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - ns2-pokopia-final-perf
+      - ns2-pokopia-startup-fast-win32
     paths:
       - '.github/workflows/ns2-final-stack-preflight.yml'
       - '.github/frontier/**'
