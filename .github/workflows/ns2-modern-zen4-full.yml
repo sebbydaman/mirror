@@ -1,0 +1,301 @@
+name: Build Eden NS2 Modern Zen4 PGO
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ns2-modern-60fps
+    paths:
+      - '.github/triggers/run-modern-full-zen4.txt'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ns2-modern-zen4-full-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-modern-zen4:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    env:
+      EDEN_SKIP_POST_BUILD31_FRONTIER: '1'
+
+    steps:
+      - name: Checkout build automation
+        uses: actions/checkout@v5
+        with:
+          path: automation
+          fetch-depth: 1
+
+      - name: Checkout Eglantine NS2 source
+        uses: actions/checkout@v5
+        with:
+          repository: Djihads80/Eglantine
+          ref: f362528c0447c491bfe00c0bdd5d8c245396a24c
+          path: eden
+          fetch-depth: 1
+
+      - name: Apply validated base NS2 stack
+        shell: pwsh
+        working-directory: eden
+        run: |
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-integration.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-positive-shader-cache.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-bananza-generic-overlap.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-draw-state-cache.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-nso-loader.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-nx2-memory-layout.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-bananza-post-menu-gpu.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-late-runtime.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-handheld-mode.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-late-stability.ps1"
+
+      - name: Apply modern-only 60 FPS stack
+        shell: pwsh
+        working-directory: eden
+        run: |
+          & "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-modern-60fps-stack.ps1"
+          git diff --check
+
+      - name: Run source regression preflight
+        shell: pwsh
+        working-directory: eden
+        run: |
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-ns2-regressions.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-pokedinner-performance.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-ns2-late-regressions.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-ns2-stability-regressions.ps1"
+
+      - name: Download Eden LLVM PGO profile
+        shell: pwsh
+        working-directory: eden
+        run: |
+          Invoke-WebRequest -Uri 'https://github.com/Eden-CI/PGO/releases/latest/download/eden.profdata' -OutFile eden.profdata
+          if (-not (Test-Path eden.profdata -PathType Leaf)) { throw 'PGO profile download failed' }
+          if ((Get-Item eden.profdata).Length -lt 1024) { throw 'PGO profile is unexpectedly small' }
+
+      - name: Set up MSYS2 clang PGO toolchain
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq pactoys ninja
+          pacboy: >-
+            toolchain:p clang:p lld:p cmake:p python-pip:p
+            qt6-base:p qt6-charts:p qt6-tools:p qt6-translations:p qt6-svg:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p enet:p opus:p
+            libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p
+            lerc:p graphite2:p libwebp:p libtiff:p brotli:p
+
+      - name: Configure exact modern Zen4 PGO build
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          profile="-fprofile-use=$(cygpath -m "$PWD/eden.profdata") -Wno-backend-plugin -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date"
+          zen4="-mtune=znver4"
+          cmake -S . -B build-modern -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF -DYUZU_TESTS=OFF -DYUZU_CMD=OFF \
+            -DYUZU_ROOM=OFF -DYUZU_ROOM_STANDALONE=OFF \
+            -DYUZU_USE_BUNDLED_QT=OFF -DYUZU_USE_BUNDLED_SDL3=ON \
+            -DYUZU_USE_BUNDLED_FFMPEG=ON \
+            -DVulkanHeaders_FORCE_BUNDLED=ON -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
+            -DENABLE_UPDATE_CHECKER=OFF -DUSE_DISCORD_PRESENCE=OFF \
+            -DENABLE_WEB_SERVICE=OFF -DENABLE_CUBEB=OFF -DENABLE_LIBUSB=OFF \
+            -DENABLE_WERROR=OFF \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld \
+            "-DCMAKE_C_FLAGS=$profile $zen4" \
+            "-DCMAKE_CXX_FLAGS=$profile $zen4"
+
+      - name: Build full GUI and capture compiler log
+        id: build_gui
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set +e
+          cmake --build build-modern --target yuzu --parallel 4 --verbose 2>&1 | tee build-modern-gui.log
+          status=${PIPESTATUS[0]}
+          set -e
+          grep -n -m1 -E 'fatal error:| error:|undefined reference|FAILED:' build-modern-gui.log > first-error.txt || true
+          if [ -s first-error.txt ]; then
+            echo '### First full-build diagnostic' >> "$GITHUB_STEP_SUMMARY"
+            echo '```text' >> "$GITHUB_STEP_SUMMARY"
+            cat first-error.txt >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'No compiler/linker error pattern found in build-modern-gui.log.' > first-error.txt
+          fi
+          exit $status
+
+      - name: Upload full-build compiler logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: modern-zen4-full-build-log-${{ github.sha }}
+          path: |
+            eden/build-modern-gui.log
+            eden/first-error.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Stage portable runtime on Clang runner
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          export PATH="/ucrt64/bin:$PATH"
+          cd build-modern/bin
+
+          exe=''
+          for candidate in eglantine.exe eden.exe yuzu.exe; do
+            if [ -f "$candidate" ]; then exe="$candidate"; break; fi
+          done
+          [ -n "$exe" ] || { echo 'No GUI executable found' >&2; exit 1; }
+
+          cat > POKOPIA_CONFIG.txt <<'EOF'
+          Add these values to the appropriate sections of Eden's qt-config.ini:
+
+          [Core]
+          memory_layout_mode\default=false
+          memory_layout_mode=4
+          use_multi_core\default=false
+          use_multi_core=false
+
+          [Renderer]
+          backend\default=false
+          backend=1
+          EOF
+
+          cat > MODERN_BUILD_NOTES.txt <<'EOF'
+          Eden NS2 modern sustained-frametime build
+          =========================================
+          Toolchain: LLVM/Clang PGO profile-use + -mtune=znver4 (no -march=znver4).
+          Source stack: validated NS2 base plus the modern-only sustained-frametime stack.
+          Excludes telemetry-only adapters, broken-driver-only worker overrides, loose RomFS
+          memoization, experimental split-ring work, and superseded/duplicate wrappers.
+          The DMA increasing-run routing cache is retained with telemetry-only dependencies removed.
+          EOF
+
+          windeployqt6 --no-translations --no-compiler-runtime --no-opengl-sw \
+            --no-system-dxc-compiler --no-system-d3d-compiler "$exe"
+
+          copy_dep() {
+            local dll="$1"
+            [ -z "$dll" ] && return 0
+            case "${dll,,}" in
+              kernel32.dll|user32.dll|gdi32.dll|advapi32.dll|shell32.dll|ole32.dll|oleaut32.dll|ws2_32.dll|bcrypt.dll|crypt32.dll|ntdll.dll|secur32.dll|setupapi.dll|winmm.dll|version.dll|shlwapi.dll|comdlg32.dll|comctl32.dll|imm32.dll|dwmapi.dll|uxtheme.dll|msimg32.dll|winspool.drv|rpcrt4.dll|normaliz.dll|iphlpapi.dll|dnsapi.dll|userenv.dll|dbghelp.dll|powrprof.dll|cfgmgr32.dll) return 0 ;;
+            esac
+            if [ -f "$dll" ]; then return 0; fi
+            local source=''
+            source=$(find /ucrt64/bin -maxdepth 1 -type f -iname "$dll" -print -quit 2>/dev/null || true)
+            if [ -z "$source" ]; then
+              source=$(command -v "$dll" 2>/dev/null || true)
+            fi
+            [ -n "$source" ] || return 0
+            cp "$source" "$dll"
+            stage_deps "$dll"
+          }
+
+          stage_deps() {
+            local file="$1"
+            objdump -p "$file" 2>/dev/null | awk '/DLL Name:/ {print $3}' | while read -r dep; do
+              copy_dep "$dep"
+            done
+          }
+
+          stage_deps "$exe"
+          while IFS= read -r -d '' dll; do stage_deps "$dll"; done < <(find . -type f -name '*.dll' -print0)
+
+          qt_count=$(find . -type f -iname 'Qt6*.dll' | wc -l)
+          if [ "$qt_count" -gt 0 ]; then
+            if [ ! -f plugins/platforms/qwindows.dll ] && [ ! -f platforms/qwindows.dll ]; then
+              echo 'Qt6 is dynamic but qwindows.dll is missing' >&2
+              exit 1
+            fi
+          fi
+
+          dll_count=$(find . -type f -iname '*.dll' | wc -l)
+          file_count=$(find . -type f | wc -l)
+          {
+            echo "GUI=$exe"
+            echo "DLL_COUNT=$dll_count"
+            echo "FILE_COUNT=$file_count"
+            echo "AUTOMATION_SHA=$GITHUB_SHA"
+          } > COMPILED_CHECKPOINT.txt
+
+          find . -type f -printf '%P\t%s\n' | sort > RUNTIME_MANIFEST.txt
+          echo "Portable checkpoint staged: $exe, $dll_count DLLs, $file_count files"
+
+      - name: Upload reusable compiled runtime checkpoint
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-NS2-Modern-PGO-Zen4-compiled-${{ github.sha }}
+          path: eden/build-modern/bin/**
+          if-no-files-found: error
+          retention-days: 14
+
+  package-modern-zen4:
+    needs: build-modern-zen4
+    runs-on: windows-2022
+    timeout-minutes: 20
+
+    steps:
+      - name: Download reusable compiled checkpoint
+        uses: actions/download-artifact@v8
+        with:
+          name: Eden-NS2-Modern-PGO-Zen4-compiled-${{ github.sha }}
+          path: eden/build/bin
+
+      - name: Validate and stage final portable package
+        shell: pwsh
+        run: |
+          $bin = "$env:GITHUB_WORKSPACE\eden\build\bin"
+          if (-not (Test-Path $bin -PathType Container)) { throw "Compiled checkpoint missing: $bin" }
+
+          $gui = @('eglantine.exe','eden.exe','yuzu.exe') |
+            ForEach-Object { Join-Path $bin $_ } |
+            Where-Object { Test-Path $_ -PathType Leaf } |
+            Select-Object -First 1
+          if (-not $gui) { throw 'Compiled checkpoint has no GUI executable.' }
+          if (-not (Test-Path (Join-Path $bin 'COMPILED_CHECKPOINT.txt') -PathType Leaf)) {
+            throw 'Compiled checkpoint marker is missing.'
+          }
+          foreach ($note in @('POKOPIA_CONFIG.txt','MODERN_BUILD_NOTES.txt','RUNTIME_MANIFEST.txt')) {
+            if (-not (Test-Path (Join-Path $bin $note) -PathType Leaf)) { throw "Checkpoint is missing $note" }
+          }
+
+          $qtDlls = @(Get-ChildItem $bin -Filter 'Qt6*.dll' -File -ErrorAction SilentlyContinue)
+          if ($qtDlls.Count -gt 0) {
+            $qwindows = @(
+              (Join-Path $bin 'plugins\platforms\qwindows.dll'),
+              (Join-Path $bin 'platforms\qwindows.dll')
+            ) | Where-Object { Test-Path $_ -PathType Leaf } | Select-Object -First 1
+            if (-not $qwindows) { throw 'Qt runtime is present but qwindows.dll is missing.' }
+          }
+
+          $dllCount = @(Get-ChildItem $bin -Filter '*.dll' -File -Recurse -ErrorAction SilentlyContinue).Count
+          if ($dllCount -lt 5) { throw "Portable checkpoint has suspiciously few DLLs: $dllCount" }
+
+          $out = "$env:GITHUB_WORKSPACE\eden\dist\Eden-NS2-Modern-PGO-Zen4-Windows"
+          if (Test-Path $out) { Remove-Item $out -Recurse -Force }
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          Copy-Item (Join-Path $bin '*') $out -Recurse -Force
+
+          Write-Host "Final portable package: $out"
+          Write-Host "GUI: $(Split-Path $gui -Leaf)"
+          Write-Host "DLL count: $dllCount"
+          Write-Host "File count: $(@(Get-ChildItem $out -File -Recurse).Count)"
+
+      - name: Upload final modern Zen4 runtime
+        uses: actions/upload-artifact@v7
+        with:
+          name: Eden-NS2-Modern-PGO-Zen4-Windows-${{ github.sha }}
+          path: eden/dist/Eden-NS2-Modern-PGO-Zen4-Windows/**
+          if-no-files-found: error
+          retention-days: 14
