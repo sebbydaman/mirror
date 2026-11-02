@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/ns2-build142-taskmesh-compile.yml'
       - '.github/frontier/probe-apply-build142-taskmesh.ps1'
+      - '.github/frontier/normalize-build142-taskmesh-overlaps.ps1'
   workflow_dispatch:
 
 permissions:
@@ -62,6 +63,8 @@ jobs:
         run: |
           & "$env:GITHUB_WORKSPACE\automation\.github\frontier\probe-apply-build142-taskmesh.ps1"
           if ($LASTEXITCODE -ne 0) { throw 'Task/Mesh donor helper failed' }
+          & "$env:GITHUB_WORKSPACE\automation\.github\frontier\normalize-build142-taskmesh-overlaps.ps1"
+          if ($LASTEXITCODE -ne 0) { throw 'Task/Mesh donor overlap normalization failed' }
           git diff --check
           if ($LASTEXITCODE -ne 0) { throw 'Task/Mesh donor tree failed diff check' }
 
