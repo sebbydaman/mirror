@@ -173,6 +173,7 @@ jobs:
           This candidate deliberately removes the MSYS2/Clang-PGO runtime as an A/B variable because
           the real Pokopia log showed a large launch regression and no meaningful heavy-scene FPS gain.
           '@ | Set-Content -Path "$bin\MODERN_MSVC_NOTES.txt" -Encoding UTF8
+          Copy-Item "$bin\MODERN_MSVC_NOTES.txt" "$bin\NX2_PERFORMANCE_NOTES.txt" -Force
 
           @'
           Recommended Pokopia baseline:
@@ -184,6 +185,12 @@ jobs:
           backend\default=false
           backend=1
           '@ | Set-Content -Path "$bin\POKOPIA_CONFIG.txt" -Encoding UTF8
+
+          foreach ($required in 'eglantine.exe', 'NX2_PERFORMANCE_NOTES.txt', 'POKOPIA_CONFIG.txt') {
+            if (-not (Test-Path (Join-Path $bin $required) -PathType Leaf)) {
+              throw "MSVC checkpoint preflight missing required file: $required"
+            }
+          }
 
       - name: Stage reusable compiled runtime checkpoint
         shell: pwsh
