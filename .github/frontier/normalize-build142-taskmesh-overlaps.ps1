@@ -15,37 +15,39 @@ if (-not $match.Success) {
 }
 $stage = $match.Value
 
-$localBlock = @'
-    case Stage::Task:
-        return "task";
-    case Stage::Mesh:
-        return "mesh";
-'@.Replace('\"', '"').TrimEnd("`r", "`n")
-$donorBlock = @'
-    case Stage::Task:
-        return "ts";
-    case Stage::Mesh:
-        return "ms";
-'@.Replace('\"', '"').TrimEnd("`r", "`n")
+# Match each case structurally instead of requiring one exact multiline block. The assembled
+# function may contain a blank line or formatting change between Task and Mesh while preserving
+# identical semantics, which must not make this guard brittle.
+$localTaskPattern = '(?m)^[ \t]*case Stage::Task:[ \t]*\n[ \t]*return "task";[ \t]*(?:\n|$)'
+$localMeshPattern = '(?m)^[ \t]*case Stage::Mesh:[ \t]*\n[ \t]*return "mesh";[ \t]*(?:\n|$)'
+$donorTaskPattern = '(?m)^[ \t]*case Stage::Task:[ \t]*\n[ \t]*return "ts";[ \t]*(?:\n|$)'
+$donorMeshPattern = '(?m)^[ \t]*case Stage::Mesh:[ \t]*\n[ \t]*return "ms";[ \t]*(?:\n|$)'
 
-function Count-Literal([string]$Haystack, [string]$Needle) {
-    return ([regex]::Matches($Haystack, [regex]::Escape($Needle))).Count
+function Count-Regex([string]$Haystack, [string]$Pattern) {
+    return ([regex]::Matches($Haystack, $Pattern)).Count
 }
 
-$localCount = Count-Literal $stage $localBlock
-$donorCount = Count-Literal $stage $donorBlock
-if ($localCount -ne 1) {
-    throw "Expected exactly one assembled Task/Mesh StageName block, found $localCount"
+$localTaskCount = Count-Regex $stage $localTaskPattern
+$localMeshCount = Count-Regex $stage $localMeshPattern
+$donorTaskCount = Count-Regex $stage $donorTaskPattern
+$donorMeshCount = Count-Regex $stage $donorMeshPattern
+
+if ($localTaskCount -ne 1) {
+    throw "Expected exactly one assembled Task StageName case returning task, found $localTaskCount"
 }
-if ($donorCount -gt 1) {
-    throw "Expected at most one donor Task/Mesh StageName block, found $donorCount"
+if ($localMeshCount -ne 1) {
+    throw "Expected exactly one assembled Mesh StageName case returning mesh, found $localMeshCount"
+}
+if ($donorTaskCount -gt 1 -or $donorMeshCount -gt 1) {
+    throw "Expected at most one donor Task/Mesh StageName case each, found task=$donorTaskCount mesh=$donorMeshCount"
+}
+if ($donorTaskCount -ne $donorMeshCount) {
+    throw "Refusing partial donor StageName overlap: task=$donorTaskCount mesh=$donorMeshCount"
 }
 
-if ($donorCount -eq 1) {
-    $normalizedStage = $stage.Replace($donorBlock + "`n", '')
-    if ($normalizedStage -eq $stage) {
-        $normalizedStage = $stage.Replace($donorBlock, '')
-    }
+if ($donorTaskCount -eq 1) {
+    $normalizedStage = [regex]::Replace($stage, $donorTaskPattern, '', 1)
+    $normalizedStage = [regex]::Replace($normalizedStage, $donorMeshPattern, '', 1)
     $text = $text.Substring(0, $match.Index) + $normalizedStage + $text.Substring($match.Index + $match.Length)
     [IO.File]::WriteAllText((Resolve-Path $path).Path, $text.TrimEnd("`r", "`n") + "`n", [Text.UTF8Encoding]::new($false))
     Write-Host '[TASKMESH] Removed duplicate donor SPIR-V StageName Task/Mesh cases; preserved local task/mesh names.'
@@ -57,17 +59,18 @@ $verifyText = (Get-Content $path -Raw).Replace("`r`n", "`n")
 $verifyMatch = [regex]::Match($verifyText, $stagePattern)
 if (-not $verifyMatch.Success) { throw 'SPIR-V StageName() disappeared after normalization' }
 $verify = $verifyMatch.Value
+
 foreach ($check in @(
-    @{ Needle = 'case Stage::Task:'; Expected = 1 },
-    @{ Needle = 'case Stage::Mesh:'; Expected = 1 },
-    @{ Needle = 'return "task";'.Replace('\"', '"'); Expected = 1 },
-    @{ Needle = 'return "mesh";'.Replace('\"', '"'); Expected = 1 },
-    @{ Needle = 'return "ts";'.Replace('\"', '"'); Expected = 0 },
-    @{ Needle = 'return "ms";'.Replace('\"', '"'); Expected = 0 }
+    @{ Pattern = '(?m)^[ \t]*case Stage::Task:[ \t]*$'; Expected = 1; Label = 'case Stage::Task:' },
+    @{ Pattern = '(?m)^[ \t]*case Stage::Mesh:[ \t]*$'; Expected = 1; Label = 'case Stage::Mesh:' },
+    @{ Pattern = '(?m)^[ \t]*return "task";[ \t]*$'; Expected = 1; Label = 'return "task";' },
+    @{ Pattern = '(?m)^[ \t]*return "mesh";[ \t]*$'; Expected = 1; Label = 'return "mesh";' },
+    @{ Pattern = '(?m)^[ \t]*return "ts";[ \t]*$'; Expected = 0; Label = 'return "ts";' },
+    @{ Pattern = '(?m)^[ \t]*return "ms";[ \t]*$'; Expected = 0; Label = 'return "ms";' }
 )) {
-    $count = Count-Literal $verify $check.Needle
+    $count = Count-Regex $verify $check.Pattern
     if ($count -ne $check.Expected) {
-        throw "SPIR-V StageName normalization expected $($check.Expected) x '$($check.Needle)', found $count"
+        throw "SPIR-V StageName normalization expected $($check.Expected) x '$($check.Label)', found $count"
     }
 }
 
