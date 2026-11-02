@@ -65,6 +65,7 @@ jobs:
             'src/shader_recompiler/backend/glasm/emit_glasm.cpp',
             'src/shader_recompiler/backend/glasm/glasm_emit_context.cpp',
             'src/shader_recompiler/backend/glsl/glsl_emit_context.cpp',
+            'src/shader_recompiler/backend/spirv/spirv_emit_context.cpp',
             'src/shader_recompiler/stage.h'
           )
           foreach ($file in $files) {
@@ -73,6 +74,14 @@ jobs:
           }
           Copy-Item "$env:RUNNER_TEMP\assembled-head.txt" (Join-Path $out 'assembled-head.txt')
           git diff -- $files | Set-Content (Join-Path $out 'assembled-local-diff.patch') -Encoding utf8
+
+          $spirv = Get-Content 'src/shader_recompiler/backend/spirv/spirv_emit_context.cpp'
+          $stageNameLine = ($spirv | Select-String -SimpleMatch 'std::string_view StageName(Stage stage)' | Select-Object -First 1).LineNumber
+          if ($stageNameLine) {
+            $start = [Math]::Max(1, $stageNameLine)
+            $end = [Math]::Min($spirv.Count, $stageNameLine + 40)
+            $spirv[($start - 1)..($end - 1)] | Set-Content (Join-Path $out 'spirv-stage-name-context.txt') -Encoding utf8
+          }
 
       - name: Upload assembled contexts
         uses: actions/upload-artifact@v7
