@@ -20,13 +20,13 @@ $localBlock = @'
         return "task";
     case Stage::Mesh:
         return "mesh";
-'@.TrimEnd("`r", "`n")
+'@.Replace('\"', '"').TrimEnd("`r", "`n")
 $donorBlock = @'
     case Stage::Task:
         return "ts";
     case Stage::Mesh:
         return "ms";
-'@.TrimEnd("`r", "`n")
+'@.Replace('\"', '"').TrimEnd("`r", "`n")
 
 function Count-Literal([string]$Haystack, [string]$Needle) {
     return ([regex]::Matches($Haystack, [regex]::Escape($Needle))).Count
@@ -60,10 +60,10 @@ $verify = $verifyMatch.Value
 foreach ($check in @(
     @{ Needle = 'case Stage::Task:'; Expected = 1 },
     @{ Needle = 'case Stage::Mesh:'; Expected = 1 },
-    @{ Needle = 'return "task";'; Expected = 1 },
-    @{ Needle = 'return "mesh";'; Expected = 1 },
-    @{ Needle = 'return "ts";'; Expected = 0 },
-    @{ Needle = 'return "ms";'; Expected = 0 }
+    @{ Needle = 'return "task";'.Replace('\"', '"'); Expected = 1 },
+    @{ Needle = 'return "mesh";'.Replace('\"', '"'); Expected = 1 },
+    @{ Needle = 'return "ts";'.Replace('\"', '"'); Expected = 0 },
+    @{ Needle = 'return "ms";'.Replace('\"', '"'); Expected = 0 }
 )) {
     $count = Count-Literal $verify $check.Needle
     if ($count -ne $check.Expected) {
