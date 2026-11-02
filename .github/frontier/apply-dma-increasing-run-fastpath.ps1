@@ -66,11 +66,6 @@ static const bool g_nx2_dma_increasing_run = [] {
                 do {
                     dma_state.dma_word_offset = u64((word_offset + index) * sizeof(u32));
                     dma_state.is_last_call = dma_state.method_count <= 1;
-                    if (Profile::Enabled()) [[unlikely]] {
-                        if (VideoCommon::GpuSplit::Get().Active()) {
-                            Profile::Add(Profile::Counter::DmaSplitEngineWords, 1);
-                        }
-                    }
                     CallMethod(commands[index].argument);
                     ++dma_state.method;
                     --dma_state.method_count;
