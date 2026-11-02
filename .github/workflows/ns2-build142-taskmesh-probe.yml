@@ -103,8 +103,7 @@ jobs:
           }
 
           $oldPattern = '(?s)        case 0x923: \{ // ISBERD indexed task/mesh attribute read / direct map read\..*?        case 0x34e: \{ // LEPC:'
-          $match = [regex]::Match($ampere, $oldPattern)
-          if (-not $match.Success) { throw 'Could not locate current custom ISBERD/ISBEWR pair' }
+          if (-not [regex]::IsMatch($ampere, $oldPattern)) { throw 'Could not locate current custom ISBERD/ISBEWR pair' }
           $isbe = @'
                   case 0x923: case 0x927: { // ISBERD / ISBEWR: task and mesh programs' stage buffer.
                       // Ampere: Ra 24-31, offset 40-63, ISBERD dest 16-23, ISBEWR data 32-39; 75 = .32 (else
@@ -126,62 +125,92 @@ jobs:
                   }
                   case 0x34e: { // LEPC:
           '@
-          $isbeRegex = [regex]::new($oldPattern)
-          $ampere = $isbeRegex.Replace($ampere, $isbe.TrimEnd("`r", "`n"), 1)
+          $ampere = ([regex]::new($oldPattern)).Replace($ampere, $isbe.TrimEnd("`r", "`n"), 1)
           [IO.File]::WriteAllText((Resolve-Path $amperePath).Path, $ampere.TrimEnd("`r", "`n") + "`n", [Text.UTF8Encoding]::new($false))
           Emit 'Replaced narrow direct ISBE lowering with donor 0xefc0 pseudo-op semantics.'
 
           $resolvedText = Get-Content $amperePath -Raw
           foreach ($needle in @('case 0x923: case 0x927:', '0xefc0000000000000ULL', '(region != 0 && region != 3)', 'case 0x2bf:')) {
-            $present = $resolvedText.Contains($needle)
-            Emit "validate[$needle]=$present"
-            if (-not $present) { throw "Manual donor-1 semantic resolution missing $needle" }
+            if (-not $resolvedText.Contains($needle)) { throw "Manual donor-1 semantic resolution missing $needle" }
+            Emit "validate[$needle]=True"
           }
-
-          $diffCheckOutput = @(git diff --check -- $amperePath 2>&1)
-          $diffCheck = $LASTEXITCODE
-          $diffCheckOutput | ForEach-Object { Emit "diff-check: $_" }
-          Emit "manual_diff_check_exit=$diffCheck"
-          if ($diffCheck -ne 0) { throw 'Manual donor-1 semantic resolution failed diff check' }
-
+          git diff --check -- $amperePath
+          if ($LASTEXITCODE -ne 0) { throw 'Manual donor-1 semantic resolution failed diff check' }
           git add $amperePath
-          $addCode = $LASTEXITCODE
-          Emit "manual_git_add_exit=$addCode"
-          @(git status --short -- $amperePath 2>&1) | ForEach-Object { Emit "status: $_" }
-          @(git diff --cached --stat -- $amperePath 2>&1) | ForEach-Object { Emit "cached-stat: $_" }
-          if ($addCode -ne 0) { throw 'Could not stage manual donor-1 semantics' }
-
-          $commitOutput = @(git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'Probe: resolve build142 ISBE lowering over current Pokopia lowerer' --no-verify 2>&1)
-          $commitCode = $LASTEXITCODE
-          $commitOutput | ForEach-Object { Emit "commit: $_" }
-          Emit "manual_commit_exit=$commitCode"
-          if ($commitCode -ne 0) { throw 'Could not checkpoint manual donor-1 semantics' }
+          git -c user.name='Eden NS2 CI' -c user.email='actions@github.com' commit -m 'Probe: resolve build142 ISBE lowering over current Pokopia lowerer' --no-verify
+          if ($LASTEXITCODE -ne 0) { throw 'Could not checkpoint manual donor-1 semantics' }
           $resolvedFirst = (git rev-parse HEAD).Trim()
           Emit "resolved_first=$resolvedFirst"
 
           Emit "`n===== cherry-pick --no-commit 310dd596d0f6d48de3517cfb1bdc90a366817405 ====="
           git cherry-pick --no-commit 310dd596d0f6d48de3517cfb1bdc90a366817405 2>&1 | ForEach-Object { Emit $_ }
           $code = $LASTEXITCODE
-          Emit "exit=$code"
-          $clean = $code -eq 0
-          if (-not $clean) {
-            Emit '--- conflicts ---'
-            @(git diff --name-only --diff-filter=U) | ForEach-Object { Emit $_ }
-            Emit '--- status ---'
-            git status --short | ForEach-Object { Emit $_ }
-          } else {
-            Emit '--- final donor diff stat ---'
-            git diff --stat $resolvedFirst | ForEach-Object { Emit $_ }
-            Emit '--- required connected symbols ---'
-            foreach ($pattern in @('ISBE_nx2','IsbeRead','IsbeWriteMapU32','EmitMeshPrologue','ExecutionModel::TaskEXT','ExecutionModel::MeshEXT')) {
-              Emit "[$pattern]"
-              $hits = @(git grep -n -I $pattern -- src/shader_recompiler src/video_core 2>$null)
-              if ($hits.Count) { $hits | Select-Object -First 20 | ForEach-Object { Emit $_ } } else { Emit '[NO MATCH]' }
+          Emit "initial_exit=$code"
+
+          $expectedConflicts = @(
+            'src/shader_recompiler/backend/glasm/emit_glasm.cpp',
+            'src/shader_recompiler/backend/glasm/glasm_emit_context.cpp',
+            'src/shader_recompiler/backend/glsl/glsl_emit_context.cpp',
+            'src/shader_recompiler/stage.h'
+          )
+          $conflicts = @(git diff --name-only --diff-filter=U)
+          if ($code -ne 0) {
+            Emit '--- observed conflicts ---'
+            $conflicts | ForEach-Object { Emit $_ }
+            $delta = @(Compare-Object ($expectedConflicts | Sort-Object) ($conflicts | Sort-Object))
+            if ($delta.Count -ne 0) {
+              $delta | ForEach-Object { Emit "unexpected-conflict-delta: $($_.InputObject) $($_.SideIndicator)" }
+              throw 'Donor-2 conflict set changed; refusing permissive resolution'
             }
-            git diff --check
-            Emit "diff_check_exit=$LASTEXITCODE"
+
+            foreach ($file in $expectedConflicts) {
+              git checkout --ours -- $file
+              if ($LASTEXITCODE -ne 0) { throw "Could not preserve assembled local semantics for $file" }
+              git add -- $file
+              if ($LASTEXITCODE -ne 0) { throw "Could not stage resolved conflict $file" }
+              Emit "resolved-local=$file"
+            }
+          } elseif ($conflicts.Count -ne 0) {
+            throw 'Cherry-pick returned success while leaving unresolved files'
           }
-          Emit "clean_second=$clean"
+
+          $remaining = @(git diff --name-only --diff-filter=U)
+          if ($remaining.Count -ne 0) {
+            $remaining | ForEach-Object { Emit "remaining-conflict=$_" }
+            throw 'Donor-2 still has unresolved conflicts'
+          }
+
+          # The four preserved files already carry the same Task/Mesh stage admissions, with local
+          # exception wording and comments. Verify those semantics before accepting the remaining donor files.
+          $localChecks = @{
+            'src/shader_recompiler/stage.h' = @('Task,', 'Mesh,')
+            'src/shader_recompiler/backend/glasm/emit_glasm.cpp' = @('case Stage::Task:', 'case Stage::Mesh:')
+            'src/shader_recompiler/backend/glasm/glasm_emit_context.cpp' = @('case Stage::Task:', 'case Stage::Mesh:')
+            'src/shader_recompiler/backend/glsl/glsl_emit_context.cpp' = @('case Stage::Task:', 'case Stage::Mesh:')
+          }
+          foreach ($file in $localChecks.Keys) {
+            $text = Get-Content $file -Raw
+            foreach ($needle in $localChecks[$file]) {
+              if (-not $text.Contains($needle)) { throw "Resolved local stage semantics missing $needle in $file" }
+            }
+          }
+
+          Emit '--- final donor diff stat ---'
+          git diff --stat $resolvedFirst | ForEach-Object { Emit $_ }
+          Emit '--- required connected symbols ---'
+          foreach ($pattern in @('ISBE_nx2','IsbeRead','IsbeWriteMapU32','EmitMeshPrologue','ExecutionModel::TaskEXT','ExecutionModel::MeshEXT')) {
+            Emit "[$pattern]"
+            $hits = @(git grep -n -I $pattern -- src/shader_recompiler src/video_core 2>$null)
+            if (-not $hits.Count) { throw "Missing required connected donor symbol: $pattern" }
+            $hits | Select-Object -First 20 | ForEach-Object { Emit $_ }
+          }
+
+          git diff --check
+          $diffCode = $LASTEXITCODE
+          Emit "diff_check_exit=$diffCode"
+          if ($diffCode -ne 0) { throw 'Resolved donor-2 tree failed diff check' }
+          Emit 'clean_second=True'
+          Emit 'Donor-2 coherent semantic merge probe passed.'
 
           git reset --hard $checkpoint | Out-Null
           git clean -fd | Out-Null
