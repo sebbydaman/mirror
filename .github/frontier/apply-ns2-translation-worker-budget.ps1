@@ -56,13 +56,12 @@ if (-not $text.Contains('#include <cstdlib>')) {
     $text = $text.Replace($includeAnchor, "$includeAnchor`n#include <cstdlib>")
 }
 
-$old = @'
-size_t GetTotalTranslationWorkers() {
-    return std::max<size_t>(1, GetTotalPipelineWorkers() / 2);
-}
-'@
-$old = $old.TrimEnd("`r", "`n")
-if (-not $text.Contains($old)) {
+# Match the donor semantics structurally rather than byte-for-byte. The PokeDinner batch and nearby
+# adapters can legitimately change whitespace or integer literal suffixes without changing the
+# half-builder policy we are replacing.
+$translationPattern = '(?ms)size_t\s+GetTotalTranslationWorkers\(\)\s*\{\s*return\s+std::max<size_t>\(\s*1(?:ULL)?\s*,\s*GetTotalPipelineWorkers\(\)\s*/\s*2(?:ULL)?\s*\)\s*;\s*\}'
+$translationMatch = [regex]::Match($text, $translationPattern)
+if (-not $translationMatch.Success) {
     throw 'NX2 translation-worker budget: PokeDinner GetTotalTranslationWorkers semantics changed'
 }
 
@@ -92,7 +91,7 @@ size_t GetTotalTranslationWorkers() {
 }
 '@
 $new = $new.TrimEnd("`r", "`n")
-$text = $text.Replace($old, $new)
+$text = $text.Remove($translationMatch.Index, $translationMatch.Length).Insert($translationMatch.Index, $new)
 Write-PatchedText $path $text
 
 $final = Get-Content $path -Raw
