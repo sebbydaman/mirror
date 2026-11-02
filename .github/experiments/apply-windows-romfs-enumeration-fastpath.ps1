@@ -3,13 +3,14 @@ $ErrorActionPreference = 'Stop'
 # Clang/MinGW's std::filesystem directory walk is dramatically slower than the older MSVC build
 # for large extracted NS2 RomFS trees. Keep the final Zen4/PGO runtime intact, but give loose RomFS
 # construction a Windows-native one-pass enumerator that obtains name/type/size from FindFirstFileExW.
-# This is deliberately isolated to RomFS construction; normal VFS directory semantics remain unchanged.
+# This is deliberately isolated to RomFS construction; normal VFS semantics stay unchanged.
 
-$header = 'src/core/file_sys/vfs/vfs_real.h'
-$source = 'src/core/file_sys/vfs/vfs_real.cpp'
-$romfs  = 'src/core/file_sys/fsmitm_romfsbuild.cpp'
+$vfsBase = 'src/core/file_sys/vfs/vfs.h'
+$header  = 'src/core/file_sys/vfs/vfs_real.h'
+$source  = 'src/core/file_sys/vfs/vfs_real.cpp'
+$romfs   = 'src/core/file_sys/fsmitm_romfsbuild.cpp'
 
-foreach ($path in @($header, $source, $romfs)) {
+foreach ($path in @($vfsBase, $header, $source, $romfs)) {
     if (-not (Test-Path $path -PathType Leaf)) {
         throw "Windows RomFS enumeration fast path: missing $path"
     }
@@ -19,41 +20,60 @@ function Normalize([string]$text) {
     return $text.Replace("`r`n", "`n")
 }
 
-# ---- RealVfsDirectory public helper -----------------------------------------------------------
+# ---- Generic VFS fallback --------------------------------------------------------------------
+# Eden intentionally builds with -fno-rtti, so do not dynamic_cast the physical directory. Add a
+# tiny virtual hook with a correctness-preserving default; RealVfsDirectory overrides only this
+# RomFS-build operation with the native Win32 enumerator.
+$v = Normalize (Get-Content $vfsBase -Raw)
+if (-not $v.Contains('GetEntriesForRomFSBuild() const')) {
+    if (-not $v.Contains('#include <utility>')) {
+        $includeAnchor = '#include <type_traits>'
+        if (-not $v.Contains($includeAnchor)) {
+            throw 'Windows RomFS enumeration fast path: VFS utility include anchor missing'
+        }
+        $v = $v.Replace($includeAnchor, "$includeAnchor`n#include <utility>")
+    }
+
+    $anchor = '    virtual std::vector<VirtualDir> GetSubdirectories() const = 0;'
+    if (-not $v.Contains($anchor)) {
+        throw 'Windows RomFS enumeration fast path: VfsDirectory subdirectory anchor missing'
+    }
+    $replacement = @'
+    virtual std::vector<VirtualDir> GetSubdirectories() const = 0;
+
+    // RomFS builders often need files and directories together. The generic implementation keeps
+    // existing VFS behavior; physical Windows directories override this to enumerate once and to
+    // reuse Win32-provided file sizes instead of issuing per-entry std::filesystem queries.
+    virtual std::pair<std::vector<VirtualFile>, std::vector<VirtualDir>>
+    GetEntriesForRomFSBuild() const {
+        return {GetFiles(), GetSubdirectories()};
+    }
+'@
+    $v = $v.Replace($anchor, $replacement.TrimEnd("`r", "`n"))
+}
+[IO.File]::WriteAllText((Resolve-Path $vfsBase).Path,
+    $v.TrimEnd("`r", "`n") + "`n", [Text.UTF8Encoding]::new($false))
+
+# ---- RealVfsDirectory override declaration ---------------------------------------------------
 $h = Normalize (Get-Content $header -Raw)
-if (-not $h.Contains('GetEntriesForRomFSBuild() const;')) {
+if (-not $h.Contains('GetEntriesForRomFSBuild() const override;')) {
     $anchor = '    std::vector<VirtualDir> GetSubdirectories() const override;'
     if (-not $h.Contains($anchor)) {
         throw 'Windows RomFS enumeration fast path: RealVfsDirectory header anchor missing'
     }
     $replacement = @'
     std::vector<VirtualDir> GetSubdirectories() const override;
-
-    // One-pass physical-directory enumeration used only by RomFSBuildContext. On Windows this
-    // bypasses std::filesystem::directory_iterator/status/file_size churn while preserving the
-    // existing VFS API everywhere else.
-    std::pair<std::vector<VirtualFile>, std::vector<VirtualDir>> GetEntriesForRomFSBuild() const;
+    std::pair<std::vector<VirtualFile>, std::vector<VirtualDir>>
+    GetEntriesForRomFSBuild() const override;
 '@
     $h = $h.Replace($anchor, $replacement.TrimEnd("`r", "`n"))
 }
-
-if (-not $h.Contains('#include <utility>')) {
-    $anchor = '#include <string_view>'
-    if (-not $h.Contains($anchor)) {
-        throw 'Windows RomFS enumeration fast path: utility include anchor missing'
-    }
-    $h = $h.Replace($anchor, "#include <string_view>`n#include <utility>")
-}
-
 [IO.File]::WriteAllText((Resolve-Path $header).Path,
     $h.TrimEnd("`r", "`n") + "`n", [Text.UTF8Encoding]::new($false))
 
 # ---- Windows-native RealVfsDirectory enumeration ---------------------------------------------
 $s = Normalize (Get-Content $source -Raw)
-
 if (-not $s.Contains('FindFirstFileExW(')) {
-    # Match only the stable include itself. Integration scripts are allowed to alter the surrounding
-    # preprocessor layout without breaking this startup-only patch.
     $cstdioAnchor = '#include <cstdio> // _getmaxstdio'
     if (-not $s.Contains($cstdioAnchor)) {
         throw 'Windows RomFS enumeration fast path: _getmaxstdio include anchor missing'
@@ -87,9 +107,6 @@ if (-not $s.Contains('FindFirstFileExW(')) {
 '@
     $s = $s.Replace($cstdioAnchor, $windowsIncludes.TrimEnd("`r", "`n"))
 
-    # Insert before IsWritable rather than replacing GetSubdirectories. Several NS2 integration
-    # layers legitimately touch the directory-iteration functions, so using the following stable
-    # method boundary makes the patch insensitive to whitespace/body changes above it.
     $insertAnchor = 'bool RealVfsDirectory::IsWritable() const {'
     $anchorIndex = $s.IndexOf($insertAnchor, [StringComparison]::Ordinal)
     if ($anchorIndex -lt 0) {
@@ -114,8 +131,8 @@ RealVfsDirectory::GetEntriesForRomFSBuild() const {
     HANDLE handle = FindFirstFileExW(search_path.c_str(), FindExInfoBasic, &entry,
                                      FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH);
     if (handle == INVALID_HANDLE_VALUE && GetLastError() == ERROR_INVALID_PARAMETER) {
-        // Some filesystems do not accept FIND_FIRST_EX_LARGE_FETCH. Retry the same native path
-        // without that advisory flag instead of falling all the way back to std::filesystem.
+        // Some filesystems do not accept FIND_FIRST_EX_LARGE_FETCH. Keep the native path but retry
+        // without that advisory flag before considering the std::filesystem fallback.
         handle = FindFirstFileExW(search_path.c_str(), FindExInfoBasic, &entry,
                                   FindExSearchNameMatch, nullptr, 0);
     }
@@ -135,6 +152,13 @@ RealVfsDirectory::GetEntriesForRomFSBuild() const {
         const std::wstring_view name{entry.cFileName};
         if (name == L"." || name == L"..") {
             continue;
+        }
+
+        // Preserve generic VFS semantics for unusual junction/symlink trees rather than guessing
+        // at reparse-point behavior. Normal extracted NS2 RomFS directories never take this path.
+        if ((entry.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+            FindClose(handle);
+            return {GetFiles(), GetSubdirectories()};
         }
 
         const std::filesystem::path entry_path = directory_path / entry.cFileName;
@@ -164,23 +188,14 @@ RealVfsDirectory::GetEntriesForRomFSBuild() const {
 }
 
 '@
-
     $s = $s.Insert($anchorIndex, $methodImplementation)
 }
-
 [IO.File]::WriteAllText((Resolve-Path $source).Path,
     $s.TrimEnd("`r", "`n") + "`n", [Text.UTF8Encoding]::new($false))
 
-# ---- Route physical loose RomFS trees through the one-pass enumerator ------------------------
+# ---- Route RomFS construction through the pair-enumeration hook -------------------------------
 $r = Normalize (Get-Content $romfs -Raw)
-if (-not $r.Contains('GetEntriesForRomFSBuild()')) {
-    $includeAnchor = '#include "core/file_sys/vfs/vfs.h"'
-    if (-not $r.Contains($includeAnchor)) {
-        throw 'Windows RomFS enumeration fast path: RomFS VFS include anchor missing'
-    }
-    $r = $r.Replace($includeAnchor,
-        $includeAnchor + "`n#include `"core/file_sys/vfs/vfs_real.h`"")
-
+if (-not $r.Contains('GetEntriesForRomFSBuild();')) {
     $visitAnchor = @'
 void RomFSBuildContext::VisitDirectory(VirtualDir romfs_dir, VirtualDir ext_dir,
                                        std::shared_ptr<RomFSBuildDirectoryContext> parent) {
@@ -192,16 +207,7 @@ void RomFSBuildContext::VisitDirectory(VirtualDir romfs_dir, VirtualDir ext_dir,
     $visitReplacement = @'
 void RomFSBuildContext::VisitDirectory(VirtualDir romfs_dir, VirtualDir ext_dir,
                                        std::shared_ptr<RomFSBuildDirectoryContext> parent) {
-    std::vector<VirtualFile> child_files;
-    std::vector<VirtualDir> child_directories;
-    if (const auto real_dir = std::dynamic_pointer_cast<RealVfsDirectory>(romfs_dir)) {
-        auto entries = real_dir->GetEntriesForRomFSBuild();
-        child_files = std::move(entries.first);
-        child_directories = std::move(entries.second);
-    } else {
-        child_files = romfs_dir->GetFiles();
-        child_directories = romfs_dir->GetSubdirectories();
-    }
+    auto [child_files, child_directories] = romfs_dir->GetEntriesForRomFSBuild();
 
     for (auto& child_romfs_file : child_files) {
 '@
@@ -212,30 +218,32 @@ void RomFSBuildContext::VisitDirectory(VirtualDir romfs_dir, VirtualDir ext_dir,
     if (-not $r.Contains($dirLoopAnchor)) {
         throw 'Windows RomFS enumeration fast path: VisitDirectory directory-loop anchor missing'
     }
-    $r = $r.Replace($dirLoopAnchor,
-                    '    for (auto& child_romfs_dir : child_directories) {')
+    $r = $r.Replace($dirLoopAnchor, '    for (auto& child_romfs_dir : child_directories) {')
 }
-
 [IO.File]::WriteAllText((Resolve-Path $romfs).Path,
     $r.TrimEnd("`r", "`n") + "`n", [Text.UTF8Encoding]::new($false))
 
 # ---- Structural verification ----------------------------------------------------------------
-git diff --check -- $header $source $romfs
+git diff --check -- $vfsBase $header $source $romfs
 if ($LASTEXITCODE -ne 0) {
     throw 'Windows RomFS enumeration fast path introduced diff/whitespace errors'
 }
 
+$verifyBase   = Normalize (Get-Content $vfsBase -Raw)
 $verifyHeader = Normalize (Get-Content $header -Raw)
 $verifySource = Normalize (Get-Content $source -Raw)
 $verifyRomfs  = Normalize (Get-Content $romfs -Raw)
 
-if (-not $verifyHeader.Contains('GetEntriesForRomFSBuild() const;') -or
+if (-not $verifyBase.Contains('GetEntriesForRomFSBuild() const') -or
+    -not $verifyHeader.Contains('GetEntriesForRomFSBuild() const override;') -or
     -not $verifySource.Contains('FindFirstFileExW(') -or
     -not $verifySource.Contains('FIND_FIRST_EX_LARGE_FETCH') -or
-    -not $verifyRomfs.Contains('std::dynamic_pointer_cast<RealVfsDirectory>(romfs_dir)') -or
-    -not $verifyRomfs.Contains('child_directories')) {
+    -not $verifyRomfs.Contains('auto [child_files, child_directories] = romfs_dir->GetEntriesForRomFSBuild();')) {
     throw 'Windows RomFS enumeration fast path verification failed'
 }
+if ($verifyRomfs.Contains('dynamic_pointer_cast') -or $verifySource.Contains('dynamic_cast<')) {
+    throw 'Windows RomFS enumeration fast path must remain compatible with Eden -fno-rtti builds'
+}
 
-Write-Host '[APPLIED] Windows-native one-pass loose RomFS enumeration fast path'
+Write-Host '[APPLIED] RTTI-free Windows-native one-pass loose RomFS enumeration fast path'
 Write-Host '          Goal: restore the older MSVC build''s ~1-3 s RomFS walk while keeping Zen4/PGO gameplay.'
