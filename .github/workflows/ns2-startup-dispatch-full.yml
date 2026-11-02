@@ -12,6 +12,10 @@ permissions:
   actions: write
   contents: read
 
+concurrency:
+  group: ns2-startup-full-dispatch
+  cancel-in-progress: false
+
 jobs:
   dispatch-final-zen4:
     runs-on: ubuntu-latest
@@ -21,7 +25,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          repo="${{ github.repository }}"
+          ref="${{ github.ref_name }}"
+          active=$(gh run list \
+            --repo "$repo" \
+            --workflow ns2-final-zen4.yml \
+            --branch "$ref" \
+            --limit 20 \
+            --json status \
+            --jq '[.[] | select(.status == "queued" or .status == "in_progress" or .status == "waiting" or .status == "requested" or .status == "pending")] | length')
+          if [ "$active" -gt 0 ]; then
+            echo "A full Zen4 PGO run is already active on $ref; not dispatching a duplicate."
+            exit 0
+          fi
           gh workflow run ns2-final-zen4.yml \
-            --repo "${{ github.repository }}" \
-            --ref "${{ github.ref_name }}"
-          echo "Dispatched ns2-final-zen4.yml on ${{ github.ref_name }}"
+            --repo "$repo" \
+            --ref "$ref"
+          echo "Dispatched ns2-final-zen4.yml on $ref"
