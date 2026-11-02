@@ -1,3 +1,4 @@
+# Diagnostic-only donor applicability probe. Production stack must remain behind timing/shader gates.
 name: NS2 build142 task-mesh donor probe
 
 on:
@@ -95,8 +96,6 @@ jobs:
                       emit(0x5c08000000000000ULL | predicate | (dest + 216) | (u64{insn.words[1] + 216} << 20));
                       break;
           '@
-            # The YAML block removes ten leading spaces; trim the extra ten used only to keep the
-            # embedded here-string inside the run scalar, leaving the intended eight-space C++ indent.
             $upopc = ($upopc -split "`n" | ForEach-Object { if ($_.Length -ge 10) { $_.Substring(10) } else { $_ } }) -join "`n"
             $ampere = $ampere.Replace($anchor, $upopc.TrimEnd("`r", "`n") + "`n" + $anchor)
             Emit 'Added donor UPOPC lowering.'
