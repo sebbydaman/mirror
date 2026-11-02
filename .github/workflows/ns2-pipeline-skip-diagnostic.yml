@@ -1,0 +1,46 @@
+name: NS2 pipeline skip diagnostic
+
+on:
+  push:
+    branches:
+      - ns2-pokopia-startup-fast-win32
+    paths:
+      - '.github/workflows/ns2-pipeline-skip-diagnostic.yml'
+      - '.github/frontier/**'
+  workflow_dispatch:
+
+jobs:
+  inspect-skip-path:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply final performance stack
+        shell: pwsh
+        run: ./.github/frontier/apply-final-performance-stack.ps1
+
+      - name: Dump async translation and draw-skip context
+        shell: pwsh
+        run: |
+          $roots = @('src/video_core')
+          $patterns = @('CanSkipDraw','reuse_rejects','ASYNC','TRANSLATION','wait budget','wait_budget')
+          foreach ($p in $patterns) {
+            Write-Host "===== $p ====="
+            Get-ChildItem $roots -Recurse -File -Include *.cpp,*.h,*.hpp |
+              Select-String -Pattern $p -Context 12,24 |
+              ForEach-Object {
+                Write-Host ("{0}:{1}" -f $_.Path,$_.LineNumber)
+                Write-Host $_.Context.PreContext
+                Write-Host $_.Line
+                Write-Host $_.Context.PostContext
+              }
+          }
+
+      - name: Confirm protected refs unchanged
+        shell: pwsh
+        run: |
+          git status --short
+          Write-Host "Diagnostic only: no source commit or build is produced by this workflow."
