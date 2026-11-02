@@ -100,24 +100,24 @@ jobs:
             '-DCMAKE_C_FLAGS=-mtune=znver4' \
             '-DCMAKE_CXX_FLAGS=-mtune=znver4'
 
-      - name: Compile startup and golden-memory translation units
+      - name: Compile startup, golden-memory, and pipeline-cache translation units
         shell: msys2 {0}
         working-directory: eden
         run: |
           set -euo pipefail
           ninja -C build-startup-sanity -t targets all > startup-sanity-targets.txt
-          mapfile -t targets < <(sed 's/: .*//' startup-sanity-targets.txt | grep -E '(^|/)vfs_real\.cpp\.(o|obj)$|(^|/)fsmitm_romfsbuild\.cpp\.(o|obj)$|(^|/)host_memory\.cpp\.(o|obj)$' || true)
-          printf 'Matched startup/golden-memory sanity targets:\n%s\n' "${targets[*]:-<none>}"
-          if [ "${#targets[@]}" -ne 3 ]; then
-            echo "Expected exactly three startup/golden-memory translation-unit targets, found ${#targets[@]}" >&2
-            grep -E 'vfs_real|fsmitm_romfsbuild|host_memory' startup-sanity-targets.txt || true
+          mapfile -t targets < <(sed 's/: .*//' startup-sanity-targets.txt | grep -E '(^|/)vfs_real\.cpp\.(o|obj)$|(^|/)fsmitm_romfsbuild\.cpp\.(o|obj)$|(^|/)host_memory\.cpp\.(o|obj)$|(^|/)vk_pipeline_cache\.cpp\.(o|obj)$' || true)
+          printf 'Matched startup/golden-memory/pipeline-cache sanity targets:\n%s\n' "${targets[*]:-<none>}"
+          if [ "${#targets[@]}" -ne 4 ]; then
+            echo "Expected exactly four startup/golden-memory/pipeline-cache translation-unit targets, found ${#targets[@]}" >&2
+            grep -E 'vfs_real|fsmitm_romfsbuild|host_memory|vk_pipeline_cache' startup-sanity-targets.txt || true
             exit 1
           fi
           for target in "${targets[@]}"; do
             echo "Compiling $target"
             ninja -C build-startup-sanity "$target"
           done
-          echo '[PASS] Win32 RomFS/VFS + golden HostMemory toggle compile with the production Clang family.'
+          echo '[PASS] Win32 RomFS/VFS + golden HostMemory + Vulkan pipeline-cache experiments compile with the production Clang family.'
 
       - name: Upload sanity diagnostics
         if: always()
