@@ -76,12 +76,27 @@ jobs:
               if ($LASTEXITCODE -gt 1) { throw "git grep failed for $pattern" }
             }
           }
+          function Context([string]$path, [int]$start, [int]$end) {
+            Emit "`n===== CONTEXT ${path}:$start-$end ====="
+            $lines = Get-Content $path
+            $lo = [Math]::Max(1, $start)
+            $hi = [Math]::Min($end, $lines.Count)
+            for ($i = $lo; $i -le $hi; $i++) {
+              Emit ("{0}:{1}:{2}" -f $path, $i, $lines[$i - 1])
+            }
+          }
           Emit "Base=f362528c0447c491bfe00c0bdd5d8c245396a24c automation=$env:GITHUB_SHA"
           Scan 'Async translation / draw skip' @('CanSkipDraw','WaitForGraphicsTranslation','QueueGraphicsTranslation','EDEN_NX2_TRANSLATION_WORKERS','reuse_rejects')
           Scan 'Task mesh opcode and stage buffers' @('0x927','ISBEWR','StageBuffer|stage_buffer','Task|Mesh')
           Scan 'Selevet synchronization candidates' @('EDEN_NX2_CMD_BATCH','BeginDownloadBatch|EndDownloadBatch','EDEN_NX2_ACQUIRE_QUEUED','NoteQueuedRelease','QMD_ACQUIRE_SKIP')
-          Scan 'Submission policy' @('4096','submit_threshold|submission_threshold|draw_threshold','FlushCommands')
+          Scan 'Submission policy' @('DRAWS_TO_DISPATCH','4096','submit_threshold|submission_threshold|draw_threshold','FlushCommands')
+          Scan 'Cache restore and prewarm' @('pipeline_cache_filename','LoadPipelines','CACHE_VERSION','vulkan_static_pipelines','StaticPipeline|static_pipeline','SerializePipeline|SavePipeline')
           Scan 'Reuse and snapshots' @('MaxVariants','Detach\(','SnapshotSizeBytes','NativeInstructionReader','LoweredNative','ReadBlockUnsafe')
+          Context 'src/video_core/renderer_vulkan/vk_pipeline_cache.cpp' 990 1055
+          Context 'src/video_core/renderer_vulkan/vk_pipeline_cache.cpp' 1405 1505
+          Context 'src/video_core/renderer_vulkan/vk_rasterizer.cpp' 1065 1100
+          Context 'src/video_core/renderer_vulkan/vk_rasterizer.cpp' 1450 1490
+          Context 'src/video_core/buffer_cache/buffer_cache.h' 2125 2185
           git diff --check
 
       - name: Upload assembled-source diagnostic
