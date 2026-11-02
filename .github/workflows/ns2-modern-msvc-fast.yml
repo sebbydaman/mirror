@@ -13,7 +13,7 @@ permissions:
 
 concurrency:
   group: ns2-modern-msvc-fast-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build-modern-msvc:
@@ -167,7 +167,8 @@ jobs:
           Includes the loose-RomFS process cache, Build31 performance work, partial-write handling,
           DMA increasing-run fast paths/routing cache, descriptor scratch reuse, sampler/image-view
           direct-index caches, texture DMA state inheritance, descriptor-span caching, range-batched
-          memory notifications, pushbuffer mapping hardening, and the Switch 2 pipeline worker budget.
+          memory notifications, pushbuffer mapping hardening, and full donor pipeline capacity by
+          default (with EDEN_NX2_PIPELINE_WORKERS available only as an explicit A/B override).
 
           This candidate deliberately removes the MSYS2/Clang-PGO runtime as an A/B variable because
           the real Pokopia log showed a large launch regression and no meaningful heavy-scene FPS gain.
