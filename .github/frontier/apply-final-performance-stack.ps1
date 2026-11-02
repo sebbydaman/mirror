@@ -87,7 +87,9 @@ try {
     Write-Host '[FINAL PERF] Applying optional golden HostMemory fallback toggle'
     & $goldenHostmem
 
-    & (Join-Path $root 'apply-build142-runtime.ps1')
+    # Build-142 GPU-written command-list copies remain a queued donor experiment. Do not compose
+    # apply-build142-runtime.ps1 here until the timing/feel and task/mesh shader-correctness gates
+    # have passed; mixing it now would invalidate those controlled A/B tests.
 
     git diff --check
     if ($LASTEXITCODE -ne 0) {
