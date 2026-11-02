@@ -39,26 +39,27 @@ if (-not $h.Contains('GetEntriesForRomFSBuild() const;')) {
 
 if (-not $h.Contains('#include <utility>')) {
     $anchor = '#include <string_view>'
-    if (-not $h.Contains($anchor)) { throw 'Windows RomFS enumeration fast path: utility include anchor missing' }
+    if (-not $h.Contains($anchor)) {
+        throw 'Windows RomFS enumeration fast path: utility include anchor missing'
+    }
     $h = $h.Replace($anchor, "#include <string_view>`n#include <utility>")
 }
 
-[IO.File]::WriteAllText((Resolve-Path $header).Path, $h.TrimEnd("`r", "`n") + "`n", [Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText((Resolve-Path $header).Path,
+    $h.TrimEnd("`r", "`n") + "`n", [Text.UTF8Encoding]::new($false))
 
 # ---- Windows-native RealVfsDirectory enumeration ---------------------------------------------
 $s = Normalize (Get-Content $source -Raw)
 
 if (-not $s.Contains('FindFirstFileExW(')) {
-    $includeAnchor = @'
-#ifdef _WIN32
-#include <cstdio> // _getmaxstdio
-#else
-'@
-    if (-not $s.Contains($includeAnchor.TrimEnd("`r", "`n"))) {
-        throw 'Windows RomFS enumeration fast path: Windows include anchor missing'
+    # Use a deliberately small anchor. Earlier versions matched the whole _WIN32/#else block,
+    # which was unnecessarily brittle once integration scripts adjusted nearby preprocessor text.
+    $cstdioAnchor = '#include <cstdio> // _getmaxstdio'
+    if (-not $s.Contains($cstdioAnchor)) {
+        throw 'Windows RomFS enumeration fast path: _getmaxstdio include anchor missing'
     }
-    $includeReplacement = @'
-#ifdef _WIN32
+
+    $windowsIncludes = @'
 #include <cstdio> // _getmaxstdio
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -83,9 +84,8 @@ if (-not $s.Contains('FindFirstFileExW(')) {
 #ifdef RemoveDirectory
 #undef RemoveDirectory
 #endif
-#else
 '@
-    $s = $s.Replace($includeAnchor.TrimEnd("`r", "`n"), $includeReplacement.TrimEnd("`r", "`n"))
+    $s = $s.Replace($cstdioAnchor, $windowsIncludes.TrimEnd("`r", "`n"))
 
     $methodAnchor = @'
 std::vector<VirtualDir> RealVfsDirectory::GetSubdirectories() const {
@@ -117,6 +117,12 @@ RealVfsDirectory::GetEntriesForRomFSBuild() const {
     WIN32_FIND_DATAW entry{};
     HANDLE handle = FindFirstFileExW(search_path.c_str(), FindExInfoBasic, &entry,
                                      FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH);
+    if (handle == INVALID_HANDLE_VALUE && GetLastError() == ERROR_INVALID_PARAMETER) {
+        // Some filesystems do not accept FIND_FIRST_EX_LARGE_FETCH. Retry the same native path
+        // without that advisory flag instead of falling all the way back to std::filesystem.
+        handle = FindFirstFileExW(search_path.c_str(), FindExInfoBasic, &entry,
+                                  FindExSearchNameMatch, nullptr, 0);
+    }
     if (handle == INVALID_HANDLE_VALUE) {
         const DWORD error = GetLastError();
         if (error == ERROR_FILE_NOT_FOUND) {
@@ -161,10 +167,12 @@ RealVfsDirectory::GetEntriesForRomFSBuild() const {
 #endif
 }
 '@
-    $s = $s.Replace($methodAnchor.TrimEnd("`r", "`n"), $methodReplacement.TrimEnd("`r", "`n"))
+    $s = $s.Replace($methodAnchor.TrimEnd("`r", "`n"),
+                    $methodReplacement.TrimEnd("`r", "`n"))
 }
 
-[IO.File]::WriteAllText((Resolve-Path $source).Path, $s.TrimEnd("`r", "`n") + "`n", [Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText((Resolve-Path $source).Path,
+    $s.TrimEnd("`r", "`n") + "`n", [Text.UTF8Encoding]::new($false))
 
 # ---- Route physical loose RomFS trees through the one-pass enumerator ------------------------
 $r = Normalize (Get-Content $romfs -Raw)
@@ -173,7 +181,8 @@ if (-not $r.Contains('GetEntriesForRomFSBuild()')) {
     if (-not $r.Contains($includeAnchor)) {
         throw 'Windows RomFS enumeration fast path: RomFS VFS include anchor missing'
     }
-    $r = $r.Replace($includeAnchor, $includeAnchor + "`n#include `"core/file_sys/vfs/vfs_real.h`"")
+    $r = $r.Replace($includeAnchor,
+        $includeAnchor + "`n#include `"core/file_sys/vfs/vfs_real.h`"")
 
     $visitAnchor = @'
 void RomFSBuildContext::VisitDirectory(VirtualDir romfs_dir, VirtualDir ext_dir,
@@ -199,16 +208,19 @@ void RomFSBuildContext::VisitDirectory(VirtualDir romfs_dir, VirtualDir ext_dir,
 
     for (auto& child_romfs_file : child_files) {
 '@
-    $r = $r.Replace($visitAnchor.TrimEnd("`r", "`n"), $visitReplacement.TrimEnd("`r", "`n"))
+    $r = $r.Replace($visitAnchor.TrimEnd("`r", "`n"),
+                    $visitReplacement.TrimEnd("`r", "`n"))
 
     $dirLoopAnchor = '    for (auto& child_romfs_dir : romfs_dir->GetSubdirectories()) {'
     if (-not $r.Contains($dirLoopAnchor)) {
         throw 'Windows RomFS enumeration fast path: VisitDirectory directory-loop anchor missing'
     }
-    $r = $r.Replace($dirLoopAnchor, '    for (auto& child_romfs_dir : child_directories) {')
+    $r = $r.Replace($dirLoopAnchor,
+                    '    for (auto& child_romfs_dir : child_directories) {')
 }
 
-[IO.File]::WriteAllText((Resolve-Path $romfs).Path, $r.TrimEnd("`r", "`n") + "`n", [Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText((Resolve-Path $romfs).Path,
+    $r.TrimEnd("`r", "`n") + "`n", [Text.UTF8Encoding]::new($false))
 
 # ---- Structural verification ----------------------------------------------------------------
 git diff --check -- $header $source $romfs
