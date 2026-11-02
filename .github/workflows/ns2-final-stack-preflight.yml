@@ -25,8 +25,7 @@ jobs:
   preflight:
     runs-on: windows-2022
     timeout-minutes: 15
-    env:
-      EDEN_SKIP_POST_BUILD31_FRONTIER: '1'
+
     steps:
       - name: Checkout build automation
         uses: actions/checkout@v5
@@ -57,88 +56,15 @@ jobs:
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-handheld-mode.ps1"
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-late-stability.ps1"
 
-      - name: 01 Zortos build31 performance
-        shell: pwsh
-        working-directory: eden
-        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-zortos-build31-perf.ps1"'
-
-      - name: 02 Zortos partial write
-        shell: pwsh
-        working-directory: eden
-        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-zortos-build31-partial-write.ps1"'
-
-      - name: 03 Legacy hotpath cleanup
-        shell: pwsh
-        working-directory: eden
-        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-ns2-legacy-hotpath-cleanup.ps1"'
-
-      - name: 04 Pipeline worker budget
-        shell: pwsh
-        working-directory: eden
-        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-ns2-pipeline-worker-budget.ps1"'
-
-      - name: 05 Broken-driver worker budget
-        shell: pwsh
-        working-directory: eden
-        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-ns2-broken-driver-worker-budget.ps1"'
-
-      - name: 06 DMA increasing-run fastpath
-        shell: pwsh
-        working-directory: eden
-        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-dma-increasing-run-fastpath.ps1"'
-
-      - name: 07 DMA increasing front cache
-        shell: pwsh
-        working-directory: eden
-        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-dma-increasing-front-cache.ps1"'
-
-      - name: 08 Vulkan descriptor scratch reuse
-        shell: pwsh
-        working-directory: eden
-        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-vulkan-descriptor-scratch-reuse.ps1"'
-
-      - name: 09 Texture sampler ID vector cache
-        shell: pwsh
-        working-directory: eden
-        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-texture-sampler-id-vector-cache.ps1"'
-
-      - name: 10 Texture image-view ID vector cache
-        shell: pwsh
-        working-directory: eden
-        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-texture-image-view-id-vector-cache.ps1"'
-
-      - name: 11 Texture DMA download-state inheritance
-        shell: pwsh
-        working-directory: eden
-        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-texture-dma-download-state-inheritance.ps1"'
-
-      - name: 12 Descriptor-table span cache
-        shell: pwsh
-        working-directory: eden
-        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-descriptor-table-span-cache.ps1"'
-
-      - name: 13 Memory-manager range notify
-        shell: pwsh
-        working-directory: eden
-        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-memory-manager-range-notify.ps1"'
-
-      - name: 14 Pushbuffer map-generation hardening
-        shell: pwsh
-        working-directory: eden
-        run: '& "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-pushbuffer-mapgen-hardening.ps1"'
-
-      - name: 15 Loose RomFS memoization
-        shell: pwsh
-        working-directory: eden
-        run: '& "$env:GITHUB_WORKSPACE\automation\.github\experiments\apply-loose-romfs-memoization.ps1"'
-
-      - name: Validate combined diff
+      - name: Apply canonical final NS2 performance stack
         shell: pwsh
         working-directory: eden
         run: |
+          & "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-final-performance-stack.ps1"
+          if ($LASTEXITCODE -ne 0) { throw 'Final performance stack failed to apply' }
           git diff --check
           if ($LASTEXITCODE -ne 0) { throw 'Combined performance stack failed git diff --check' }
-          Write-Host '[PASS] All final production performance patches applied cleanly.'
+          Write-Host '[PASS] Canonical final performance stack applied cleanly.'
 
       - name: Regression 01 core NS2
         shell: pwsh
