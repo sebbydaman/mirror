@@ -13,6 +13,7 @@ $scripts = @(
     'apply-ns2-legacy-hotpath-cleanup.ps1',
     'apply-ns2-pipeline-worker-budget.ps1',
     'apply-ns2-translation-worker-budget.ps1',
+    'apply-ns2-pipeline-cache-load-diagnostics-v2.ps1',
     'apply-ns2-shader-reuse-variants.ps1',
     'apply-ns2-broken-driver-worker-budget.ps1',
     'apply-dma-increasing-run-fastpath.ps1',
