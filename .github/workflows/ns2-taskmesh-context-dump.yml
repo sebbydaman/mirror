@@ -1,0 +1,83 @@
+name: NS2 task-mesh assembled context dump
+
+on:
+  push:
+    branches:
+      - ns2-pokopia-startup-fast-win32
+    paths:
+      - '.github/workflows/ns2-taskmesh-context-dump.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ns2-taskmesh-context-dump-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dump-context:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    env:
+      EDEN_SKIP_POST_BUILD31_FRONTIER: '1'
+    steps:
+      - name: Checkout build automation
+        uses: actions/checkout@v5
+        with:
+          path: automation
+          fetch-depth: 1
+
+      - name: Checkout pinned Eglantine source
+        uses: actions/checkout@v5
+        with:
+          repository: Djihads80/Eglantine
+          ref: f362528c0447c491bfe00c0bdd5d8c245396a24c
+          path: eden
+          fetch-depth: 1
+
+      - name: Assemble exact current Pokopia stack
+        shell: pwsh
+        working-directory: eden
+        run: |
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-integration.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-positive-shader-cache.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-bananza-generic-overlap.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-draw-state-cache.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-nso-loader.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-nx2-memory-layout.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-bananza-post-menu-gpu.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-late-runtime.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-handheld-mode.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-late-stability.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-final-performance-stack.ps1"
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'Current assembled stack failed diff check' }
+          git rev-parse HEAD | Set-Content "$env:RUNNER_TEMP\assembled-head.txt"
+
+      - name: Stage exact conflict contexts
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'taskmesh-context'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $files = @(
+            'src/shader_recompiler/backend/glasm/emit_glasm.cpp',
+            'src/shader_recompiler/backend/glasm/glasm_emit_context.cpp',
+            'src/shader_recompiler/backend/glsl/glsl_emit_context.cpp',
+            'src/shader_recompiler/stage.h'
+          )
+          foreach ($file in $files) {
+            $safe = $file.Replace('/', '__')
+            Copy-Item $file (Join-Path $out $safe)
+          }
+          Copy-Item "$env:RUNNER_TEMP\assembled-head.txt" (Join-Path $out 'assembled-head.txt')
+          git diff -- $files | Set-Content (Join-Path $out 'assembled-local-diff.patch') -Encoding utf8
+
+      - name: Upload assembled contexts
+        uses: actions/upload-artifact@v7
+        with:
+          name: taskmesh-context-${{ github.sha }}
+          path: ${{ runner.temp }}/taskmesh-context
+          if-no-files-found: error
+          retention-days: 3
