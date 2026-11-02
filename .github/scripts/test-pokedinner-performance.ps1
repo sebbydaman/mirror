@@ -25,6 +25,7 @@ $vkRasterizer = 'src/video_core/renderer_vulkan/vk_rasterizer.cpp'
 $vkScheduler = 'src/video_core/renderer_vulkan/vk_scheduler.cpp'
 $vkSchedulerHeader = 'src/video_core/renderer_vulkan/vk_scheduler.h'
 $vkPresent = 'src/video_core/renderer_vulkan/vk_present_manager.cpp'
+$vkPipelineCache = 'src/video_core/renderer_vulkan/vk_pipeline_cache.cpp'
 $bufferBase = 'src/video_core/buffer_cache/buffer_cache_base.h'
 $bufferCache = 'src/video_core/buffer_cache/buffer_cache.h'
 $rangeSets = 'src/common/range_sets.inc'
@@ -56,6 +57,13 @@ Require-Text $vkRasterizer 'CHECK_MASK = 31;' 'Vulkan worker dispatch every 32 d
 Require-Text $vkScheduler 'worker_waiting' 'wake Vulkan worker only when waiting'
 Require-Text $vkSchedulerHeader 'WaitForSubmission' 'async-present scheduler no-cross-thread-flush guard'
 Require-Text $vkPresent 'AcquireNextImage(!use_present_thread)' 'async-present safe acquire path'
+
+# Native graphics translation is independent from the builder budget. On a 12-thread 7600X the
+# final stack should retain 3 builders while allowing two native translators to drain Pokopia's
+# race-start bursts. Keep the override so the exact count can be A/B tested without rebuilding.
+Require-Text $vkPipelineCache 'EDEN_NX2_TRANSLATION_WORKERS' 'independent Switch 2 native translation-worker override'
+Require-Text $vkPipelineCache 'const size_t DefaultNx2TranslationWorkers = 2ULL;' 'two-worker Switch 2 native translation default'
+Require-Text $vkPipelineCache 'std::min(pipeline_workers, DefaultNx2TranslationWorkers)' 'translation workers bounded by builder pool'
 
 # Buffer/inline hot paths. Per-fence downloads stay disabled by default for native-tiled Switch 2
 # memory; EDEN_NX2_BUFFER_DOWNLOADS=1 remains a correctness/debug fallback.
