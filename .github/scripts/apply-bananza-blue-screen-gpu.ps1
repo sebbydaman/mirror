@@ -1,20 +1,28 @@
 $ErrorActionPreference = "Stop"
 
 # Bananza reaches gameplay with HUD/audio/input alive but the world clear-colour only.
-# PokeDinner 2.0 now implements several of the originally captured failure modes with newer,
-# broader source shapes. Preserve those donor implementations and only add semantics that are
-# genuinely still missing instead of requiring the old Eglantine spelling.
+# PokeDinner 2.0 and Eglantine build167 implement several of the originally captured failure
+# modes with newer, broader source shapes. Preserve those donor implementations and only add
+# semantics that are genuinely still missing instead of requiring the old Eglantine spelling.
 $amperePath = "src/shader_recompiler/frontend/ampere/lower_to_maxwell.h"
 $text = Get-Content $amperePath -Raw
 
 # -----------------------------------------------------------------------------
 # B82 LDC: width 0 is the 32-bit form. Legacy Eglantine admitted only 4/5;
-# PokeDinner 2.0's width > 5 guard already admits 0..5 and therefore supersedes this patch.
+# PokeDinner 2.0's width > 5 guard already admits 0..5. Build167 retained a narrower 4/5 guard
+# while adding mode 2 (.IS), so extend that guard without losing the newer addressing mode.
 # -----------------------------------------------------------------------------
 $oldB82 = '            if ((width != 4 && width != 5) || insn.Bits(78, 2) || insn.Bits(91, 1) ||'
 $newB82 = '            if ((width != 0 && width != 4 && width != 5) || insn.Bits(78, 2) || insn.Bits(91, 1) ||'
 $donorB82 = '            if (width > 5 || insn.Bits(78, 2) || insn.Bits(91, 1) ||'
-if ($text.Contains($oldB82)) {
+$build167B82 = '            if ((width != 4 && width != 5) || (mode != 0 && mode != 2) || insn.Bits(91, 1) ||'
+$build167B82New = '            if ((width != 0 && width != 4 && width != 5) || (mode != 0 && mode != 2) || insn.Bits(91, 1) ||'
+if ($text.Contains($build167B82)) {
+    $text = $text.Replace($build167B82, $build167B82New)
+    Write-Host "Added native B82 32-bit indexed constant-load lowering while preserving build167 .IS mode."
+} elseif ($text.Contains($build167B82New)) {
+    Write-Host "Build167 B82 32-bit/.IS lowering already present."
+} elseif ($text.Contains($oldB82)) {
     $text = $text.Replace($oldB82, $newB82)
     Write-Host "Added native B82 32-bit indexed constant-load lowering."
 } elseif ($text.Contains($newB82)) {
@@ -26,8 +34,8 @@ if ($text.Contains($oldB82)) {
 }
 
 # -----------------------------------------------------------------------------
-# VOTEU: legacy code guarded the raw target number. PokeDinner 2.0 instead validates through
-# uniform_register(), whose mapping covers UR0..UR27. Both forms satisfy Bananza's UR16 case.
+# VOTEU: legacy/build167 code guarded the raw target number. PokeDinner 2.0 instead validates
+# through uniform_register(), whose mapping covers UR0..UR27. Both forms satisfy Bananza's UR16.
 # -----------------------------------------------------------------------------
 $oldVote = '            if ((target >= 16 && target != 63) || insn.words[1] ||'
 $newVote = '            if ((target >= 28 && target != 63) || insn.words[1] ||'
@@ -45,8 +53,8 @@ if ($text.Contains($oldVote)) {
 }
 
 # -----------------------------------------------------------------------------
-# F2I: preserve the legacy patch path, but recognize PokeDinner 2.0's newer implementation.
-# The donor explicitly classifies the 32-bit family and emits bits 78..79 as Maxwell rounding.
+# F2I: preserve the legacy patch path, but recognize PokeDinner 2.0/build167 implementations.
+# Build167 uses the newer ~0x10100 mode mask; keep it rather than replacing it with the older mask.
 # -----------------------------------------------------------------------------
 $nearest = '            const bool nearest = (mode & ~0x10100U) == 0x00203000;'
 $word = '            const bool word = (mode & ~0x1c100U) == 0x00203000;'
@@ -57,10 +65,17 @@ if (-not $text.Contains($word)) {
 
 $oldF2IReject = '            if ((!half && !small && !floor && !nearest && !byte && !short_word && (mode & ~0x100U) != 0x0021f000) ||'
 $newF2IReject = '            if ((!half && !small && !floor && !nearest && !word && !byte && !short_word && (mode & ~0x100U) != 0x0021f000) ||'
+$build167F2IReject = '            if ((!half && !small && !floor && !nearest && !byte && !short_word && (mode & ~0x10100U) != 0x0020f000) ||'
+$build167F2IRejectNew = '            if ((!half && !small && !floor && !nearest && !word && !byte && !short_word && (mode & ~0x10100U) != 0x0020f000) ||'
 $donorF2IReject = '            if ((!half && !small && !word && !byte && !short_word) ||'
-if ($text.Contains($oldF2IReject)) {
+if ($text.Contains($build167F2IReject)) {
+    $text = $text.Replace($build167F2IReject, $build167F2IRejectNew)
+    Write-Host "Extended build167 F2I rejection guard with the 32-bit rounding family."
+} elseif ($text.Contains($oldF2IReject)) {
     $text = $text.Replace($oldF2IReject, $newF2IReject)
-} elseif (-not $text.Contains($newF2IReject) -and -not $text.Contains($donorF2IReject)) {
+} elseif (-not $text.Contains($build167F2IRejectNew) -and
+          -not $text.Contains($newF2IReject) -and
+          -not $text.Contains($donorF2IReject)) {
     throw "Could not verify F2I rejection guard after 32-bit mode classification"
 }
 
@@ -75,16 +90,18 @@ if ($text.Contains($oldRound)) {
 Write-Host "Native 32-bit F2I rounding-family lowering is present."
 
 # -----------------------------------------------------------------------------
-# MUFU uniform-source D08. PokeDinner 2.0 already includes D08 and an extra 0x908 form.
-# Preserve the older Bananza operation-9 allowance where still needed, adapting the donor's
-# newer modifiers guard rather than replacing its operand handling.
+# MUFU uniform-source D08. Build167 already has D08 and a broad uniform-bank opcode table, while
+# PokeDinner 2.0 also has a 0x908 form. Preserve either and add only Bananza's operation-9 allowance.
 # -----------------------------------------------------------------------------
 $oldUniformUse = 'op == 0x2a5 || op == 0xd06 || op == 0x299'
 $newUniformUse = 'op == 0x2a5 || op == 0xd06 || op == 0xd08 || op == 0x299'
+$build167UniformD08 = $text.Contains('op == 0xd08')
 if ($text.Contains($oldUniformUse)) {
     $text = $text.Replace($oldUniformUse, $newUniformUse)
-} elseif (-not $text.Contains($newUniformUse)) {
+} elseif (-not $text.Contains($newUniformUse) -and -not $build167UniformD08) {
     throw "Could not verify uniform-bank detection for D08"
+} elseif ($build167UniformD08) {
+    Write-Host "Build167 broad uniform-bank table already includes D08."
 }
 
 $oldMufuCase = '        case 0x308: case 0xb08: { // MUFU'
@@ -105,7 +122,23 @@ $legacyMufuGuardNew = @'
 $legacyMufuGuardNew = $legacyMufuGuardNew.TrimEnd("`r", "`n")
 $donorMufuGuard = '            if (operation > 8 || operation == 6 || operation == 7 || modifiers) return fail(index, "native MUFU mode");'
 $donorMufuGuardNew = '            if (operation > 9 || (operation == 9 && insn.Bits(73, 1)) || operation == 6 || operation == 7 || modifiers) return fail(index, "native MUFU mode");'
-if ($text.Contains($legacyMufuGuard)) {
+$build167MufuGuard = @'
+            if (operation > 8 || operation == 6 || operation == 7 ||
+                insn.Bits(80, 12) != (opcode == 0xd08 ? 0x800U : 0U))
+                return fail(index, "native MUFU mode");
+'@
+$build167MufuGuardNew = @'
+            if (operation > 9 || (operation == 9 && insn.Bits(73, 1)) ||
+                operation == 6 || operation == 7 ||
+                insn.Bits(80, 12) != (opcode == 0xd08 ? 0x800U : 0U))
+                return fail(index, "native MUFU mode");
+'@
+$build167MufuGuard = $build167MufuGuard.TrimEnd("`r", "`n")
+$build167MufuGuardNew = $build167MufuGuardNew.TrimEnd("`r", "`n")
+if ($text.Contains($build167MufuGuard)) {
+    $text = $text.Replace($build167MufuGuard, $build167MufuGuardNew)
+    Write-Host "Added operation-9 compatibility to build167 MUFU while preserving its D08 encoding guard."
+} elseif ($text.Contains($legacyMufuGuard)) {
     $text = $text.Replace($legacyMufuGuard, $legacyMufuGuardNew)
 } elseif ($text.Contains($donorMufuGuard)) {
     $text = $text.Replace($donorMufuGuard, $donorMufuGuardNew)
@@ -116,8 +149,7 @@ Write-Host "Native D08 uniform-source MUFU lowering and operation-9 compatibilit
 
 Set-Content -Path $amperePath -Value $text -Encoding utf8 -NoNewline
 
-# Semantic regression checks that accept both the validated legacy lowering and the broader
-# PokeDinner 2.0 implementation.
+# Semantic regression checks that accept validated legacy, PokeDinner 2.0 and build167 shapes.
 $check = Get-Content $amperePath -Raw
 $b82Ok = $check.Contains('(width != 0 && width != 4 && width != 5)') -or
          ($check.Contains('case 0xb82: { // LDC, 8 to 64 bits, indexed byte offset') -and $check.Contains($donorB82))
@@ -125,8 +157,11 @@ $voteOk = $check.Contains('(target >= 28 && target != 63)') -or
           ($check.Contains('case 0x886: { // VOTEU ballot and independent uniform predicate output.') -and
            $check.Contains($donorVote) -and $check.Contains('if (reg < 28) return 218 + reg;'))
 $f2iOk = $check.Contains($word) -and ($check.Contains($newRound) -or $check.Contains($donorRound))
+$uniformD08Ok = $check.Contains($newUniformUse) -or
+                ($check.Contains('op == 0xd08') -and
+                 ($check.Contains($newMufuCase) -or $check.Contains($donorMufuCase)))
 $mufuOk = ($check.Contains($newMufuCase) -or $check.Contains($donorMufuCase)) -and
-          $check.Contains($newUniformUse) -and
+          $uniformD08Ok -and
           $check.Contains('operation > 9 || (operation == 9 && insn.Bits(73, 1))')
 if (-not $b82Ok) { throw 'Bananza blue-screen regression: B82 32-bit form missing' }
 if (-not $voteOk) { throw 'Bananza blue-screen regression: VOTEU UR16+ mapping missing' }
