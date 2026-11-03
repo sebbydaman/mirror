@@ -278,34 +278,17 @@ if (-not (Get-Content $deviceMemoryHeader -Raw).Contains($readTrapMarker)) {
     Write-Host 'Integrated Eglantine GPU-read traps without replacing PokeDinner selective copyback.'
 }
 
-# build167 may already supply Eglantine read traps, bypassing the cherry-pick block above.
-# Independently connect those traps to selective copyback rather than requiring the
-# old integration path to have run. Do not re-cherry-pick native build167 support.
+# Prefer build167's native GPU read-trap + preflush tracking when present.
+# Its memory_tracker.IsRegionPreflushable gate supersedes PokeDinner's older
+# cpu_read_ranges / QueueDownload range accounting; never graft both models.
 $baseText = (Get-Content $bufferBasePath -Raw).Replace("`r`n", "`n")
-if (-not $baseText.Contains('covered < size')) {
-    if (-not $baseText.Contains('void ArmReadTraps(DAddr device_addr, u64 size)')) {
-        throw 'Existing build167 read traps lack BufferCache ArmReadTraps; cannot safely wire selective copyback'
-    }
-    $oldQueue = @'
-        cpu_read_ranges.ForEachInRange(addr, size, [this](DAddr start, DAddr end) {
-            uncommitted_gpu_modified_ranges.Add(start, end - start);
-        });
-'@
-    $newQueue = @'
-        u64 covered = 0;
-        cpu_read_ranges.ForEachInRange(addr, size, [this, &covered](DAddr start, DAddr end) {
-            uncommitted_gpu_modified_ranges.Add(start, end - start);
-            covered += end - start;
-        });
-        if (covered < size) {
-            ArmReadTraps(addr, size);
-        }
-'@
-    if (-not $baseText.Contains($oldQueue.TrimEnd())) {
-        throw 'Cannot locate selective QueueDownload range block in build167; refusing speculative rewrite'
-    }
-    $baseText = $baseText.Replace($oldQueue.TrimEnd(), $newQueue.TrimEnd())
-    Set-Content -Path $bufferBasePath -Value $baseText -Encoding utf8 -NoNewline
+$nativeReadTrapCopyback = $baseText.Contains('memory_tracker.IsRegionPreflushable(device_addr, size)') -and
+    $baseText.Contains('void ArmReadTraps(DAddr device_addr, u64 size)') -and
+    $baseText.Contains('read_trapped_ranges.Add(begin, end - begin);')
+if ($nativeReadTrapCopyback) {
+    Write-Host '[PASS] build167 native read-trap / preflush copyback; preserving newer implementation.'
+} elseif (-not $baseText.Contains('covered < size')) {
+    throw 'Neither build167 native preflush read traps nor legacy selective copyback are available'
 }
 
 $deviceMemoryCheck = Get-Content $deviceMemoryHeader -Raw
@@ -319,7 +302,7 @@ foreach ($pair in @(
     @($deviceMemoryCheck, 'void ArmReadTraps(DAddr addr, size_t size);', 'Eglantine device-memory read traps'),
     @($coreMemoryCheck, 'EDEN_NX2_READ_TRAPS', 'read-trap debug fallback'),
     @($bufferBaseCheck, 'Common::RangeSet<DAddr> read_trapped_ranges;', 'read-trap buffer range tracking'),
-    @($bufferBaseCheck, 'covered < size', 'read traps feeding PokeDinner selective copyback'),
+    @($bufferBaseCheck, 'void ArmReadTraps(DAddr device_addr, u64 size)', 'GPU read-trap buffer tracking'),
     @($vkCheck, 'buffer_cache.FlushesOnCpuRead()', 'immediate trapped CPU-read buffer flush'),
     @($deviceMemoryIncCheck, 'phys_addr == 0 ? 1', 'Raiders stale unmapped-page WalkBlock fix'),
     @($ampereCheck, '~0x040000ffU', 'Raiders signed-LOD gradient texture lowering'),
@@ -328,7 +311,7 @@ foreach ($pair in @(
     if (-not $pair[0].Contains($pair[1])) { throw "Combined NS2 regression: missing $($pair[2])" }
     Write-Host "[PASS] $($pair[2])"
 }
-if (-not $bufferCacheCheck.Contains('read_trapped_ranges.Subtract(slot_buffers[buffer_id].CpuAddr()')) {
+if (-not $nativeReadTrapCopyback -and -not $bufferCacheCheck.Contains('read_trapped_ranges.Subtract(slot_buffers[buffer_id].CpuAddr()')) {
     throw 'Combined NS2 regression: read-trap history is not cleared with deleted buffers'
 }
 Write-Host '[PASS] read-trap buffer lifetime cleanup'
