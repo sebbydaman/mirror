@@ -185,7 +185,10 @@ foreach ($marker in $drawUboMarkers) {
 if ($drawUboPresent -eq $drawUboMarkers.Count) {
     Write-Host '[PRESENT] rejected-shader early bailout + per-tick uniform stream reuse'
 } elseif ($drawUboPresent -ne 0) {
-    throw "Partial PR160/PR162 draw/UBO optimization state detected ($drawUboPresent/$($drawUboMarkers.Count)); refusing mixed apply"
+    # These two independent optional donors have overlapping markers with build167.
+    # Never apply the combined legacy patch over a partially matching native tree;
+    # keep the native implementation and port missing pieces individually later.
+    Write-Host "[DEFERRED] PR160/PR162 optional draw/UBO donor overlaps native build167 ($drawUboPresent/$($drawUboMarkers.Count markers); no mixed patch applied"
 } else {
     $encoded = @'
 H4sIAJjK5moC/7Va61PbSBL/7r9ikqtizWELP3gYA64kxOFSFQgFIZs6ilKNpZGtQ5a0M5KDl3B/+3XPjGSNJPOo2/UHkKWZnn73r1t2fc8j7fbUTwjdFtzZ
