@@ -29,7 +29,7 @@ if (-not $shaderEnv.Contains('const bool native_tessellation_eval = program == M
     $oldGuard = @'
         const bool native_geometry = program == Maxwell::ShaderType::Geometry;
         if (program != Maxwell::ShaderType::VertexB && program != Maxwell::ShaderType::Pixel &&
-            !native_geometry) {
+            !mesh_slot && !native_geometry) {
             throw Shader::RuntimeError("Unsupported native graphics shader stage {}", static_cast<u32>(program));
         }
         if (native_geometry) {
@@ -50,7 +50,7 @@ if (-not $shaderEnv.Contains('const bool native_tessellation_eval = program == M
         const bool native_geometry = program == Maxwell::ShaderType::Geometry;
         const bool native_tessellation_eval = program == Maxwell::ShaderType::Tessellation;
         if (program != Maxwell::ShaderType::VertexB && program != Maxwell::ShaderType::Pixel &&
-            !native_geometry && !native_tessellation_eval) {
+            !mesh_slot && !native_geometry && !native_tessellation_eval) {
             throw Shader::RuntimeError("Unsupported native graphics shader stage {}", static_cast<u32>(program));
         }
         if (native_geometry) {
@@ -97,7 +97,7 @@ if (-not $shaderEnv.Contains('const bool native_tessellation_eval = program == M
 $check = Read-Lf $shaderEnvPath
 foreach ($needle in @(
     'const bool native_tessellation_eval = program == Maxwell::ShaderType::Tessellation;',
-    '!native_geometry && !native_tessellation_eval',
+    '!mesh_slot && !native_geometry && !native_tessellation_eval',
     'static_cast<u32>(sph.common0.shader_type) != static_cast<u32>(program)',
     'Invalid native tessellation SPH:',
     'program == Maxwell::ShaderType::Tessellation ? 2 : 0'
@@ -105,7 +105,7 @@ foreach ($needle in @(
     if (-not $check.Contains($needle)) { throw "Runtime-v6 tessellation regression: missing $needle" }
 }
 
-Write-Host 'Enabled strictly validated native Tessellation evaluation-stage admission; unknown/task-mesh semantics remain rejected by the Ampere lowering.'
+Write-Host 'Enabled strictly validated native Tessellation evaluation-stage admission while preserving build167 mesh-slot admission; unknown task/mesh semantics remain rejected by the Ampere lowering.'
 
 # Native task/mesh pipeline foundation: expose VK_EXT_mesh_shader through Eden's existing
 # feature/property chain. This does not execute mesh work yet; it gives later Task/Mesh SPIR-V
