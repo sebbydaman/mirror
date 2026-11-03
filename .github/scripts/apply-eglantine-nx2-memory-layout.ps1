@@ -92,11 +92,25 @@ $oldSvcBody = @'
               .GetPageTable()
               .SetHeapSize(std::addressof(address), size));
 '@
+$build167SvcBody = @'
+    // Validate size.
+    R_UNLESS(Common::IsAligned(size, HeapSizeAlignment), ResultInvalidSize);
+    // Switch 2 titles size their heap from the total memory, which exceeds Switch 1's 8 GiB.
+    const size_t max_heap_size =
+        (std::max)(MainMemorySizeMax, KSystemControl::Init::GetIntendedMemorySize());
+    R_UNLESS(size < max_heap_size, ResultInvalidSize);
+
+    // Set the heap size.
+    KProcessAddress address{};
+    R_TRY(GetCurrentProcess(system.Kernel())
+              .GetPageTable()
+              .SetHeapSize(std::addressof(address), size));
+'@
 $newSvcBody = @'
     auto& process = GetCurrentProcess(system.Kernel());
 
     // Validate size against the actual process heap region. Switch 1 remains capped by the
-    // historical 8 GiB MainMemorySizeMax; 12 GiB Switch 2 layouts expose a 12 GiB heap region.
+    // historical 8 GiB MainMemorySizeMax; larger Switch 2 layouts use the dynamically sized heap.
     R_UNLESS(Common::IsAligned(size, HeapSizeAlignment), ResultInvalidSize);
     R_UNLESS(size < std::max(MainMemorySizeMax, process.GetPageTable().GetHeapRegionSize()),
              ResultInvalidSize);
@@ -106,10 +120,14 @@ $newSvcBody = @'
     R_TRY(process.GetPageTable().SetHeapSize(std::addressof(address), size));
 '@
 if (-not $svcText.Contains($newSvcBody.Trim())) {
-    if (-not $svcText.Contains($oldSvcBody.Trim())) {
+    if ($svcText.Contains($build167SvcBody.Trim())) {
+        $svcText = $svcText.Replace($build167SvcBody.Trim(), $newSvcBody.Trim())
+        Write-Host "Upgraded build167 SetHeapSize total-memory cap to actual dynamic heap-region cap"
+    } elseif ($svcText.Contains($oldSvcBody.Trim())) {
+        $svcText = $svcText.Replace($oldSvcBody.Trim(), $newSvcBody.Trim())
+    } else {
         throw "Could not locate SetHeapSize validation/body anchor"
     }
-    $svcText = $svcText.Replace($oldSvcBody.Trim(), $newSvcBody.Trim())
 }
 Set-Content -Path $svcPath -Value $svcText -Encoding utf8 -NoNewline
 Write-Host "Applied: SetHeapSize validation against dynamic heap region"
