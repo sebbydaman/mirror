@@ -135,7 +135,7 @@ foreach ($overlap in $nvnOverlaps) {
     $taskCases = Count-Regex $baseSwitch '(?m)^[ \t]*case Stage::Task:'
     $meshCases = Count-Regex $baseSwitch '(?m)^[ \t]*case Stage::Mesh:'
     if ($taskMapping -ne 1 -or $meshMapping -ne 1 -or $taskCases -ne 1 -or $meshCases -ne 1) {
-        throw "Task/Mesh $($overlap.Label) normalization invalid in base switch for $nvnPath: taskMapping=$taskMapping meshMapping=$meshMapping taskCases=$taskCases meshCases=$meshCases"
+        throw "Task/Mesh $($overlap.Label) normalization invalid in base switch for ${nvnPath}: taskMapping=$taskMapping meshMapping=$meshMapping taskCases=$taskCases meshCases=$meshCases"
     }
     git diff --check -- $nvnPath
     if ($LASTEXITCODE -ne 0) { throw "Task/Mesh $($overlap.Label) normalization failed git diff --check" }
