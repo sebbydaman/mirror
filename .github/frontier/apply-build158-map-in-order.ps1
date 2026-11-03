@@ -49,6 +49,47 @@ function Insert-AfterExactlyOnce([string]$Path, [string]$Anchor, [string]$Block,
     Write-Host "[APPLIED] $Label"
 }
 
+function Insert-AfterFunctionExactlyOnce([string]$Path, [string]$Signature, [string]$Block,
+                                         [string]$PresentMarker, [string]$Label) {
+    $text = Read-Text $Path
+    if ($text.Contains($PresentMarker)) {
+        Write-Host "[PRESENT] $Label"
+        return
+    }
+
+    $count = ([regex]::Matches($text, [regex]::Escape($Signature))).Count
+    if ($count -ne 1) {
+        throw "$Label function signature count is $count (expected exactly 1) in $Path"
+    }
+
+    $signatureStart = $text.IndexOf($Signature, [StringComparison]::Ordinal)
+    $openBrace = $text.IndexOf('{', $signatureStart + $Signature.Length)
+    if ($openBrace -lt 0) {
+        throw "$Label could not locate opening brace after function signature in $Path"
+    }
+
+    $depth = 0
+    $closeBrace = -1
+    for ($i = $openBrace; $i -lt $text.Length; ++$i) {
+        if ($text[$i] -eq '{') {
+            ++$depth
+        } elseif ($text[$i] -eq '}') {
+            --$depth
+            if ($depth -eq 0) {
+                $closeBrace = $i
+                break
+            }
+        }
+    }
+    if ($closeBrace -lt 0) {
+        throw "$Label could not locate balanced function terminator in $Path"
+    }
+
+    $insertion = "`n`n" + $Block.TrimEnd("`r", "`n")
+    Write-Text $Path ($text.Insert($closeBrace + 1, $insertion))
+    Write-Host "[APPLIED] $Label"
+}
+
 $nvPath = 'src/core/hle/service/nvdrv/devices/nvhost_as_gpu.cpp'
 $nv = Read-Text $nvPath
 $runGmmu = 'system.GPU().RunInOrder([gmmu = gmmu.get(), gpu_address, device_address, size] {'
@@ -101,33 +142,25 @@ if ($hasSparseTile) {
 }
 Write-Text $nvPath $nv
 
-# Do not anchor these insertions to neighboring functions/comments: our pinned Eglantine
-# generation places FlushRegion between RunInOrder and OnCPURead, while newer donors do not.
-# The RunInOrder function/declaration itself is the stable semantic anchor.
-$gpuImplRun = @'
-    void RunInOrder(std::function<void()>&& func) {
-        gpu_thread.Run(std::move(func), is_async);
-    }
-'@
+# The integrated production stack can rewrite the RunInOrder body while preserving its API.
+# Locate each function structurally and insert after its balanced closing brace rather than
+# requiring donor-era body text or neighboring comments to remain byte-for-byte identical.
 $gpuImplMap = @'
     void MapInOrder(std::function<void()>&& func) {
         gpu_thread.Run(std::move(func), is_async, true);
     }
 '@
-Insert-AfterExactlyOnce 'src/video_core/gpu.cpp' $gpuImplRun.TrimEnd("`n") `
+Insert-AfterFunctionExactlyOnce 'src/video_core/gpu.cpp' `
+    '    void RunInOrder(std::function<void()>&& func)' `
     $gpuImplMap 'gpu_thread.Run(std::move(func), is_async, true);' 'GPU::Impl MapInOrder handoff'
 
-$gpuPublicRun = @'
-void GPU::RunInOrder(std::function<void()>&& func) {
-    impl->RunInOrder(std::move(func));
-}
-'@
 $gpuPublicMap = @'
 void GPU::MapInOrder(std::function<void()>&& func) {
     impl->MapInOrder(std::move(func));
 }
 '@
-Insert-AfterExactlyOnce 'src/video_core/gpu.cpp' $gpuPublicRun.TrimEnd("`n") `
+Insert-AfterFunctionExactlyOnce 'src/video_core/gpu.cpp' `
+    'void GPU::RunInOrder(std::function<void()>&& func)' `
     $gpuPublicMap 'void GPU::MapInOrder(std::function<void()>&& func)' 'GPU::MapInOrder implementation'
 
 $gpuHeaderPath = 'src/video_core/gpu.h'
