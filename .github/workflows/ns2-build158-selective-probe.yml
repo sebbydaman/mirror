@@ -1,0 +1,141 @@
+name: NS2 build158 selective Pokopia donor probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ns2-pokopia-startup-fast-win32
+    paths:
+      - '.github/workflows/ns2-build158-selective-probe.yml'
+      - '.github/frontier/apply-final-performance-stack.ps1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ns2-build158-selective-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: windows-2022
+    timeout-minutes: 18
+    env:
+      EDEN_SKIP_POST_BUILD31_FRONTIER: '1'
+    strategy:
+      fail-fast: false
+      matrix:
+        candidate:
+          - map-in-order
+          - wait-aware-snapshot
+          - uniform-stream-reuse
+
+    steps:
+      - name: Checkout build automation
+        uses: actions/checkout@v5
+        with:
+          path: automation
+          fetch-depth: 1
+
+      - name: Checkout pinned Eglantine source
+        uses: actions/checkout@v5
+        with:
+          repository: Djihads80/Eglantine
+          ref: f362528c0447c491bfe00c0bdd5d8c245396a24c
+          path: eden
+          fetch-depth: 1
+
+      - name: Assemble exact canonical Pokopia stack
+        shell: pwsh
+        working-directory: eden
+        run: |
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-integration.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-positive-shader-cache.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-bananza-generic-overlap.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-draw-state-cache.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-nso-loader.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-nx2-memory-layout.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-bananza-post-menu-gpu.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-late-runtime.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-handheld-mode.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-late-stability.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-final-performance-stack.ps1"
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'Canonical Pokopia stack failed diff check before build158 probe' }
+          git config user.name 'build158-probe'
+          git config user.email 'build158-probe@invalid.local'
+          git add -A
+          git commit -m 'probe baseline: canonical Pokopia stack'
+          if ($LASTEXITCODE -ne 0) { throw 'Could not checkpoint canonical Pokopia stack' }
+
+      - name: Probe selected build158 donor
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $candidate = '${{ matrix.candidate }}'
+          $sha = switch ($candidate) {
+            'map-in-order' { '9f4f01f76e8556941c0c0c3f57edc1d600ed23ea' }
+            'wait-aware-snapshot' { '256b1dc346e19bc60c2884d4af875fc53ef0a99a' }
+            'uniform-stream-reuse' { '202c6b0356e1fa9366e5b9000df35a63f1eb9dc0' }
+            default { throw "Unknown build158 candidate $candidate" }
+          }
+
+          git fetch --no-tags --depth=1 https://github.com/Djihads80/Eglantine.git $sha
+          if ($LASTEXITCODE -ne 0) { throw "Could not fetch donor $sha" }
+
+          git cherry-pick --no-commit FETCH_HEAD
+          $pickStatus = $LASTEXITCODE
+          $unmerged = @(git diff --name-only --diff-filter=U)
+          if ($pickStatus -ne 0 -or $unmerged.Count -ne 0) {
+            "candidate=$candidate`nsha=$sha`nconflicts=$($unmerged -join ',')" | Set-Content build158-probe-result.txt
+            git status --short | Add-Content build158-probe-result.txt
+            throw "Build158 donor $candidate did not transplant cleanly; conflicts: $($unmerged -join ', ')"
+          }
+
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw "Build158 donor $candidate introduced diff/whitespace errors" }
+
+          switch ($candidate) {
+            'map-in-order' {
+              $gpu = Get-Content 'src/video_core/gpu.cpp' -Raw
+              $thread = Get-Content 'src/video_core/gpu_thread.cpp' -Raw
+              $nv = Get-Content 'src/core/hle/service/nvdrv/devices/nvhost_as_gpu.cpp' -Raw
+              if (-not $gpu.Contains('void GPU::MapInOrder(') -or
+                  -not $thread.Contains('run->before_later_reads') -or
+                  -not $nv.Contains('system.GPU().MapInOrder(')) {
+                throw 'MapInOrder donor symbols are incomplete after transplant'
+              }
+            }
+            'wait-aware-snapshot' {
+              $dma = Get-Content 'src/video_core/dma_pusher.cpp' -Raw
+              $header = Get-Content 'src/video_core/dma_pusher.h' -Raw
+              $puller = Get-Content 'src/video_core/engines/puller.cpp' -Raw
+              if (-not $dma.Contains('command_list.snapshot_suspensions') -or
+                  -not $header.Contains('std::atomic<u64> suspensions') -or
+                  -not $puller.Contains('suspensions.fetch_add')) {
+                throw 'Wait-aware snapshot donor symbols are incomplete after transplant'
+              }
+            }
+            'uniform-stream-reuse' {
+              $buffer = Get-Content 'src/video_core/buffer_cache/buffer_cache.h' -Raw
+              $vk = Get-Content 'src/video_core/renderer_vulkan/vk_buffer_cache.h' -Raw
+              if (-not (Test-Path 'src/video_core/buffer_cache/uniform_stream_reuse.h') -or
+                  -not $buffer.Contains('BindSmallUniformReusing') -or
+                  -not $vk.Contains('RebindStreamUniform')) {
+                throw 'Uniform-stream reuse donor symbols are incomplete after transplant'
+              }
+            }
+          }
+
+          $stat = git diff --stat HEAD
+          "candidate=$candidate`nsha=$sha`nstatus=clean`n$stat" | Set-Content build158-probe-result.txt
+          Write-Host "[PASS] Build158 $candidate donor transplants cleanly onto canonical Pokopia stack."
+
+      - name: Upload probe result
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: build158-${{ matrix.candidate }}-${{ github.sha }}
+          path: eden/build158-probe-result.txt
+          if-no-files-found: warn
+          retention-days: 5
