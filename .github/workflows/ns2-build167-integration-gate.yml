@@ -65,7 +65,7 @@ jobs:
         run: |
           $scripts = @(
             'apply-eglantine-integration.ps1',
-            'apply-build167-positive-shader-cache.ps1',
+            'apply-eglantine-positive-shader-cache.ps1',
             'apply-bananza-generic-overlap.ps1',
             'apply-eglantine-draw-state-cache.ps1',
             'apply-eglantine-nso-loader.ps1',
@@ -101,7 +101,7 @@ jobs:
           if (-not (Select-String -Path 'src/video_core/renderer_vulkan/vk_pipeline_cache.cpp' -SimpleMatch 'CreateGraphicsPipeline(main_pools, graphics_key, environments.Span(), nullptr, true)' -Quiet)) {
             throw 'build167 async native pipeline handoff was regressed by custom stack'
           }
-          if (-not (Select-String -Path 'src/video_core/shader_environment.cpp' -SimpleMatch 'build167_native_shader_positive_cache_mutex' -Quiet)) {
+          if (-not (Select-String -Path 'src/video_core/shader_environment.cpp' -SimpleMatch 'native_shader_positive_cache_mutex' -Quiet)) {
             throw 'build167 positive native shader cache disappeared'
           }
           git diff --check
