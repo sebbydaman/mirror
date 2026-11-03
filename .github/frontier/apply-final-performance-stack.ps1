@@ -106,6 +106,22 @@ try {
     Write-Host '[FINAL PERF] Applying optional golden HostMemory fallback toggle'
     & $goldenHostmem
 
+    # Eglantine build158/build167 fixes the Pokopia GPU-split ordering regression by making GMMU
+    # maps visible before the split front reads command lists submitted later. This adapter has a
+    # dedicated exact-stack source/invariant/Clang compile gate; keep it late in production so it
+    # preserves the current split, pipeline-worker, shader and startup/RomFS composition.
+    $mapInOrder = Join-Path $root 'apply-build158-map-in-order.ps1'
+    if (-not (Test-Path $mapInOrder -PathType Leaf)) {
+        throw "Final NS2 performance stack: missing $mapInOrder"
+    }
+    Write-Host '[FINAL PERF] Applying compile-proven build158/build167 Pokopia MapInOrder fix'
+    try {
+        & $mapInOrder
+    } catch {
+        throw "Final NS2 performance stack failed in apply-build158-map-in-order.ps1: $($_.Exception.Message)"
+    }
+    Write-Host '[FINAL PERF] Completed build158/build167 Pokopia MapInOrder fix'
+
     # Build-142 GPU-written command-list copies remain a queued donor experiment. Do not compose
     # apply-build142-runtime.ps1 here until its independent timing/feel and correctness gates pass;
     # mixing it into the now-validated Task/Mesh stack would invalidate controlled A/B testing.
