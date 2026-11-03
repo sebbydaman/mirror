@@ -81,7 +81,7 @@ jobs:
             libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p
             lerc:p graphite2:p libwebp:p libtiff:p brotli:p
 
-      - name: Configure shader-recompiler compile gate
+      - name: Configure production-adapter compile gate
         shell: msys2 {0}
         working-directory: eden
         run: |
@@ -115,6 +115,20 @@ jobs:
           fi
           exit $status
 
+      - name: Compile and link full GUI target
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set +e
+          cmake --build build-taskmesh --target yuzu --parallel 4 --verbose 2>&1 | tee build-taskmesh-full.log
+          status=${PIPESTATUS[0]}
+          set -e
+          grep -n -m1 -E 'fatal error:| error:|undefined reference|FAILED:' build-taskmesh-full.log > taskmesh-full-first-error.txt || true
+          if [ ! -s taskmesh-full-first-error.txt ]; then
+            echo 'No compiler/linker error pattern found in build-taskmesh-full.log.' > taskmesh-full-first-error.txt
+          fi
+          exit $status
+
       - name: Upload task-mesh compile diagnostics
         if: always()
         uses: actions/upload-artifact@v7
@@ -123,5 +137,7 @@ jobs:
           path: |
             eden/build-taskmesh.log
             eden/taskmesh-first-error.txt
+            eden/build-taskmesh-full.log
+            eden/taskmesh-full-first-error.txt
           if-no-files-found: warn
           retention-days: 5
