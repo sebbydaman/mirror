@@ -95,6 +95,10 @@ jobs:
               $newGuard = "if (-not `$dma.Contains('const bool gpu_written = FlushGpuWrittenCommands') -and -not `$dma.Contains('command_list.snapshot_suspensions')) {"
               if (-not $compat.Contains($oldGuard)) { throw 'Could not locate legacy PR28/PR52 read-path guard' }
               $compat = $compat.Replace($oldGuard, $newGuard)
+              $oldCheck = "    @(`$dmaPath, 'const bool gpu_written = FlushGpuWrittenCommands'),"
+              $newCheck = "    @(`$dmaPath, 'command_list.snapshot_suspensions'),"
+              if (-not $compat.Contains($oldCheck)) { throw 'Could not locate legacy PR28/PR52 regression marker' }
+              $compat = $compat.Replace($oldCheck, $newCheck)
               [IO.File]::WriteAllText((Resolve-Path $compatPath), $compat, [Text.UTF8Encoding]::new($false))
             }
             Write-Host "[BUILD167 BASE] $script"
