@@ -14,12 +14,29 @@ function Need-Count([string]$Path, [string]$Text, [int]$Expected, [string]$Label
     Write-Host "[PASS] $Label ($count)"
 }
 
-Need-Count 'src/core/hle/service/nvdrv/devices/nvhost_as_gpu.cpp' `
+$nvPath = 'src/core/hle/service/nvdrv/devices/nvhost_as_gpu.cpp'
+Need-Count $nvPath `
     'system.GPU().MapInOrder([gmmu = gmmu.get(), gpu_address, device_address, size] {' 2 `
     'Nx2Map and Nx2Sparse use MapInOrder'
-Need-Count 'src/core/hle/service/nvdrv/devices/nvhost_as_gpu.cpp' `
-    'system.GPU().MapInOrder([&smmu, device, cpu_address, size, asid = session->asid] {' 1 `
-    'Nx2SparseTile uses MapInOrder'
+Need-Count $nvPath `
+    'system.GPU().RunInOrder([gmmu = gmmu.get(), gpu_address, device_address, size] {' 0 `
+    'obsolete Nx2Map/Nx2Sparse RunInOrder path removed'
+
+$nv = (Get-Content $nvPath -Raw).Replace("`r`n", "`n")
+$hasSparseTile = $nv.Contains('void nvhost_as_gpu::Nx2SparseTile(')
+if ($hasSparseTile) {
+    Need-Count $nvPath `
+        'system.GPU().MapInOrder([&smmu, device, cpu_address, size, asid = session->asid] {' 1 `
+        'Nx2SparseTile uses MapInOrder when 216 support is present'
+    Need-Count $nvPath `
+        'system.GPU().RunInOrder([&smmu, device, cpu_address, size, asid = session->asid] {' 0 `
+        'obsolete Nx2SparseTile RunInOrder path removed'
+} else {
+    Need-Count $nvPath `
+        'system.GPU().MapInOrder([&smmu, device, cpu_address, size, asid = session->asid] {' 0 `
+        'no synthetic sparse-tile path added to pre-216 source'
+    Write-Host '[PASS] Nx2SparseTile is absent on this source generation, as allowed'
+}
 
 Need 'src/video_core/gpu.h' 'void MapInOrder(std::function<void()>&& func);' `
     'GPU exposes MapInOrder'
@@ -44,13 +61,5 @@ Need 'src/video_core/gpu_thread.cpp' `
     'ordered-read flag reaches RunCommand queue entry'
 Need 'src/video_core/gpu_thread.cpp' 'split.DeferFunction(std::move(run->func));' `
     'ordinary RunInOrder work remains deferred to GPU back'
-
-# The three map sites must no longer use the old ordering path.
-$nv = (Get-Content 'src/core/hle/service/nvdrv/devices/nvhost_as_gpu.cpp' -Raw).Replace("`r`n", "`n")
-if ($nv.Contains('system.GPU().RunInOrder([gmmu = gmmu.get(), gpu_address, device_address, size] {') -or
-    $nv.Contains('system.GPU().RunInOrder([&smmu, device, cpu_address, size, asid = session->asid] {')) {
-    throw 'Obsolete RunInOrder mapping path remains after MapInOrder adapter'
-}
-Write-Host '[PASS] obsolete mapping RunInOrder calls removed'
 
 Write-Host '[PASS] Build158/167 MapInOrder source invariants are complete.'
