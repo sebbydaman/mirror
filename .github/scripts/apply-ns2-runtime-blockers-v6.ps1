@@ -1,11 +1,5 @@
 $ErrorActionPreference = 'Stop'
 
-# Post-#85 runtime evidence from Mario Kart World: native program slot 3 is a
-# Tessellation (evaluation) shader whose 0x50-byte SPH identifies shader_type=3.
-# The existing native guard admitted VertexB/Pixel plus validated Geometry only,
-# so the entire 1280x720 draw was discarded before Ampere lowering even ran.
-# Admit only the observed native Tessellation stage when the SPH agrees with the
-# bound program. Keep TessellationInit and any other unknown/native stage rejected.
 function Read-Lf([string]$Path) {
     if (-not (Test-Path $Path)) { throw "Missing required source file: $Path" }
     return (Get-Content $Path -Raw).Replace("`r`n", "`n")
@@ -22,9 +16,9 @@ function Replace-Once([string]$Text, [string]$Old, [string]$New, [string]$Label)
     return $Text.Substring(0, $at) + $New + $Text.Substring($at + $Old.Length)
 }
 
+# Strictly validated native tessellation-evaluation admission. Preserve build167 mesh-slot admission.
 $shaderEnvPath = 'src/video_core/shader_environment.cpp'
 $shaderEnv = Read-Lf $shaderEnvPath
-
 if (-not $shaderEnv.Contains('const bool native_tessellation_eval = program == Maxwell::ShaderType::Tessellation;')) {
     $oldGuard = @'
         const bool native_geometry = program == Maxwell::ShaderType::Geometry;
@@ -77,7 +71,6 @@ if (-not $shaderEnv.Contains('const bool native_tessellation_eval = program == M
         }
 '@
     $shaderEnv = Replace-Once $shaderEnv $oldGuard $newGuard 'native tessellation-eval stage guard'
-
     $oldDiagnostic = @'
             const u32 native_stage = program == Maxwell::ShaderType::Pixel
                                          ? 4
@@ -93,45 +86,40 @@ if (-not $shaderEnv.Contains('const bool native_tessellation_eval = program == M
     $shaderEnv = Replace-Once $shaderEnv $oldDiagnostic $newDiagnostic 'native graphics diagnostic stage mapping'
     Write-Utf8 $shaderEnvPath $shaderEnv
 }
-
 $check = Read-Lf $shaderEnvPath
-foreach ($needle in @(
-    'const bool native_tessellation_eval = program == Maxwell::ShaderType::Tessellation;',
-    '!mesh_slot && !native_geometry && !native_tessellation_eval',
-    'static_cast<u32>(sph.common0.shader_type) != static_cast<u32>(program)',
-    'Invalid native tessellation SPH:',
-    'program == Maxwell::ShaderType::Tessellation ? 2 : 0'
-)) {
+foreach ($needle in @('const bool native_tessellation_eval = program == Maxwell::ShaderType::Tessellation;','!mesh_slot && !native_geometry && !native_tessellation_eval','static_cast<u32>(sph.common0.shader_type) != static_cast<u32>(program)','Invalid native tessellation SPH:','program == Maxwell::ShaderType::Tessellation ? 2 : 0')) {
     if (-not $check.Contains($needle)) { throw "Runtime-v6 tessellation regression: missing $needle" }
 }
-
 Write-Host 'Enabled strictly validated native Tessellation evaluation-stage admission while preserving build167 mesh-slot admission; unknown task/mesh semantics remain rejected by the Ampere lowering.'
 
-# Native task/mesh pipeline foundation: expose VK_EXT_mesh_shader through Eden's existing
-# feature/property chain. This does not execute mesh work yet; it gives later Task/Mesh SPIR-V
-# and vkCmdDrawMeshTasksEXT patches an authoritative host capability and limit source.
+# Native task/mesh capability foundation. Build167 may already provide individual pieces, so every
+# addition is independently idempotent; one native feature macro must not suppress the rest.
 $vkHeaderPath = 'src/video_core/vulkan_common/vulkan_device.h'
 $vkHeader = Read-Lf $vkHeaderPath
 if (-not $vkHeader.Contains('FEATURE(EXT, MeshShader, MESH_SHADER, mesh_shader)')) {
-    $oldFeature = '    FEATURE(EXT, LineRasterization, LINE_RASTERIZATION, line_rasterization)                        \'
-    $newFeature = $oldFeature + "`n" + '    FEATURE(EXT, MeshShader, MESH_SHADER, mesh_shader)                                        \'
-    $vkHeader = Replace-Once $vkHeader $oldFeature $newFeature 'VK_EXT_mesh_shader feature macro'
-
-    $oldRecommendedExt = '    EXTENSION_NAME(VK_EXT_LINE_RASTERIZATION_EXTENSION_NAME)                                       \'
-    $newRecommendedExt = $oldRecommendedExt + "`n" + '    EXTENSION_NAME(VK_EXT_MESH_SHADER_EXTENSION_NAME)                                              \'
-    $vkHeader = Replace-Once $vkHeader $oldRecommendedExt $newRecommendedExt 'mesh shader recommended extension'
-
-    $oldRecommendedFeature = '    FEATURE_NAME(index_type_uint8, indexTypeUint8)                                                 \'
-    $newRecommendedFeature = $oldRecommendedFeature + "`n" + '    FEATURE_NAME(mesh_shader, meshShader)                                                          \' + "`n" + '    FEATURE_NAME(mesh_shader, taskShader)                                                          \'
-    $vkHeader = Replace-Once $vkHeader $oldRecommendedFeature $newRecommendedFeature 'mesh/task recommended features'
-
-    $methodAnchor = @'
+    $anchor = '    FEATURE(EXT, LineRasterization, LINE_RASTERIZATION, line_rasterization)                        \'
+    $vkHeader = Replace-Once $vkHeader $anchor ($anchor + "`n" + '    FEATURE(EXT, MeshShader, MESH_SHADER, mesh_shader)                                        \') 'VK_EXT_mesh_shader feature macro'
+}
+if (-not $vkHeader.Contains('EXTENSION_NAME(VK_EXT_MESH_SHADER_EXTENSION_NAME)')) {
+    $anchor = '    EXTENSION_NAME(VK_EXT_LINE_RASTERIZATION_EXTENSION_NAME)                                       \'
+    $vkHeader = Replace-Once $vkHeader $anchor ($anchor + "`n" + '    EXTENSION_NAME(VK_EXT_MESH_SHADER_EXTENSION_NAME)                                              \') 'mesh shader recommended extension'
+}
+if (-not $vkHeader.Contains('FEATURE_NAME(mesh_shader, meshShader)')) {
+    $anchor = '    FEATURE_NAME(index_type_uint8, indexTypeUint8)                                                 \'
+    $vkHeader = Replace-Once $vkHeader $anchor ($anchor + "`n" + '    FEATURE_NAME(mesh_shader, meshShader)                                                          \') 'mesh recommended feature'
+}
+if (-not $vkHeader.Contains('FEATURE_NAME(mesh_shader, taskShader)')) {
+    $anchor = '    FEATURE_NAME(mesh_shader, meshShader)                                                          \'
+    $vkHeader = Replace-Once $vkHeader $anchor ($anchor + "`n" + '    FEATURE_NAME(mesh_shader, taskShader)                                                          \') 'task recommended feature'
+}
+if (-not $vkHeader.Contains('bool IsExtMeshShaderSupported() const')) {
+    $anchor = @'
     /// Returns true if the device supports VK_EXT_transform_feedback.
     bool IsExtTransformFeedbackSupported() const {
         return extensions.transform_feedback;
     }
 '@
-    $methodBlock = @'
+    $block = @'
     /// Returns true when a native Vulkan mesh shader stage can be created.
     bool IsExtMeshShaderSupported() const {
         return extensions.mesh_shader && features.mesh_shader.meshShader;
@@ -148,34 +136,35 @@ if (-not $vkHeader.Contains('FEATURE(EXT, MeshShader, MESH_SHADER, mesh_shader)'
     }
 
 '@
-    $vkHeader = Replace-Once $vkHeader $methodAnchor ($methodBlock + $methodAnchor) 'mesh shader capability accessors'
-
-    $propertyAnchor = '        VkPhysicalDeviceTransformFeedbackPropertiesEXT transform_feedback{};'
-    $propertyReplacement = $propertyAnchor + "`n" + '        VkPhysicalDeviceMeshShaderPropertiesEXT mesh_shader{};'
-    $vkHeader = Replace-Once $vkHeader $propertyAnchor $propertyReplacement 'mesh shader properties storage'
-    Write-Utf8 $vkHeaderPath $vkHeader
+    $vkHeader = Replace-Once $vkHeader $anchor ($block + $anchor) 'mesh shader capability accessors'
 }
+if (-not $vkHeader.Contains('VkPhysicalDeviceMeshShaderPropertiesEXT mesh_shader{};')) {
+    $anchor = '        VkPhysicalDeviceTransformFeedbackPropertiesEXT transform_feedback{};'
+    $vkHeader = Replace-Once $vkHeader $anchor ($anchor + "`n" + '        VkPhysicalDeviceMeshShaderPropertiesEXT mesh_shader{};') 'mesh shader properties storage'
+}
+Write-Utf8 $vkHeaderPath $vkHeader
 
 $vkCppPath = 'src/video_core/vulkan_common/vulkan_device.cpp'
 $vkCpp = Read-Lf $vkCppPath
 if (-not $vkCpp.Contains('VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT')) {
-    $propertyAnchor = @'
+    $anchor = @'
     if (extensions.transform_feedback) {
         properties.transform_feedback.sType =
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT;
         SetNext(next, properties.transform_feedback);
     }
 '@
-    $propertyBlock = @'
+    $block = @'
     if (extensions.mesh_shader) {
         properties.mesh_shader.sType =
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT;
         SetNext(next, properties.mesh_shader);
     }
 '@
-    $vkCpp = Replace-Once $vkCpp $propertyAnchor ($propertyAnchor + $propertyBlock) 'mesh shader properties query chain'
-
-    $removeAnchor = @'
+    $vkCpp = Replace-Once $vkCpp $anchor ($anchor + $block) 'mesh shader properties query chain'
+}
+if (-not $vkCpp.Contains('extensions.mesh_shader = features.mesh_shader.meshShader;')) {
+    $anchor = @'
     // VK_EXT_transform_feedback
     extensions.transform_feedback =
         features.transform_feedback.transformFeedback &&
@@ -183,42 +172,27 @@ if (-not $vkCpp.Contains('VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTI
     RemoveExtensionFeatureIfUnsuitable(extensions.transform_feedback, features.transform_feedback,
                                        VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
 '@
-    $removeBlock = @'
+    $block = @'
 
     // VK_EXT_mesh_shader. Mesh is required for the native path; Task remains optional.
     extensions.mesh_shader = features.mesh_shader.meshShader;
     RemoveExtensionFeatureIfUnsuitable(extensions.mesh_shader, features.mesh_shader,
                                        VK_EXT_MESH_SHADER_EXTENSION_NAME);
 '@
-    $vkCpp = Replace-Once $vkCpp $removeAnchor ($removeAnchor + $removeBlock) 'mesh shader feature suitability'
-    Write-Utf8 $vkCppPath $vkCpp
+    $vkCpp = Replace-Once $vkCpp $anchor ($anchor + $block) 'mesh shader feature suitability'
 }
+Write-Utf8 $vkCppPath $vkCpp
 
 $vkHeaderCheck = Read-Lf $vkHeaderPath
 $vkCppCheck = Read-Lf $vkCppPath
-foreach ($needle in @(
-    'FEATURE(EXT, MeshShader, MESH_SHADER, mesh_shader)',
-    'EXTENSION_NAME(VK_EXT_MESH_SHADER_EXTENSION_NAME)',
-    'FEATURE_NAME(mesh_shader, meshShader)',
-    'FEATURE_NAME(mesh_shader, taskShader)',
-    'bool IsExtMeshShaderSupported() const',
-    'bool IsExtTaskShaderSupported() const',
-    'VkPhysicalDeviceMeshShaderPropertiesEXT mesh_shader{};'
-)) {
+foreach ($needle in @('FEATURE(EXT, MeshShader, MESH_SHADER, mesh_shader)','EXTENSION_NAME(VK_EXT_MESH_SHADER_EXTENSION_NAME)','FEATURE_NAME(mesh_shader, meshShader)','FEATURE_NAME(mesh_shader, taskShader)','bool IsExtMeshShaderSupported() const','bool IsExtTaskShaderSupported() const','VkPhysicalDeviceMeshShaderPropertiesEXT mesh_shader{};')) {
     if (-not $vkHeaderCheck.Contains($needle)) { throw "Runtime-v6 mesh capability regression: missing $needle" }
 }
-foreach ($needle in @(
-    'VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT',
-    'extensions.mesh_shader = features.mesh_shader.meshShader;',
-    'VK_EXT_MESH_SHADER_EXTENSION_NAME'
-)) {
+foreach ($needle in @('VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT','extensions.mesh_shader = features.mesh_shader.meshShader;','VK_EXT_MESH_SHADER_EXTENSION_NAME')) {
     if (-not $vkCppCheck.Contains($needle)) { throw "Runtime-v6 mesh device regression: missing $needle" }
 }
-
 Write-Host 'Exposed VK_EXT_mesh_shader/taskShader host capabilities and native mesh limits; no mesh execution is enabled yet.'
 
-# Post-01effa RET correction proven by Mario Kart World: RET's reserved bits must not be
-# interpreted as a destination-GPR write to the active return-link register.
 $runtimeV7Script = Join-Path $PSScriptRoot 'apply-ns2-runtime-blockers-v7.ps1'
 & $runtimeV7Script
 
