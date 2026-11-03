@@ -3,6 +3,18 @@ $patch = Join-Path $PSScriptRoot 'build142-runtime.patch'
 if (-not (Test-Path $patch -PathType Leaf)) { throw 'Missing build142 runtime patch' }
 # Existing adapters produce mixed line endings on Windows; normalize patch targets.
 $patchText = [IO.File]::ReadAllText($patch).Replace("`r`n", "`n")
+
+# Build 158 follow-up 8556e270 fixes the build-142 uniform-buffer fast guard. BufferId{0}
+# (NULL_BUFFER_ID) is a valid SlotId value, so `!current.buffer_id` never identifies the null
+# binding. Adapt the donor patch before applying it and fail closed if the donor text drifts.
+$oldUniformGuard = 'current.device_addr == 0 && current.size == 0 && !current.buffer_id'
+$newUniformGuard = 'current.device_addr == 0 && current.size == 0 && current.buffer_id == NULL_BUFFER_ID'
+$uniformGuardMatches = [regex]::Matches($patchText, [regex]::Escape($oldUniformGuard)).Count
+if ($uniformGuardMatches -ne 1) {
+    throw "Expected exactly one build-142 uniform-buffer guard to normalize, found $uniformGuardMatches"
+}
+$patchText = $patchText.Replace($oldUniformGuard, $newUniformGuard)
+
 $normalizedPatch = Join-Path ([IO.Path]::GetTempPath()) 'ns2-build142-runtime-lf.patch'
 [IO.File]::WriteAllText($normalizedPatch, $patchText, [Text.UTF8Encoding]::new($false))
 foreach ($match in [regex]::Matches($patchText, '(?m)^\+\+\+ b/(.+)$')) {
