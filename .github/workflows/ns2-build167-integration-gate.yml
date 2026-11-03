@@ -100,6 +100,17 @@ jobs:
               if (-not $compat.Contains($oldCheck)) { throw 'Could not locate legacy PR28/PR52 regression marker' }
               $compat = $compat.Replace($oldCheck, $newCheck)
               [IO.File]::WriteAllText((Resolve-Path $compatPath), $compat, [Text.UTF8Encoding]::new($false))
+
+              # Build167 already admits the full contiguous invocation/id range 17..19 and 29..35.
+              # The older runtime-v3 patch looks for a pre-build167 explicit allow-list; mark the
+              # modern range form as already satisfying that compatibility requirement.
+              $runtimeV3Path = "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-ns2-runtime-blockers-v3-core.ps1"
+              $runtimeV3 = Get-Content $runtimeV3Path -Raw
+              $oldS2RGuard = "if (-not `$ampere.Contains('special != 17 && special != 29')) {"
+              $newS2RGuard = "if (-not `$ampere.Contains('special != 17 && special != 29') -and -not `$ampere.Contains('(special < 17 || special > 19) && (special < 29 || special > 35)')) {"
+              if (-not $runtimeV3.Contains($oldS2RGuard)) { throw 'Could not locate runtime-v3 S2R compatibility guard' }
+              $runtimeV3 = $runtimeV3.Replace($oldS2RGuard, $newS2RGuard)
+              [IO.File]::WriteAllText((Resolve-Path $runtimeV3Path), $runtimeV3, [Text.UTF8Encoding]::new($false))
             }
             Write-Host "[BUILD167 BASE] $script"
             & "$env:GITHUB_WORKSPACE\automation\.github\scripts\$script"
