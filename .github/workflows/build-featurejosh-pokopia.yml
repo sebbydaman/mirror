@@ -17,17 +17,16 @@ jobs:
       SOURCE_SHA: ebb8d3a2c891e6113334835cd98a4073b112b2e8
       BASE_URL: https://github.com/drakolordx7/pokopia-recomp/releases/download/v0.1.1/PokopiaRecomp-0.1.1-win64.zip
     steps:
-      - name: Checkout build driver
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
       - name: Checkout exact featureJosh source
         shell: pwsh
         run: |
-          git clone https://github.com/featureJosh/pokopia-recomp.git src
-          git -C src checkout $env:SOURCE_SHA
-          git -C src rev-parse HEAD
+          git clone https://github.com/featureJosh/pokopia-recomp.git pokopia-src
+          if ($LASTEXITCODE) { throw "git clone failed ($LASTEXITCODE)" }
+          git -C pokopia-src checkout $env:SOURCE_SHA
+          if ($LASTEXITCODE) { throw "git checkout failed ($LASTEXITCODE)" }
+          $actual = (git -C pokopia-src rev-parse HEAD).Trim()
+          if ($actual -ne $env:SOURCE_SHA) { throw "Wrong source commit: $actual" }
+          Write-Host "Building featureJosh/pokopia-recomp $actual"
 
       - name: Show toolchain
         shell: pwsh
@@ -52,30 +51,39 @@ jobs:
           $vcpkg = 'C:\vcpkg'
           if (-not (Test-Path "$vcpkg\vcpkg.exe")) {
             git clone https://github.com/microsoft/vcpkg.git $vcpkg
+            if ($LASTEXITCODE) { throw "vcpkg clone failed ($LASTEXITCODE)" }
             & "$vcpkg\bootstrap-vcpkg.bat" -disableMetrics
+            if ($LASTEXITCODE) { throw "vcpkg bootstrap failed ($LASTEXITCODE)" }
           }
           "VCPKG_ROOT=$vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Append
           & "$vcpkg\vcpkg.exe" install libvpx:x64-windows-static --clean-after-build
+          if ($LASTEXITCODE) { throw "libvpx build failed ($LASTEXITCODE)" }
 
       - name: Build ASTC texture support
         shell: pwsh
         run: |
-          pwsh -NoProfile -File src\tools\textures\scripts\fetch_third_party.ps1
-          pwsh -NoProfile -File src\tools\textures\scripts\build.ps1
+          & pwsh -NoProfile -File "$PWD\pokopia-src\tools\textures\scripts\fetch_third_party.ps1"
+          if ($LASTEXITCODE) { throw "texture dependency fetch failed ($LASTEXITCODE)" }
+          & pwsh -NoProfile -File "$PWD\pokopia-src\tools\textures\scripts\build.ps1"
+          if ($LASTEXITCODE) { throw "texture build failed ($LASTEXITCODE)" }
 
       - name: Build current pkp_rt.dll
         shell: cmd
         run: |
-          call src\runtime\scripts\env.cmd
-          cmake -S src\game-build -B src\game-build\build\rt-latest -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DPKP_RT_DLL=ON -DPKP_VERSION=0.1.1-featureJosh-ebb8d3a -DNXRT_LIBVPX_ROOT=C:\vcpkg\installed\x64-windows-static
-          cmake --build src\game-build\build\rt-latest --target pkp_rt --parallel
+          call pokopia-src\runtime\scripts\env.cmd
+          cmake -S pokopia-src\game-build -B pokopia-src\game-build\build\rt-latest -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DPKP_RT_DLL=ON -DPKP_VERSION=0.1.1-featureJosh-ebb8d3a -DNXRT_LIBVPX_ROOT=C:\vcpkg\installed\x64-windows-static
+          if errorlevel 1 exit /b %errorlevel%
+          cmake --build pokopia-src\game-build\build\rt-latest --target pkp_rt --parallel
+          if errorlevel 1 exit /b %errorlevel%
 
       - name: Build current launcher
         shell: pwsh
         run: |
-          Push-Location src\launcher
+          Push-Location pokopia-src\launcher
           npm ci
+          if ($LASTEXITCODE) { throw "npm ci failed ($LASTEXITCODE)" }
           npm run tauri build
+          if ($LASTEXITCODE) { throw "launcher build failed ($LASTEXITCODE)" }
           Pop-Location
 
       - name: Download v0.1.1 package base
@@ -90,28 +98,28 @@ jobs:
       - name: Overlay rebuilt runtime and current recompiler
         shell: pwsh
         run: |
-          $dll = Get-ChildItem src\game-build\build\rt-latest -Recurse -Filter pkp_rt.dll | Select-Object -First 1
-          $lib = Get-ChildItem src\game-build\build\rt-latest -Recurse -Filter pkp_rt.lib | Select-Object -First 1
+          $dll = Get-ChildItem pokopia-src\game-build\build\rt-latest -Recurse -Filter pkp_rt.dll | Select-Object -First 1
+          $lib = Get-ChildItem pokopia-src\game-build\build\rt-latest -Recurse -Filter pkp_rt.lib | Select-Object -First 1
           if (-not $dll) { throw 'pkp_rt.dll not found' }
           if (-not $lib) { throw 'pkp_rt.lib not found' }
           Copy-Item $dll.FullName (Join-Path $env:PKG 'pkp_rt.dll') -Force
           Copy-Item $lib.FullName (Join-Path $env:PKG 'tools\build\sdk\pkp_rt.lib') -Force
 
-          Copy-Item src\game-build\release_b\pkp_build.py (Join-Path $env:PKG 'tools\build\pkp_build.py') -Force
-          Copy-Item src\game-build\release_b\dump_hashes.json (Join-Path $env:PKG 'tools\build\dump_hashes.json') -Force
+          Copy-Item pokopia-src\game-build\release_b\pkp_build.py (Join-Path $env:PKG 'tools\build\pkp_build.py') -Force
+          Copy-Item pokopia-src\game-build\release_b\dump_hashes.json (Join-Path $env:PKG 'tools\build\dump_hashes.json') -Force
 
           $dstRecomp = Join-Path $env:PKG 'tools\build\recomp'
           Remove-Item $dstRecomp -Recurse -Force
-          Copy-Item src\recomp $dstRecomp -Recurse -Force
+          Copy-Item pokopia-src\recomp $dstRecomp -Recurse -Force
 
-          Copy-Item src\tools\shaders\ampere\extract_corpus.py (Join-Path $env:PKG 'tools\shaders\extract_corpus.py') -Force
+          Copy-Item pokopia-src\tools\shaders\ampere\extract_corpus.py (Join-Path $env:PKG 'tools\shaders\extract_corpus.py') -Force
 
       - name: Overlay rebuilt launcher
         shell: pwsh
         run: |
-          $launcher = 'src\launcher\src-tauri\target\release\pokopia-launcher.exe'
+          $launcher = 'pokopia-src\launcher\src-tauri\target\release\pokopia-launcher.exe'
           if (-not (Test-Path $launcher)) {
-            $found = Get-ChildItem src\launcher\src-tauri\target\release -Recurse -Filter '*.exe' |
+            $found = Get-ChildItem pokopia-src\launcher\src-tauri\target\release -Recurse -Filter '*.exe' |
               Where-Object { $_.Name -match 'pokopia.*launcher|launcher.*pokopia' } |
               Select-Object -First 1
             if ($found) { $launcher = $found.FullName }
@@ -126,15 +134,18 @@ jobs:
           Invoke-WebRequest -Uri $url -OutFile ryubing.tar.gz
           New-Item -ItemType Directory -Force ryubing | Out-Null
           tar -xzf ryubing.tar.gz -C ryubing --strip-components=1
+          if ($LASTEXITCODE) { throw "Ryubing extract failed ($LASTEXITCODE)" }
           if (-not (Test-Path 'ryubing\src\Ryujinx.Graphics.Shader')) { throw 'Ryubing shader source was not extracted correctly' }
 
       - name: Build and overlay current shader translator
         shell: pwsh
         run: |
-          pwsh -NoProfile -File src\tools\shaders\scripts\setup_ryujinx.ps1 -Ryubing "$PWD\ryubing"
+          & pwsh -NoProfile -File "$PWD\pokopia-src\tools\shaders\scripts\setup_ryujinx.ps1" -Ryubing "$PWD\ryubing"
+          if ($LASTEXITCODE) { throw "Ryubing staging failed ($LASTEXITCODE)" }
           $out = Join-Path $env:PKG 'tools\spirv_harness'
           Remove-Item $out -Recurse -Force -ErrorAction SilentlyContinue
-          dotnet publish src\tools\shaders\harness\SpirvHarness.csproj -c Release -r win-x64 --self-contained true -o $out
+          dotnet publish pokopia-src\tools\shaders\harness\SpirvHarness.csproj -c Release -r win-x64 --self-contained true -o $out
+          if ($LASTEXITCODE) { throw "shader translator build failed ($LASTEXITCODE)" }
           if (-not (Test-Path (Join-Path $out 'spirv_harness.exe'))) { throw 'spirv_harness.exe not built' }
 
       - name: Add build provenance
