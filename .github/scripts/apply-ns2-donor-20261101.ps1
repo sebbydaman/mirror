@@ -131,11 +131,20 @@ Replace-Exact $undef $undefOld $undefNew 'EDEN_NX2_UNDEF_ZERO' 'AMD undefined-re
 # 3) Ampere RET correctness. RET's bits 16..23 are reserved; they are not a destination-register
 # write. Treating them as one rejects valid R0-link shaders and loses text in Mario Kart World.
 $ampere = 'src/shader_recompiler/frontend/ampere/lower_to_maxwell.h'
-Replace-Exact $ampere `
-    '            if (active_link && insn.Bits(16, 8) == *active_link)' `
-    '            if (active_link && opcode != 0x950 && insn.Bits(16, 8) == *active_link)' `
-    'active_link && opcode != 0x950' `
-    'Ampere RET reserved-destination/link-register fix'
+# build167 already has the stronger no-destination classification (RET, BRA, NOP,
+# predicate writers) and paired-register overwrite protection. Keep it intact.
+$ampereRet = Get-Content $ampere -Raw
+if ($ampereRet.Contains('active_link && !no_destination') -and
+    $ampereRet.Contains('opcode == 0x950 || opcode == 0x947 || opcode == 0x918') -and
+    $ampereRet.Contains('(pair && insn.Bits(16, 8) + 1 == *active_link)')) {
+    Write-Host '[PRESENT] build167 generalized RET/link-register guard'
+} else {
+    Replace-Exact $ampere `
+        '            if (active_link && insn.Bits(16, 8) == *active_link)' `
+        '            if (active_link && opcode != 0x950 && insn.Bits(16, 8) == *active_link)' `
+        'active_link && opcode != 0x950' `
+        'Ampere RET reserved-destination/link-register fix'
+}
 
 # 4) FSEL is floating-point and its two sources retain .NEG/.ABS modifiers. Bitwise SEL must keep
 # the old integer behavior. This improves effects such as MKW drifting/tricking without collapsing.
