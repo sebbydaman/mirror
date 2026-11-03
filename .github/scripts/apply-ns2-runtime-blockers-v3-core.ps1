@@ -41,8 +41,11 @@ if (-not $modernRetValidation -and -not $ampere.Contains('active_link && opcode 
 }
 
 # The newer Eden-NS2 lowering admits SR17 and SR29 in addition to thread/workgroup identities.
-# SR29 is the exact S2R form captured in the #73 Bananza movement log.
-if (-not $ampere.Contains('special != 17 && special != 29')) {
+# Build167 generalizes this further to contiguous invocation/id ranges 17..19 and 29..35; preserve
+# that native form rather than trying to rewrite it back to the older explicit allow-list.
+$legacyS2RValidation = $ampere.Contains('special != 17 && special != 29')
+$modernS2RValidation = $ampere.Contains('(special < 17 || special > 19) && (special < 29 || special > 35)')
+if (-not $legacyS2RValidation -and -not $modernS2RValidation) {
     $old = @'
                 (special != 0 && special != 33 && special != 34 && special != 35 &&
                  special != 37 && special != 38 && special != 39 &&
@@ -186,12 +189,14 @@ $retCheck = ($ampereCheck.Contains('active_link && opcode != 0x950')) -or
             ($ampereCheck.Contains('const bool no_destination = opcode == 0x950') -and
              $ampereCheck.Contains('active_link && !no_destination'))
 if (-not $retCheck) { throw 'Runtime-v3 regression: missing RET link-register validation' }
+$s2rCheck = $ampereCheck.Contains('special != 17 && special != 29') -or
+            $ampereCheck.Contains('(special < 17 || special > 19) && (special < 29 || special > 35)')
+if (-not $s2rCheck) { throw 'Runtime-v3 regression: missing S2R geometry invocation validation' }
 $txqCheck = $ampereCheck.Contains('(outputs > 1 && (dest & 1)) || dest + outputs > 246') -or
             ($ampereCheck.Contains('const bool direct = second_dest == 255;') -and
              $ampereCheck.Contains('(direct && components == 2 && (dest & 1))'))
 if (-not $txqCheck) { throw 'Runtime-v3 regression: missing scalar TXQ odd-register validation' }
 foreach ($needle in @(
-    'special != 17 && special != 29',
     'case 0x923: { // ISBERD indexed task/mesh attribute read / direct map read.',
     'case 0x927: { // ISBEWR indexed task/mesh attribute write.',
     '0xefd8000000000000ULL | predicate | dest',
