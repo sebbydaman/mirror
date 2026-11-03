@@ -188,13 +188,16 @@ foreach ($needle in @(
 )) {
     if (-not $vkCheck.Contains($needle)) { throw "Runtime-v9 Vulkan stage regression: missing $needle" }
 }
-foreach ($needle in @(
-    'case Stage::Task:',
-    'return "task";',
-    'case Stage::Mesh:',
-    'return "mesh";'
-)) {
+# Build167 already provides Task/Mesh names as ts/ms, which are used in shader
+# symbol generation. Preserve those native names rather than overwriting them.
+foreach ($needle in @('case Stage::Task:', 'case Stage::Mesh:')) {
     if (-not $spirvCheck.Contains($needle)) { throw "Runtime-v9 SPIR-V stage-name regression: missing $needle" }
+}
+if (-not ($spirvCheck.Contains('return "task";') -or $spirvCheck.Contains('return "ts";'))) {
+    throw 'Runtime-v9 SPIR-V stage-name regression: missing Task stage name'
+}
+if (-not ($spirvCheck.Contains('return "mesh";') -or $spirvCheck.Contains('return "ms";'))) {
+    throw 'Runtime-v9 SPIR-V stage-name regression: missing Mesh stage name'
 }
 foreach ($needle in @(
     'case Stage::Task: // Task/Mesh have no legacy NVN buffer base.',
