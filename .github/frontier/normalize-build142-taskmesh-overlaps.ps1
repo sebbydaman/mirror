@@ -82,7 +82,7 @@ if ($LASTEXITCODE -ne 0) { throw 'SPIR-V Task/Mesh StageName normalization faile
 # stack predates that donor and also contains fallback Task/Mesh cases that break out of the
 # switch so the following InvalidArgument path rejects them. After donor-2 applies those become
 # duplicate case labels. Remove only the exact fallback pair identified by its local explanatory
-# comment, then require the donor mappings to be the only Task/Mesh cases in each base switch.
+# comment, then require the donor mappings to be the only Task/Mesh cases in that NVN base switch.
 $nvnOverlaps = @(
     @{
         Path = 'src/shader_recompiler/ir_opt/collect_shader_info_pass.cpp'
@@ -112,12 +112,30 @@ foreach ($overlap in $nvnOverlaps) {
     }
 
     $post = (Get-Content $nvnPath -Raw).Replace("`r`n", "`n")
-    $taskBound = Count-Regex $post '(?m)^[ \t]*case Stage::Task:[ \t]*// bound in the vertex slot[ \t]*$'
-    $meshBound = Count-Regex $post '(?m)^[ \t]*case Stage::Mesh:[ \t]*// bound in the tessellation slot[ \t]*$'
-    $taskCases = Count-Regex $post '(?m)^[ \t]*case Stage::Task:'
-    $meshCases = Count-Regex $post '(?m)^[ \t]*case Stage::Mesh:'
-    if ($taskBound -ne 1 -or $meshBound -ne 1 -or $taskCases -ne 1 -or $meshCases -ne 1) {
-        throw "Task/Mesh $($overlap.Label) normalization invalid in $nvnPath: taskBound=$taskBound meshBound=$meshBound taskCases=$taskCases meshCases=$meshCases"
+    if ((Count-Regex $post $overlap.ObsoletePattern) -ne 0) {
+        throw "Obsolete Task/Mesh $($overlap.Label) fallback survived normalization in $nvnPath"
+    }
+
+    # translate_program.cpp has another legitimate Task/Mesh switch later for mesh program setup.
+    # Verify only the NVN base lambda instead of counting every Task/Mesh case in the whole file.
+    $baseAnchor = '    const u32 base{[&] {'
+    $baseStart = $post.IndexOf($baseAnchor)
+    if ($baseStart -lt 0) { throw "Could not locate $($overlap.Label) base lambda in $nvnPath" }
+    if ($post.IndexOf($baseAnchor, $baseStart + $baseAnchor.Length) -ge 0) {
+        throw "Ambiguous $($overlap.Label) base lambda in $nvnPath"
+    }
+    $baseEndMarker = '    }()};'
+    $baseEnd = $post.IndexOf($baseEndMarker, $baseStart)
+    if ($baseEnd -lt 0) { throw "Could not locate end of $($overlap.Label) base lambda in $nvnPath" }
+    $baseEnd += $baseEndMarker.Length
+    $baseSwitch = $post.Substring($baseStart, $baseEnd - $baseStart)
+
+    $taskMapping = Count-Regex $baseSwitch '(?m)^[ \t]*case Stage::Task:[ \t]*// bound in the vertex slot[ \t]*\n[ \t]*return 0x110[uU];[ \t]*$'
+    $meshMapping = Count-Regex $baseSwitch '(?m)^[ \t]*case Stage::Mesh:[ \t]*// bound in the tessellation slot[ \t]*\n[ \t]*return 0x310[uU];[ \t]*$'
+    $taskCases = Count-Regex $baseSwitch '(?m)^[ \t]*case Stage::Task:'
+    $meshCases = Count-Regex $baseSwitch '(?m)^[ \t]*case Stage::Mesh:'
+    if ($taskMapping -ne 1 -or $meshMapping -ne 1 -or $taskCases -ne 1 -or $meshCases -ne 1) {
+        throw "Task/Mesh $($overlap.Label) normalization invalid in base switch for $nvnPath: taskMapping=$taskMapping meshMapping=$meshMapping taskCases=$taskCases meshCases=$meshCases"
     }
     git diff --check -- $nvnPath
     if ($LASTEXITCODE -ne 0) { throw "Task/Mesh $($overlap.Label) normalization failed git diff --check" }
