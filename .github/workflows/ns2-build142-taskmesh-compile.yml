@@ -6,7 +6,7 @@ on:
       - ns2-pokopia-startup-fast-win32
     paths:
       - '.github/workflows/ns2-build142-taskmesh-compile.yml'
-      - '.github/frontier/probe-apply-build142-taskmesh.ps1'
+      - '.github/frontier/apply-build142-taskmesh.ps1'
       - '.github/frontier/normalize-build142-taskmesh-overlaps.ps1'
   workflow_dispatch:
 
@@ -57,16 +57,14 @@ jobs:
           git diff --check
           if ($LASTEXITCODE -ne 0) { throw 'Current assembled stack failed diff check' }
 
-      - name: Apply coherent build142 Task-Mesh donor tree
+      - name: Apply staged production build142 Task-Mesh adapter
         shell: pwsh
         working-directory: eden
         run: |
-          & "$env:GITHUB_WORKSPACE\automation\.github\frontier\probe-apply-build142-taskmesh.ps1"
-          if ($LASTEXITCODE -ne 0) { throw 'Task/Mesh donor helper failed' }
-          & "$env:GITHUB_WORKSPACE\automation\.github\frontier\normalize-build142-taskmesh-overlaps.ps1"
-          if ($LASTEXITCODE -ne 0) { throw 'Task/Mesh donor overlap normalization failed' }
+          & "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-build142-taskmesh.ps1"
+          if ($LASTEXITCODE -ne 0) { throw 'Production Task/Mesh adapter failed' }
           git diff --check
-          if ($LASTEXITCODE -ne 0) { throw 'Task/Mesh donor tree failed diff check' }
+          if ($LASTEXITCODE -ne 0) { throw 'Production Task/Mesh adapter tree failed diff check' }
 
       - name: Set up MSYS2 Clang task-mesh toolchain
         uses: msys2/setup-msys2@v2
