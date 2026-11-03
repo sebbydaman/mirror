@@ -1,10 +1,9 @@
 $ErrorActionPreference = 'Stop'
 
 # Post-01effa Mario Kart World compatibility: Ampere RET has no destination GPR.
-# Bits 16..23 are reserved on RET and must not be interpreted as a write to the active
-# return-link register. Keep the existing link-flow validation for every instruction that
-# really can write a GPR, so corrupted/native callee linkage is still rejected.
-# An earlier runtime patch may already have applied this correction; keep this layer idempotent.
+# Build167 has since generalized this into a no_destination classifier covering RET,
+# BRA, NOP and predicate-only compare/set instructions. Preserve that newer validation
+# instead of forcing the older opcode-specific guard back into the source.
 function Read-Lf([string]$Path) {
     if (-not (Test-Path $Path)) { throw "Missing required source file: $Path" }
     return (Get-Content $Path -Raw).Replace("`r`n", "`n")
@@ -21,22 +20,30 @@ function Replace-Once([string]$Text, [string]$Old, [string]$New, [string]$Label)
 
 $amperePath = 'src/shader_recompiler/frontend/ampere/lower_to_maxwell.h'
 $ampere = Read-Lf $amperePath
+$build167NoDestination = '            if (active_link && !no_destination &&'
+$build167RetClass = '            const bool no_destination = opcode == 0x950 || opcode == 0x947 || opcode == 0x918 ||'
 $newGuard = '            if (active_link && opcode != 0x950 && insn.Bits(16, 8) == *active_link)'
-if (-not $ampere.Contains($newGuard)) {
+if (-not ($ampere.Contains($build167NoDestination) -and $ampere.Contains($build167RetClass)) -and
+    -not $ampere.Contains($newGuard)) {
     $oldGuard = '            if (active_link && insn.Bits(16, 8) == *active_link)'
     $ampere = Replace-Once $ampere $oldGuard $newGuard 'Ampere active-link overwrite guard'
     Write-Utf8 $amperePath $ampere
 }
 
 $check = Read-Lf $amperePath
-if (-not $check.Contains($newGuard)) {
+$hasBuild167Guard = $check.Contains($build167NoDestination) -and $check.Contains($build167RetClass)
+if (-not $hasBuild167Guard -and -not $check.Contains($newGuard)) {
     throw 'Runtime-v7 RET regression: RET is still treated as a destination-GPR write'
 }
 if (-not $check.Contains('return fail(index, "native callee overwrites link register");')) {
     throw 'Runtime-v7 RET regression: real callee link-register overwrite validation disappeared'
 }
 
-Write-Host 'Verified Ampere RET reserved-destination fix: R0/R55 return links remain valid while real overwrites stay rejected.'
+if ($hasBuild167Guard) {
+    Write-Host 'Verified build167 generalized no-destination link guard; RET remains valid while real GPR/pair overwrites stay rejected.'
+} else {
+    Write-Host 'Verified Ampere RET reserved-destination fix: R0/R55 return links remain valid while real overwrites stay rejected.'
+}
 
 # PokeDinner performance donor: use BC3 for Switch 2 ASTC on sub-12-GiB Vulkan cards unless
 # explicitly opted out, reducing texture-cache pressure without changing higher-VRAM sessions.
