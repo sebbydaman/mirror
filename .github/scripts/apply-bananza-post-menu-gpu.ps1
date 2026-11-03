@@ -278,6 +278,36 @@ if (-not (Get-Content $deviceMemoryHeader -Raw).Contains($readTrapMarker)) {
     Write-Host 'Integrated Eglantine GPU-read traps without replacing PokeDinner selective copyback.'
 }
 
+# build167 may already supply Eglantine read traps, bypassing the cherry-pick block above.
+# Independently connect those traps to selective copyback rather than requiring the
+# old integration path to have run. Do not re-cherry-pick native build167 support.
+$baseText = (Get-Content $bufferBasePath -Raw).Replace("`r`n", "`n")
+if (-not $baseText.Contains('covered < size')) {
+    if (-not $baseText.Contains('void ArmReadTraps(DAddr device_addr, u64 size)')) {
+        throw 'Existing build167 read traps lack BufferCache ArmReadTraps; cannot safely wire selective copyback'
+    }
+    $oldQueue = @'
+        cpu_read_ranges.ForEachInRange(addr, size, [this](DAddr start, DAddr end) {
+            uncommitted_gpu_modified_ranges.Add(start, end - start);
+        });
+'@
+    $newQueue = @'
+        u64 covered = 0;
+        cpu_read_ranges.ForEachInRange(addr, size, [this, &covered](DAddr start, DAddr end) {
+            uncommitted_gpu_modified_ranges.Add(start, end - start);
+            covered += end - start;
+        });
+        if (covered < size) {
+            ArmReadTraps(addr, size);
+        }
+'@
+    if (-not $baseText.Contains($oldQueue.TrimEnd())) {
+        throw 'Cannot locate selective QueueDownload range block in build167; refusing speculative rewrite'
+    }
+    $baseText = $baseText.Replace($oldQueue.TrimEnd(), $newQueue.TrimEnd())
+    Set-Content -Path $bufferBasePath -Value $baseText -Encoding utf8 -NoNewline
+}
+
 $deviceMemoryCheck = Get-Content $deviceMemoryHeader -Raw
 $deviceMemoryIncCheck = Get-Content $deviceMemoryIncPath -Raw
 $coreMemoryCheck = Get-Content $coreMemoryPath -Raw
