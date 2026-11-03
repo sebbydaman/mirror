@@ -1,0 +1,112 @@
+name: Publish unofficial Pokopia Recomp Windows build
+on:
+  push:
+    branches: [publish-pokopia-featurejosh-release]
+    paths: [.github/workflows/publish-pokopia-featurejosh.yml]
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: write
+jobs:
+  publish:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Download verified full build
+        uses: actions/download-artifact@v4
+        with:
+          name: PokopiaRecomp-featureJosh-ebb8d3a
+          run-id: 41672058441
+          repository: sebbydaman/mirror
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: full
+      - name: Download verified final runtime
+        uses: actions/download-artifact@v4
+        with:
+          name: PokopiaRuntime-featureJosh-cd6b79f
+          run-id: 41674818948
+          repository: sebbydaman/mirror
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: runtime
+      - name: Assemble and validate release ZIP
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sha = 'cd6b79f893f2e11c409d1420c08bd83364aa3d71'
+          $z = Get-ChildItem full -Filter '*.zip' -File | Select-Object -First 1
+          if (-not $z) { throw 'Full build ZIP missing' }
+          if ((Get-Content runtime/SOURCE_SHA.txt -Raw).Trim() -ne $sha) { throw 'Wrong source SHA' }
+          $dllHash = (Get-FileHash runtime/pkp_rt.dll -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($dllHash -ne '08b4e125278972cb75741a81577a603b9b22b33fa7cf2b31caf7953209e360f1') { throw "Runtime hash mismatch: $dllHash" }
+          Expand-Archive $z.FullName -DestinationPath stage
+          $pkg = Get-ChildItem stage -Directory | Select-Object -First 1
+          if (-not $pkg) { throw 'Extracted package missing' }
+          foreach ($rel in @('PokopiaLauncher.exe','tools/spirv_harness/spirv_harness.exe','tools/build/sdk/pkp_rt.lib','licenses/BUNDLED_TOOLS.txt')) {
+            if (-not (Test-Path (Join-Path $pkg.FullName $rel))) { throw "Missing $rel" }
+          }
+          Copy-Item runtime/pkp_rt.dll (Join-Path $pkg.FullName 'pkp_rt.dll') -Force
+          Copy-Item runtime/pkp_rt.lib (Join-Path $pkg.FullName 'tools/build/sdk/pkp_rt.lib') -Force
+          @'
+          UNOFFICIAL Pokopia Recomp Windows x64 build.
+          Original: https://github.com/drakolordx7/pokopia-recomp
+          Updated source: https://github.com/featureJosh/pokopia-recomp
+          Final runtime commit: cd6b79f893f2e11c409d1420c08bd83364aa3d71
+          Launcher/recompiler/shader build: ebb8d3a2c891e6113334835cd98a4073b112b2e8
+          Full CI: https://github.com/sebbydaman/mirror/actions/runs/41672058441
+          Runtime CI: https://github.com/sebbydaman/mirror/actions/runs/41674818948
+          No game ROMs or keys are included; provide your own lawful game dump.
+          GitHub CI compilation succeeded. Actual game execution not independently tested.
+          GPL-3.0; third-party notices in licenses/.
+          '@ | Set-Content (Join-Path $pkg.FullName 'FEATUREJOSH_BUILD.txt') -Encoding UTF8
+          Rename-Item $pkg.FullName 'PokopiaRecomp-featureJosh-cd6b79f'
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          $outputZip = Join-Path $PWD 'dist/PokopiaRecomp-featureJosh-cd6b79f-win64.zip'
+          Compress-Archive -Path (Join-Path $PWD 'stage/PokopiaRecomp-featureJosh-cd6b79f') -DestinationPath $outputZip -CompressionLevel Optimal
+          if ((Get-Item $outputZip).Length -lt 100MB) { throw 'Zip unexpectedly small' }
+          $src = Join-Path $PWD 'dist/PokopiaRecomp-featureJosh-cd6b79f-source.zip'
+          & curl.exe --fail --location --retry 3 --output $src 'https://codeload.github.com/featureJosh/pokopia-recomp/zip/cd6b79f893f2e11c409d1420c08bd83364aa3d71'
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $src)) { throw 'Source archive download failed' }
+          foreach ($f in @($outputZip,$src)) {
+            $hash=(Get-FileHash $f -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $(Split-Path $f -Leaf)" | Out-File dist/SHA256SUMS.txt -Encoding ascii -Append
+          }
+          Get-Content dist/SHA256SUMS.txt
+      - name: Write accurate release notes
+        shell: pwsh
+        run: |
+          @'
+          ## Unofficial Pokopia Recomp build for Windows x64 - featureJosh cd6b79f
+
+          This is a community-compiled package, NOT an official release by the original developers or any Nintendo-affiliated organization.
+
+          Based on the official v0.1.1 package and the featureJosh fork: https://github.com/featureJosh/pokopia-recomp/tree/cd6b79f893f2e11c409d1420c08bd83364aa3d71
+
+          Includes newer software keyboard / UTF-8 fixes, .nup selection support, GPU and filesystem fixes, controller stick_max setting, rebuilt launcher, runtime, recompiler components and shader translator.
+
+          ### Usage
+          1. Download the win64 ZIP, extract it to a NEW folder and run PokopiaLauncher.exe.
+          2. Select your own lawfully obtained game dump, run Set up (which compiles pkp.exe and generates shader cache), and then Play.
+          3. Keep any older installation, saves and caches backed up until this build has been tested on your PC.
+
+          Requires Windows 10/11 x64, 16 GB RAM, Vulkan 1.3 GPU, and your own game dump (project documents version 2.0.1a). NO Nintendo game data, ROMs, keys or saves are provided.
+
+          ### Build status and source
+          Both Windows CI builds passed, including the runtime at commit cd6b79f. No independent gameplay validation has been performed; this is marked PRERELEASE.
+
+          Original project: https://github.com/drakolordx7/pokopia-recomp
+          Updated fork: https://github.com/featureJosh/pokopia-recomp/tree/cd6b79f893f2e11c409d1420c08bd83364aa3d71
+          GPL-3.0 source provided as PokopiaRecomp-featureJosh-cd6b79f-source.zip; third-party notices in the package's licenses folder. SHA256SUMS.txt can verify downloads.
+          Full CI: https://github.com/sebbydaman/mirror/actions/runs/41672058441
+          Runtime CI: https://github.com/sebbydaman/mirror/actions/runs/41674818948
+
+          This distribution is hosted in an Eglantine/Eden mirror. GitHub's automatic Source code links for this tag refer to that mirror, not the Pokopia source. Use the ATTACHED source ZIP for the correct Pokopia code.
+
+          Not affiliated with Nintendo, The Pokemon Company or Koei Tecmo.
+          '@ | Set-Content release-notes.md -Encoding UTF8
+      - name: Publish verified prerelease files
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          gh release create pokopia-featurejosh-cd6b79f dist/PokopiaRecomp-featureJosh-cd6b79f-win64.zip dist/PokopiaRecomp-featureJosh-cd6b79f-source.zip dist/SHA256SUMS.txt --repo $env:GITHUB_REPOSITORY --target publish-pokopia-featurejosh-release --title 'Pokopia Recomp featureJosh cd6b79f - Windows x64 (Unofficial)' --notes-file release-notes.md --prerelease
