@@ -10,14 +10,13 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  build-runtime:
     runs-on: windows-latest
-    timeout-minutes: 180
+    timeout-minutes: 120
     env:
-      SOURCE_SHA: ebb8d3a2c891e6113334835cd98a4073b112b2e8
-      BASE_URL: https://github.com/drakolordx7/pokopia-recomp/releases/download/v0.1.1/PokopiaRecomp-0.1.1-win64.zip
+      SOURCE_SHA: cd6b79f893f2e11c409d1420c08bd83364aa3d71
     steps:
-      - name: Checkout exact featureJosh source
+      - name: Checkout exact newest featureJosh source
         shell: pwsh
         run: |
           git clone https://github.com/featureJosh/pokopia-recomp.git pokopia-src
@@ -27,23 +26,6 @@ jobs:
           $actual = (git -C pokopia-src rev-parse HEAD).Trim()
           if ($actual -ne $env:SOURCE_SHA) { throw "Wrong source commit: $actual" }
           Write-Host "Building featureJosh/pokopia-recomp $actual"
-
-      - name: Show toolchain
-        shell: pwsh
-        run: |
-          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
-          cmake --version
-          ninja --version
-          if (Test-Path 'C:\Program Files\LLVM\bin\clang-cl.exe') { & 'C:\Program Files\LLVM\bin\clang-cl.exe' --version }
-          node --version
-          npm --version
-          rustc --version
-          cargo --version
-
-      - name: Setup .NET 10
-        uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: '10.0.x'
 
       - name: Prepare vcpkg libvpx
         shell: pwsh
@@ -55,7 +37,6 @@ jobs:
             & "$vcpkg\bootstrap-vcpkg.bat" -disableMetrics
             if ($LASTEXITCODE) { throw "vcpkg bootstrap failed ($LASTEXITCODE)" }
           }
-          "VCPKG_ROOT=$vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Append
           & "$vcpkg\vcpkg.exe" install libvpx:x64-windows-static --clean-after-build
           if ($LASTEXITCODE) { throw "libvpx build failed ($LASTEXITCODE)" }
 
@@ -67,114 +48,32 @@ jobs:
           & pwsh -NoProfile -File "$PWD\pokopia-src\tools\textures\scripts\build.ps1"
           if ($LASTEXITCODE) { throw "texture build failed ($LASTEXITCODE)" }
 
-      - name: Build current pkp_rt.dll
+      - name: Build newest pkp_rt.dll
         shell: cmd
         run: |
           call pokopia-src\runtime\scripts\env.cmd
-          cmake -S pokopia-src\game-build -B pokopia-src\game-build\build\rt-latest -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DPKP_RT_DLL=ON -DPKP_VERSION=0.1.1-featureJosh-ebb8d3a -DNXRT_LIBVPX_ROOT=C:\vcpkg\installed\x64-windows-static
+          cmake -S pokopia-src\game-build -B pokopia-src\game-build\build\rt-latest -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DPKP_RT_DLL=ON -DPKP_VERSION=0.1.1-featureJosh-cd6b79f -DNXRT_LIBVPX_ROOT=C:\vcpkg\installed\x64-windows-static
           if errorlevel 1 exit /b %errorlevel%
           cmake --build pokopia-src\game-build\build\rt-latest --target pkp_rt --parallel
           if errorlevel 1 exit /b %errorlevel%
 
-      - name: Build current launcher
+      - name: Stage newest runtime
         shell: pwsh
         run: |
-          Push-Location pokopia-src\launcher
-          npm ci
-          if ($LASTEXITCODE) { throw "npm ci failed ($LASTEXITCODE)" }
-          npm run tauri build
-          if ($LASTEXITCODE) { throw "launcher build failed ($LASTEXITCODE)" }
-          Pop-Location
-
-      - name: Download v0.1.1 package base
-        shell: pwsh
-        run: |
-          Invoke-WebRequest -Uri $env:BASE_URL -OutFile base.zip
-          Expand-Archive base.zip -DestinationPath package
-          $pkg = Join-Path $PWD 'package\PokopiaRecomp-0.1.1'
-          if (-not (Test-Path $pkg)) { throw "Base package folder not found: $pkg" }
-          "PKG=$pkg" | Out-File -FilePath $env:GITHUB_ENV -Append
-
-      - name: Overlay rebuilt runtime and current recompiler
-        shell: pwsh
-        run: |
+          New-Item -ItemType Directory -Force latest-runtime | Out-Null
           $dll = Get-ChildItem pokopia-src\game-build\build\rt-latest -Recurse -Filter pkp_rt.dll | Select-Object -First 1
           $lib = Get-ChildItem pokopia-src\game-build\build\rt-latest -Recurse -Filter pkp_rt.lib | Select-Object -First 1
           if (-not $dll) { throw 'pkp_rt.dll not found' }
           if (-not $lib) { throw 'pkp_rt.lib not found' }
-          Copy-Item $dll.FullName (Join-Path $env:PKG 'pkp_rt.dll') -Force
-          Copy-Item $lib.FullName (Join-Path $env:PKG 'tools\build\sdk\pkp_rt.lib') -Force
+          Copy-Item $dll.FullName latest-runtime\pkp_rt.dll
+          Copy-Item $lib.FullName latest-runtime\pkp_rt.lib
+          $env:SOURCE_SHA | Set-Content latest-runtime\SOURCE_SHA.txt
+          Get-FileHash latest-runtime\pkp_rt.dll -Algorithm SHA256 | Format-List
 
-          Copy-Item pokopia-src\game-build\release_b\pkp_build.py (Join-Path $env:PKG 'tools\build\pkp_build.py') -Force
-          Copy-Item pokopia-src\game-build\release_b\dump_hashes.json (Join-Path $env:PKG 'tools\build\dump_hashes.json') -Force
-
-          $dstRecomp = Join-Path $env:PKG 'tools\build\recomp'
-          Remove-Item $dstRecomp -Recurse -Force
-          Copy-Item pokopia-src\recomp $dstRecomp -Recurse -Force
-
-          Copy-Item pokopia-src\tools\shaders\ampere\extract_corpus.py (Join-Path $env:PKG 'tools\shaders\extract_corpus.py') -Force
-
-      - name: Overlay rebuilt launcher
-        shell: pwsh
-        run: |
-          $launcher = 'pokopia-src\launcher\src-tauri\target\release\pokopia-launcher.exe'
-          if (-not (Test-Path $launcher)) {
-            $found = Get-ChildItem pokopia-src\launcher\src-tauri\target\release -Recurse -Filter '*.exe' |
-              Where-Object { $_.Name -match 'pokopia.*launcher|launcher.*pokopia' } |
-              Select-Object -First 1
-            if ($found) { $launcher = $found.FullName }
-          }
-          if (-not (Test-Path $launcher)) { throw 'Built Pokopia launcher exe not found' }
-          Copy-Item $launcher (Join-Path $env:PKG 'PokopiaLauncher.exe') -Force
-
-      - name: Fetch pinned Ryubing shader source
-        shell: pwsh
-        run: |
-          $url = 'https://codeberg.org/Software_arch/Ryubing/archive/a82350bb774f70fcbd41c9987bf67a3775409963.tar.gz'
-          Invoke-WebRequest -Uri $url -OutFile ryubing.tar.gz
-          New-Item -ItemType Directory -Force ryubing | Out-Null
-          tar -xzf ryubing.tar.gz -C ryubing --strip-components=1
-          if ($LASTEXITCODE) { throw "Ryubing extract failed ($LASTEXITCODE)" }
-          if (-not (Test-Path 'ryubing\src\Ryujinx.Graphics.Shader')) { throw 'Ryubing shader source was not extracted correctly' }
-
-      - name: Build and overlay current shader translator
-        shell: pwsh
-        run: |
-          & pwsh -NoProfile -File "$PWD\pokopia-src\tools\shaders\scripts\setup_ryujinx.ps1" -Ryubing "$PWD\ryubing"
-          if ($LASTEXITCODE) { throw "Ryubing staging failed ($LASTEXITCODE)" }
-          $out = Join-Path $env:PKG 'tools\spirv_harness'
-          Remove-Item $out -Recurse -Force -ErrorAction SilentlyContinue
-          dotnet publish pokopia-src\tools\shaders\harness\SpirvHarness.csproj -c Release -r win-x64 --self-contained true -o $out
-          if ($LASTEXITCODE) { throw "shader translator build failed ($LASTEXITCODE)" }
-          if (-not (Test-Path (Join-Path $out 'spirv_harness.exe'))) { throw 'spirv_harness.exe not built' }
-
-      - name: Add build provenance
-        shell: pwsh
-        run: |
-          @"
-          This package starts from official PokopiaRecomp v0.1.1 and overlays a rebuild from:
-          featureJosh/pokopia-recomp
-          commit: $env:SOURCE_SHA
-          built by GitHub Actions: $env:GITHUB_RUN_ID
-
-          Rebuilt/updated:
-          - PokopiaLauncher.exe
-          - pkp_rt.dll and pkp_rt.lib
-          - tools/build/pkp_build.py
-          - tools/build/recomp source used by first-run lifting
-          - tools/spirv_harness shader translator
-          - tools/shaders/extract_corpus.py
-          "@ | Set-Content -Path (Join-Path $env:PKG 'FEATUREJOSH_BUILD.txt') -Encoding UTF8
-
-          $dest = Join-Path $PWD ('PokopiaRecomp-featureJosh-' + $env:SOURCE_SHA.Substring(0,7))
-          Move-Item $env:PKG $dest
-          Compress-Archive -Path $dest -DestinationPath ("$dest.zip") -CompressionLevel Optimal
-          Get-FileHash "$dest.zip" -Algorithm SHA256 | Format-List
-
-      - name: Upload package
+      - name: Upload newest runtime
         uses: actions/upload-artifact@v4
         with:
-          name: PokopiaRecomp-featureJosh-ebb8d3a
-          path: PokopiaRecomp-featureJosh-ebb8d3a.zip
+          name: PokopiaRuntime-featureJosh-cd6b79f
+          path: latest-runtime
           if-no-files-found: error
           compression-level: 0
