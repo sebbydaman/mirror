@@ -1,6 +1,10 @@
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
+function Count-Regex([string]$Haystack, [string]$Pattern) {
+    return ([regex]::Matches($Haystack, $Pattern)).Count
+}
+
 # The assembled Pokopia stack already teaches SPIR-V StageName() about Task/Mesh using the
 # stable local names "task" and "mesh". Build-142 donor 310dd596 independently adds the same
 # switch cases as "ts" and "ms". Git can merge both insertions without a textual conflict, but
@@ -22,10 +26,6 @@ $localTaskPattern = '(?m)^[ \t]*case Stage::Task:[ \t]*\n[ \t]*return "task";[ \
 $localMeshPattern = '(?m)^[ \t]*case Stage::Mesh:[ \t]*\n[ \t]*return "mesh";[ \t]*(?:\n|$)'
 $donorTaskPattern = '(?m)^[ \t]*case Stage::Task:[ \t]*\n[ \t]*return "ts";[ \t]*(?:\n|$)'
 $donorMeshPattern = '(?m)^[ \t]*case Stage::Mesh:[ \t]*\n[ \t]*return "ms";[ \t]*(?:\n|$)'
-
-function Count-Regex([string]$Haystack, [string]$Pattern) {
-    return ([regex]::Matches($Haystack, $Pattern)).Count
-}
 
 $localTaskCount = Count-Regex $stage $localTaskPattern
 $localMeshCount = Count-Regex $stage $localMeshPattern
@@ -76,3 +76,48 @@ foreach ($check in @(
 
 git diff --check -- $path
 if ($LASTEXITCODE -ne 0) { throw 'SPIR-V Task/Mesh StageName normalization failed git diff --check' }
+
+# Build-142 has the final Task/Mesh NVN storage-buffer mapping: Task is bound in the vertex
+# slot (0x110), while Mesh is bound in the tessellation slot (0x310). The assembled Pokopia
+# stack predates that donor and also contains fallback Task/Mesh cases that return zero. Those
+# fallback cases become duplicate switch labels after donor-2 applies. Remove only the exact
+# fallback pair identified by its local explanatory comment, then require the donor mappings.
+$nvnOverlaps = @(
+    @{
+        Path = 'src/shader_recompiler/ir_opt/collect_shader_info_pass.cpp'
+        Label = 'shader-info NVN buffer base'
+        ObsoletePattern = '(?m)^[ \t]*case Stage::Task:[ \t]*// Task/Mesh have no legacy NVN buffer base\.[ \t]*\n[ \t]*case Stage::Mesh:[ \t]*\n[ \t]*return 0[uU]?[;][ \t]*(?:\n|$)'
+    },
+    @{
+        Path = 'src/shader_recompiler/frontend/maxwell/translate_program.cpp'
+        Label = 'NVN storage-buffer base'
+        ObsoletePattern = '(?m)^[ \t]*case Stage::Task:[ \t]*// Task/Mesh have no legacy NVN storage-buffer base\.[ \t]*\n[ \t]*case Stage::Mesh:[ \t]*\n[ \t]*return 0[uU]?[;][ \t]*(?:\n|$)'
+    }
+)
+
+foreach ($overlap in $nvnOverlaps) {
+    $nvnPath = $overlap.Path
+    $nvnText = (Get-Content $nvnPath -Raw).Replace("`r`n", "`n")
+    $obsoleteCount = Count-Regex $nvnText $overlap.ObsoletePattern
+    if ($obsoleteCount -gt 1) {
+        throw "Expected at most one obsolete Task/Mesh $($overlap.Label) block in $nvnPath, found $obsoleteCount"
+    }
+    if ($obsoleteCount -eq 1) {
+        $nvnText = [regex]::Replace($nvnText, $overlap.ObsoletePattern, '', 1)
+        [IO.File]::WriteAllText((Resolve-Path $nvnPath).Path, $nvnText.TrimEnd("`r", "`n") + "`n", [Text.UTF8Encoding]::new($false))
+        Write-Host "[TASKMESH] Removed obsolete zero-base Task/Mesh $($overlap.Label) fallback from $nvnPath."
+    } else {
+        Write-Host "[TASKMESH] Obsolete Task/Mesh $($overlap.Label) fallback already absent from $nvnPath."
+    }
+
+    $post = (Get-Content $nvnPath -Raw).Replace("`r`n", "`n")
+    $taskBound = Count-Regex $post '(?m)^[ \t]*case Stage::Task:[ \t]*// bound in the vertex slot[ \t]*$'
+    $meshBound = Count-Regex $post '(?m)^[ \t]*case Stage::Mesh:[ \t]*// bound in the tessellation slot[ \t]*$'
+    $taskCases = Count-Regex $post '(?m)^[ \t]*case Stage::Task:'
+    $meshCases = Count-Regex $post '(?m)^[ \t]*case Stage::Mesh:'
+    if ($taskBound -ne 1 -or $meshBound -ne 1 -or $taskCases -ne 1 -or $meshCases -ne 1) {
+        throw "Task/Mesh $($overlap.Label) normalization invalid in $nvnPath: taskBound=$taskBound meshBound=$meshBound taskCases=$taskCases meshCases=$meshCases"
+    }
+    git diff --check -- $nvnPath
+    if ($LASTEXITCODE -ne 0) { throw "Task/Mesh $($overlap.Label) normalization failed git diff --check" }
+}
