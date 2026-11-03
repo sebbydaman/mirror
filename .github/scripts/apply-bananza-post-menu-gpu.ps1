@@ -304,7 +304,8 @@ foreach ($pair in @(
     @($bufferBaseCheck, 'Common::RangeSet<DAddr> read_trapped_ranges;', 'read-trap buffer range tracking'),
     @($bufferBaseCheck, 'void ArmReadTraps(DAddr device_addr, u64 size)', 'GPU read-trap buffer tracking'),
     @($vkCheck, 'buffer_cache.FlushesOnCpuRead()', 'immediate trapped CPU-read buffer flush'),
-    @($deviceMemoryIncCheck, 'phys_addr == 0 ? 1', 'Raiders stale unmapped-page WalkBlock fix'),
+    @($deviceMemoryIncCheck, 'tracked_entries.GetUnchecked(start_page_d + i).continuity_tracker = 0;', 'build167 stale unmapped-page continuity reset'),
+    @($deviceMemoryIncCheck, 'tracked_entries.GetUnchecked(start_page_d + i).compressed_physical_ptr = 0;', 'build167 unmapped-page physical pointer reset'),
     @($ampereCheck, '~0x040000ffU', 'Raiders signed-LOD gradient texture lowering'),
     @($ampereCheck, 'insn.Bits(76, 2) == 2', 'Raiders/Welcome Tour TLD4 .PTP lowering')
 )) {
