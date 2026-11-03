@@ -50,11 +50,11 @@ if (-not $text.Contains($eligibilityMarker)) {
     $usesSparse = Replace-Once $usesSparse $colorOnlyCondition '!sparse_layer_format) {' 'SparseLayers color-only condition'
     $text = $text.Substring(0, $usesSparseStart) + $usesSparse + $text.Substring($usesSparseEnd)
 
-    # Scope the sparse-requirement edits to InitSparseLayers so identical lambdas elsewhere cannot
-    # become accidental anchors.
+    # Scope the sparse-requirement edits to InitSparseLayers only. Build167 places InitSparseTiles
+    # before BindLayers and both functions contain identical requirements/lambda anchors.
     $initStart = $text.IndexOf('bool Image::InitSparseLayers() {')
     if ($initStart -lt 0) { throw 'Could not locate InitSparseLayers implementation' }
-    $initEnd = $text.IndexOf('std::vector<u32> Image::BindLayers(std::span<const u32> layers) {', $initStart)
+    $initEnd = $text.IndexOf('bool Image::InitSparseTiles() {', $initStart)
     if ($initEnd -lt 0) { throw 'Could not locate end of InitSparseLayers implementation' }
     $init = $text.Substring($initStart, $initEnd - $initStart)
 
