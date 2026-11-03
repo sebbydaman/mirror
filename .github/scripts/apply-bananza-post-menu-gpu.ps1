@@ -306,8 +306,10 @@ foreach ($pair in @(
     @($vkCheck, 'buffer_cache.FlushesOnCpuRead()', 'immediate trapped CPU-read buffer flush'),
     @($deviceMemoryIncCheck, 'tracked_entries.GetUnchecked(start_page_d + i).continuity_tracker = 0;', 'build167 stale unmapped-page continuity reset'),
     @($deviceMemoryIncCheck, 'tracked_entries.GetUnchecked(start_page_d + i).compressed_physical_ptr = 0;', 'build167 unmapped-page physical pointer reset'),
-    @($ampereCheck, '~0x040000ffU', 'Raiders signed-LOD gradient texture lowering'),
-    @($ampereCheck, 'insn.Bits(76, 2) == 2', 'Raiders/Welcome Tour TLD4 .PTP lowering')
+    @($ampereCheck, 'case 0xb6c: { // TXD 2D or ARRAY_2D', 'build167 native gradient texture lowering'),
+    @($ampereCheck, 'insn.Bits(90, 1)', 'build167 TXD NODEP preservation'),
+    @($ampereCheck, 'case 0xb63: case 0xf63: { // TLD4', 'build167 native texture gather lowering'),
+    @($ampereCheck, 'const bool offsets = insn.Bits(76, 1) != 0;', 'build167 texture gather offset decoding')
 )) {
     if (-not $pair[0].Contains($pair[1])) { throw "Combined NS2 regression: missing $($pair[2])" }
     Write-Host "[PASS] $($pair[2])"
