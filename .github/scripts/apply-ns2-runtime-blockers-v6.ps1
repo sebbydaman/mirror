@@ -15,6 +15,25 @@ function Replace-Once([string]$Text, [string]$Old, [string]$New, [string]$Label)
     if ($Text.IndexOf($Old, $at + $Old.Length) -ge 0) { throw "Ambiguous anchor for $Label" }
     return $Text.Substring(0, $at) + $New + $Text.Substring($at + $Old.Length)
 }
+function Insert-AfterMethod([string]$Text, [string]$Signature, [string]$Block, [string]$Label) {
+    $start = $Text.IndexOf($Signature)
+    if ($start -lt 0) { throw "Could not locate $Label" }
+    if ($Text.IndexOf($Signature, $start + $Signature.Length) -ge 0) { throw "Ambiguous anchor for $Label" }
+    $brace = $Text.IndexOf('{', $start + $Signature.Length)
+    if ($brace -lt 0) { throw "Could not locate $Label body" }
+    $depth = 0
+    for ($i = $brace; $i -lt $Text.Length; $i++) {
+        if ($Text[$i] -eq '{') { $depth++ }
+        elseif ($Text[$i] -eq '}') {
+            $depth--
+            if ($depth -eq 0) {
+                $end = $i + 1
+                return $Text.Substring(0, $end) + $Block + $Text.Substring($end)
+            }
+        }
+    }
+    throw "Could not locate $Label end"
+}
 
 # Strictly validated native tessellation-evaluation admission. Preserve build167 mesh-slot admission.
 $shaderEnvPath = 'src/video_core/shader_environment.cpp'
@@ -129,19 +148,6 @@ if (-not $vkHeader.Contains('bool IsExtMeshShaderSupported() const')) {
     $vkHeader = Replace-Once $vkHeader $anchor ($block + $anchor) 'mesh shader capability accessor'
 }
 if (-not $vkHeader.Contains('bool IsExtTaskShaderSupported() const')) {
-    $meshAccessor = @'
-    bool IsExtMeshShaderSupported() const {
-        return extensions.mesh_shader && features.mesh_shader.taskShader &&
-               features.mesh_shader.meshShader;
-    }
-'@
-    if (-not $vkHeader.Contains($meshAccessor)) {
-        $meshAccessor = @'
-    bool IsExtMeshShaderSupported() const {
-        return extensions.mesh_shader && features.mesh_shader.meshShader;
-    }
-'@
-    }
     $taskAccessor = @'
 
     /// Returns true when the optional task shader stage is also available.
@@ -150,16 +156,9 @@ if (-not $vkHeader.Contains('bool IsExtTaskShaderSupported() const')) {
                features.mesh_shader.taskShader;
     }
 '@
-    $vkHeader = Replace-Once $vkHeader $meshAccessor ($meshAccessor + $taskAccessor) 'task shader capability accessor'
+    $vkHeader = Insert-AfterMethod $vkHeader 'bool IsExtMeshShaderSupported() const' $taskAccessor 'mesh shader capability accessor'
 }
 if (-not $vkHeader.Contains('const VkPhysicalDeviceMeshShaderPropertiesEXT& GetMeshShaderProperties() const')) {
-    $taskAccessor = @'
-    /// Returns true when the optional task shader stage is also available.
-    bool IsExtTaskShaderSupported() const {
-        return extensions.mesh_shader && features.mesh_shader.meshShader &&
-               features.mesh_shader.taskShader;
-    }
-'@
     $propertyAccessor = @'
 
     /// Host task/mesh workgroup, payload and output limits.
@@ -167,7 +166,7 @@ if (-not $vkHeader.Contains('const VkPhysicalDeviceMeshShaderPropertiesEXT& GetM
         return properties.mesh_shader;
     }
 '@
-    $vkHeader = Replace-Once $vkHeader $taskAccessor ($taskAccessor + $propertyAccessor) 'mesh shader properties accessor'
+    $vkHeader = Insert-AfterMethod $vkHeader 'bool IsExtTaskShaderSupported() const' $propertyAccessor 'task shader capability accessor'
 }
 if (-not $vkHeader.Contains('VkPhysicalDeviceMeshShaderPropertiesEXT mesh_shader{};')) {
     $anchor = '        VkPhysicalDeviceTransformFeedbackPropertiesEXT transform_feedback{};'
