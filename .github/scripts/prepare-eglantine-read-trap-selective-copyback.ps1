@@ -1,5 +1,32 @@
 $ErrorActionPreference = 'Stop'
 
+# Build167 already contains the complete read-trap design that this preparation script used to
+# synthesize over the older PokeDinner QueueDownload generation: device-memory read traps,
+# BufferCache::FlushesOnCpuRead, read-trap lifetime cleanup and Vulkan GetFlushArea integration.
+# Keep that newer implementation intact instead of looking for the removed QueueDownload path.
+$nativeReadTrapHeader = 'src/core/device_memory_manager.h'
+$nativeReadTrapBase = 'src/video_core/buffer_cache/buffer_cache_base.h'
+$nativeReadTrapCache = 'src/video_core/buffer_cache/buffer_cache.h'
+$nativeReadTrapVk = 'src/video_core/renderer_vulkan/vk_rasterizer.cpp'
+if ((Test-Path $nativeReadTrapHeader -PathType Leaf) -and
+    (Test-Path $nativeReadTrapBase -PathType Leaf) -and
+    (Test-Path $nativeReadTrapCache -PathType Leaf) -and
+    (Test-Path $nativeReadTrapVk -PathType Leaf)) {
+    $nativeHeaderText = Get-Content $nativeReadTrapHeader -Raw
+    $nativeBaseText = Get-Content $nativeReadTrapBase -Raw
+    $nativeCacheText = Get-Content $nativeReadTrapCache -Raw
+    $nativeVkText = Get-Content $nativeReadTrapVk -Raw
+    $nativeComplete = $nativeHeaderText.Contains('void ArmReadTraps(DAddr addr, size_t size);') -and
+                      $nativeBaseText.Contains('bool FlushesOnCpuRead() const') -and
+                      $nativeCacheText.Contains('read_trapped_ranges.Subtract(slot_buffers[buffer_id].CpuAddr()') -and
+                      $nativeCacheText.Contains('ArmReadTraps(new_base_address, size);') -and
+                      $nativeVkText.Contains('buffer_cache.FlushesOnCpuRead()')
+    if ($nativeComplete) {
+        Write-Host '[PRESENT] build167 native first-read trap/selective GPU copyback stack'
+        return
+    }
+}
+
 # Late Eglantine read traps must layer on top of PokeDinner 2.0's selective QueueDownload path.
 # Do this before the larger read-trap cherry-pick/merge so the later script can preserve the
 # current PokeDinner/PR52 shape instead of relying on exact historical text blocks.
