@@ -2,11 +2,13 @@ $ErrorActionPreference = 'Stop'
 
 # Build-158 / build-167 Pokopia regression fix.
 # Donor: Djihads80/Eglantine@9f4f01f76e8556941c0c0c3f57edc1d600ed23ea
+# Prerequisite donor: 837133792d5651a896bc018f13acd8eaabcd8e81
 #
-# The donor makes GMMU maps execute on the GPU split front, after draining the back,
-# before later command lists are read.  The clean transplant probe showed only
-# gpu_thread.h overlaps our integrated stack, so apply the donor semantics directly
-# and fail closed if any of the expected anchors have drifted.
+# Build158 assumes 837133 already moved Nx2Map/Nx2Sparse GMMU maps from the
+# service thread to GPU::RunInOrder. Our pinned NS2 base predates 837133, so
+# compose that prerequisite locally and immediately upgrade it to MapInOrder.
+# Nx2SparseTile (216 sparse remap) was added by a later donor commit and is not
+# present on every production stack; when present, upgrade its RunInOrder too.
 
 function Read-Text([string]$Path) {
     if (-not (Test-Path $Path -PathType Leaf)) { throw "Missing source file: $Path" }
@@ -33,27 +35,55 @@ function Replace-ExactlyOnce([string]$Path, [string]$Old, [string]$New, [string]
 
 $nvPath = 'src/core/hle/service/nvdrv/devices/nvhost_as_gpu.cpp'
 $nv = Read-Text $nvPath
-$oldMapCalls = @(
-    'system.GPU().RunInOrder([gmmu = gmmu.get(), gpu_address, device_address, size] {',
-    'system.GPU().RunInOrder([&smmu, device, cpu_address, size, asid = session->asid] {'
-)
-$newMapCalls = @(
-    'system.GPU().MapInOrder([gmmu = gmmu.get(), gpu_address, device_address, size] {',
-    'system.GPU().MapInOrder([&smmu, device, cpu_address, size, asid = session->asid] {'
-)
-$oldGmmu = ([regex]::Matches($nv, [regex]::Escape($oldMapCalls[0]))).Count
-$newGmmu = ([regex]::Matches($nv, [regex]::Escape($newMapCalls[0]))).Count
-$oldSparseTile = ([regex]::Matches($nv, [regex]::Escape($oldMapCalls[1]))).Count
-$newSparseTile = ([regex]::Matches($nv, [regex]::Escape($newMapCalls[1]))).Count
-if ($newGmmu -eq 2 -and $newSparseTile -eq 1 -and $oldGmmu -eq 0 -and $oldSparseTile -eq 0) {
-    Write-Host '[PRESENT] three NX2 map paths already use GPU::MapInOrder'
-} elseif ($oldGmmu -eq 2 -and $oldSparseTile -eq 1 -and $newGmmu -eq 0 -and $newSparseTile -eq 0) {
-    $nv = $nv.Replace($oldMapCalls[0], $newMapCalls[0]).Replace($oldMapCalls[1], $newMapCalls[1])
-    Write-Text $nvPath $nv
-    Write-Host '[APPLIED] Nx2Map/Nx2Sparse/Nx2SparseTile now use GPU::MapInOrder'
+$runGmmu = 'system.GPU().RunInOrder([gmmu = gmmu.get(), gpu_address, device_address, size] {'
+$mapGmmu = 'system.GPU().MapInOrder([gmmu = gmmu.get(), gpu_address, device_address, size] {'
+$directGmmu = '    gmmu->Map(gpu_address, device_address, size, Tegra::PTEKind::PITCH, false);'
+
+$runGmmuCount = ([regex]::Matches($nv, [regex]::Escape($runGmmu))).Count
+$mapGmmuCount = ([regex]::Matches($nv, [regex]::Escape($mapGmmu))).Count
+$directGmmuCount = ([regex]::Matches($nv, [regex]::Escape($directGmmu))).Count
+
+if ($mapGmmuCount -eq 2 -and $runGmmuCount -eq 0) {
+    Write-Host '[PRESENT] Nx2Map/Nx2Sparse already use GPU::MapInOrder'
+} elseif ($runGmmuCount -eq 2 -and $mapGmmuCount -eq 0) {
+    $nv = $nv.Replace($runGmmu, $mapGmmu)
+    Write-Host '[APPLIED] build158 upgrade: Nx2Map/Nx2Sparse RunInOrder -> MapInOrder'
+} elseif ($runGmmuCount -eq 0 -and $mapGmmuCount -eq 0 -and $directGmmuCount -eq 2) {
+    # Our 01effa/PokeDinner generation predates 837133. Move exactly the two direct
+    # GMMU maps (Nx2Map and sparse-region creation) onto the ordered GPU front.
+    $queued = @'
+    system.GPU().MapInOrder([gmmu = gmmu.get(), gpu_address, device_address, size] {
+        gmmu->Map(gpu_address, device_address, size, Tegra::PTEKind::PITCH, false);
+    });
+'@
+    $nv = $nv.Replace($directGmmu, $queued.TrimEnd("`n"))
+    Write-Host '[APPLIED] 837133 prerequisite + build158 ordering for two direct GMMU map sites'
 } else {
-    throw "Unexpected partial MapInOrder state in ${nvPath}: oldGmmu=$oldGmmu newGmmu=$newGmmu oldSparseTile=$oldSparseTile newSparseTile=$newSparseTile"
+    throw "Unexpected Nx2Map/Nx2Sparse mapping state in ${nvPath}: direct=$directGmmuCount run=$runGmmuCount map=$mapGmmuCount"
 }
+
+# Sparse tile remapping arrived after our pinned base. If another integration layer has
+# already added it, build158 requires that remap to execute before later command-list reads.
+$runSparseTile = 'system.GPU().RunInOrder([&smmu, device, cpu_address, size, asid = session->asid] {'
+$mapSparseTile = 'system.GPU().MapInOrder([&smmu, device, cpu_address, size, asid = session->asid] {'
+$hasSparseTile = $nv.Contains('void nvhost_as_gpu::Nx2SparseTile(')
+$runSparseTileCount = ([regex]::Matches($nv, [regex]::Escape($runSparseTile))).Count
+$mapSparseTileCount = ([regex]::Matches($nv, [regex]::Escape($mapSparseTile))).Count
+if ($hasSparseTile) {
+    if ($mapSparseTileCount -eq 1 -and $runSparseTileCount -eq 0) {
+        Write-Host '[PRESENT] Nx2SparseTile already uses GPU::MapInOrder'
+    } elseif ($runSparseTileCount -eq 1 -and $mapSparseTileCount -eq 0) {
+        $nv = $nv.Replace($runSparseTile, $mapSparseTile)
+        Write-Host '[APPLIED] build158 upgrade: Nx2SparseTile RunInOrder -> MapInOrder'
+    } else {
+        throw "Unexpected Nx2SparseTile mapping state: run=$runSparseTileCount map=$mapSparseTileCount"
+    }
+} elseif ($runSparseTileCount -ne 0 -or $mapSparseTileCount -ne 0) {
+    throw 'Sparse-tile mapping lambda exists without Nx2SparseTile function marker'
+} else {
+    Write-Host '[SKIP] Nx2SparseTile/216 prerequisite is not present on this production source generation'
+}
+Write-Text $nvPath $nv
 
 $gpuImplOld = @'
     void RunInOrder(std::function<void()>&& func) {
