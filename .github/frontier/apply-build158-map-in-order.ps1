@@ -33,6 +33,22 @@ function Replace-ExactlyOnce([string]$Path, [string]$Old, [string]$New, [string]
     Write-Host "[APPLIED] $Label"
 }
 
+function Insert-AfterExactlyOnce([string]$Path, [string]$Anchor, [string]$Block,
+                                 [string]$PresentMarker, [string]$Label) {
+    $text = Read-Text $Path
+    if ($text.Contains($PresentMarker)) {
+        Write-Host "[PRESENT] $Label"
+        return
+    }
+    $count = ([regex]::Matches($text, [regex]::Escape($Anchor))).Count
+    if ($count -ne 1) {
+        throw "$Label anchor count is $count (expected exactly 1) in $Path"
+    }
+    $replacement = $Anchor + "`n`n" + $Block.TrimEnd("`r", "`n")
+    Write-Text $Path ($text.Replace($Anchor, $replacement))
+    Write-Host "[APPLIED] $Label"
+}
+
 $nvPath = 'src/core/hle/service/nvdrv/devices/nvhost_as_gpu.cpp'
 $nv = Read-Text $nvPath
 $runGmmu = 'system.GPU().RunInOrder([gmmu = gmmu.get(), gpu_address, device_address, size] {'
@@ -85,63 +101,44 @@ if ($hasSparseTile) {
 }
 Write-Text $nvPath $nv
 
-$gpuImplOld = @'
+# Do not anchor these insertions to neighboring functions/comments: our pinned Eglantine
+# generation places FlushRegion between RunInOrder and OnCPURead, while newer donors do not.
+# The RunInOrder function/declaration itself is the stable semantic anchor.
+$gpuImplRun = @'
     void RunInOrder(std::function<void()>&& func) {
         gpu_thread.Run(std::move(func), is_async);
     }
-
-    /// Notify rasterizer that any caches of the specified region should be flushed to Switch memory
 '@
-$gpuImplNew = @'
-    void RunInOrder(std::function<void()>&& func) {
-        gpu_thread.Run(std::move(func), is_async);
-    }
-
+$gpuImplMap = @'
     void MapInOrder(std::function<void()>&& func) {
         gpu_thread.Run(std::move(func), is_async, true);
     }
-
-    /// Notify rasterizer that any caches of the specified region should be flushed to Switch memory
 '@
-Replace-ExactlyOnce 'src/video_core/gpu.cpp' $gpuImplOld $gpuImplNew 'GPU::Impl MapInOrder handoff'
+Insert-AfterExactlyOnce 'src/video_core/gpu.cpp' $gpuImplRun.TrimEnd("`n") `
+    $gpuImplMap 'gpu_thread.Run(std::move(func), is_async, true);' 'GPU::Impl MapInOrder handoff'
 
-$gpuPublicOld = @'
+$gpuPublicRun = @'
 void GPU::RunInOrder(std::function<void()>&& func) {
     impl->RunInOrder(std::move(func));
 }
-
-void GPU::InvalidateRegion(DAddr addr, u64 size, bool preserve_gpu_writes) {
 '@
-$gpuPublicNew = @'
-void GPU::RunInOrder(std::function<void()>&& func) {
-    impl->RunInOrder(std::move(func));
-}
-
+$gpuPublicMap = @'
 void GPU::MapInOrder(std::function<void()>&& func) {
     impl->MapInOrder(std::move(func));
 }
-
-void GPU::InvalidateRegion(DAddr addr, u64 size, bool preserve_gpu_writes) {
 '@
-Replace-ExactlyOnce 'src/video_core/gpu.cpp' $gpuPublicOld $gpuPublicNew 'GPU::MapInOrder implementation'
+Insert-AfterExactlyOnce 'src/video_core/gpu.cpp' $gpuPublicRun.TrimEnd("`n") `
+    $gpuPublicMap 'void GPU::MapInOrder(std::function<void()>&& func)' 'GPU::MapInOrder implementation'
 
-$gpuHeaderOld = @'
-    /// Runs func on the GPU thread after the command lists submitted so far.
-    void RunInOrder(std::function<void()>&& func);
-
-    /// Notify rasterizer that any caches of the specified region should be invalidated
-'@
-$gpuHeaderNew = @'
-    /// Runs func on the GPU thread after the command lists submitted so far.
-    void RunInOrder(std::function<void()>&& func);
-
+$gpuHeaderPath = 'src/video_core/gpu.h'
+$gpuRunDecl = '    void RunInOrder(std::function<void()>&& func);'
+$gpuMapDecl = @'
     /// RunInOrder for GPU memory maps: also done before the GPU thread reads the command lists
     /// submitted later (with the GPU split, on its front rather than its back).
     void MapInOrder(std::function<void()>&& func);
-
-    /// Notify rasterizer that any caches of the specified region should be invalidated
 '@
-Replace-ExactlyOnce 'src/video_core/gpu.h' $gpuHeaderOld $gpuHeaderNew 'GPU::MapInOrder declaration'
+Insert-AfterExactlyOnce $gpuHeaderPath $gpuRunDecl $gpuMapDecl `
+    'void MapInOrder(std::function<void()>&& func);' 'GPU::MapInOrder declaration'
 
 $threadCppOld = @'
                 } else if (auto* run = std::get_if<RunCommand>(&next.data)) {
