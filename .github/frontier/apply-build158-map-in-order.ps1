@@ -21,31 +21,35 @@ function Write-Text([string]$Path, [string]$Text) {
 
 function Replace-ExactlyOnce([string]$Path, [string]$Old, [string]$New, [string]$Label) {
     $text = Read-Text $Path
-    if ($text.Contains($New)) {
+    $oldText = $Old.Replace("`r`n", "`n")
+    $newText = $New.Replace("`r`n", "`n")
+    if ($text.Contains($newText)) {
         Write-Host "[PRESENT] $Label"
         return
     }
-    $count = ([regex]::Matches($text, [regex]::Escape($Old))).Count
+    $count = ([regex]::Matches($text, [regex]::Escape($oldText))).Count
     if ($count -ne 1) {
         throw "$Label anchor count is $count (expected exactly 1) in $Path"
     }
-    Write-Text $Path ($text.Replace($Old, $New))
+    Write-Text $Path ($text.Replace($oldText, $newText))
     Write-Host "[APPLIED] $Label"
 }
 
 function Insert-AfterExactlyOnce([string]$Path, [string]$Anchor, [string]$Block,
                                  [string]$PresentMarker, [string]$Label) {
     $text = Read-Text $Path
+    $anchorText = $Anchor.Replace("`r`n", "`n")
+    $blockText = $Block.Replace("`r`n", "`n").TrimEnd("`r", "`n")
     if ($text.Contains($PresentMarker)) {
         Write-Host "[PRESENT] $Label"
         return
     }
-    $count = ([regex]::Matches($text, [regex]::Escape($Anchor))).Count
+    $count = ([regex]::Matches($text, [regex]::Escape($anchorText))).Count
     if ($count -ne 1) {
         throw "$Label anchor count is $count (expected exactly 1) in $Path"
     }
-    $replacement = $Anchor + "`n`n" + $Block.TrimEnd("`r", "`n")
-    Write-Text $Path ($text.Replace($Anchor, $replacement))
+    $replacement = $anchorText + "`n`n" + $blockText
+    Write-Text $Path ($text.Replace($anchorText, $replacement))
     Write-Host "[APPLIED] $Label"
 }
 
@@ -85,7 +89,8 @@ function Insert-AfterFunctionExactlyOnce([string]$Path, [string]$Signature, [str
         throw "$Label could not locate balanced function terminator in $Path"
     }
 
-    $insertion = "`n`n" + $Block.TrimEnd("`r", "`n")
+    $blockText = $Block.Replace("`r`n", "`n").TrimEnd("`r", "`n")
+    $insertion = "`n`n" + $blockText
     Write-Text $Path ($text.Insert($closeBrace + 1, $insertion))
     Write-Host "[APPLIED] $Label"
 }
