@@ -4,13 +4,16 @@ $ErrorActionPreference = "Stop"
 # transitive helper, a reintroduced dead generation, or an uncatalogued script/payload.
 & "$PSScriptRoot\audit-ns2-legacy-dead-code.ps1" -AutomationOnly
 
-# Build from the newer nx2-experimental merge that contains the Mario Kart World
-# sparse-region, sparse-layer and per-layer ASTC upload work. The workflow still
-# checks out the older known-good source first; switch before applying any local
-# patches so the rest of the patch chain is layered on this exact source commit.
+# The legacy production composition is pinned to 01effa81. Build167 is now a newer accepted donor
+# generation and must not be silently downgraded: recognize it by the NUP writer + FSR 3.1 source
+# surfaces and layer only the still-missing local shader compatibility pieces over it.
 $targetBase = "01effa81ab0e151f8cfd674bf4da952d24645943"
 $currentBase = (git rev-parse HEAD).Trim()
-if ($currentBase -ne $targetBase) {
+$isBuild167Generation = (Test-Path 'src/core/file_sys/nup_writer.cpp' -PathType Leaf) -and
+                        (Test-Path 'src/video_core/renderer_vulkan/vk_fsr3_upscaler.cpp' -PathType Leaf)
+if ($isBuild167Generation) {
+    Write-Host "Using newer Eglantine build167 generation in place: $currentBase"
+} elseif ($currentBase -ne $targetBase) {
     Write-Host "Switching Eglantine base $currentBase -> $targetBase"
     git fetch --depth=1 origin $targetBase
     if ($LASTEXITCODE -ne 0) { throw "Could not fetch Eglantine base $targetBase" }
@@ -18,18 +21,24 @@ if ($currentBase -ne $targetBase) {
     if ($LASTEXITCODE -ne 0) { throw "Could not checkout Eglantine base $targetBase" }
 }
 $actualBase = (git rev-parse HEAD).Trim()
-if ($actualBase -ne $targetBase) { throw "Unexpected Eglantine base: $actualBase" }
-Write-Host "Using Eglantine sparse/ASTC base: $actualBase"
+if (-not $isBuild167Generation -and $actualBase -ne $targetBase) {
+    throw "Unexpected Eglantine base: $actualBase"
+}
+Write-Host "Using Eglantine integration base: $actualBase"
 
 $amperePath = "src/shader_recompiler/frontend/ampere/lower_to_maxwell.h"
 $ampereText = Get-Content $amperePath -Raw
 
 # Keep Eglantine's broader TLD4/TMML/general texture coverage, but restore our
 # bindless TEX path, extended TXQ mask/binding handling, generalized BRX base
-# translation, and geometry OUT lowering.
+# translation, and geometry OUT lowering. Build167 already has a newer/generalized
+# TEX/TEX.B and TXQ/TXQ.B implementation, so do not replace those with older local forms.
 
 # Bindless 2D/cube TEX.B (SM70+ opcode 0x361).
-if (-not $ampereText.Contains('case 0x361: { // TEX.B, scalar bindless 2D/cube implicit-LOD sample')) {
+$modernTex = 'case 0xb60: case 0xf60: case 0x361: { // TEX; 0xf60: handle in a uniform register; 0x361: TEX.B'
+if ($ampereText.Contains($modernTex)) {
+    Write-Host "[PRESENT] build167 generalized TEX/TEX.B lowering"
+} elseif (-not $ampereText.Contains('case 0x361: { // TEX.B, scalar bindless 2D/cube implicit-LOD sample')) {
     $needle = '        case 0xb60: { // TEX, scalar 2D implicit-LOD sample'
     if (-not $ampereText.Contains($needle)) { throw "Could not locate Eglantine TEX insertion point" }
     $block = @'
@@ -72,8 +81,9 @@ if (-not $ampereText.Contains('case 0x361: { // TEX.B, scalar bindless 2D/cube i
     Write-Host "Added bindless 2D/cube TEX.B lowering on Eglantine."
 }
 
-# Extend Eglantine TXQ from binding 2 / XY-only masks to all descriptor buffers
-# 0..17 and packed X/Y/Z/mip-count outputs.
+# Extend older Eglantine TXQ from binding 2 / XY-only masks. Build167's combined
+# TXQ/TXQ.B block is strictly newer and already handles generalized descriptor buffers/outputs.
+$modernTxq = 'case 0xb6f: case 0x370: { // TXQ texture dimensions (0x370: TXQ.B).'
 $txqPattern = '(?s)        case 0xb6f: \{ // TXQ texture dimensions, two packed scalar outputs\..*?            break;\r?\n        \}'
 $txqReplacement = @'
         case 0xb6f: { // TXQ texture dimensions, packed X/Y/Z/mip-count outputs.
@@ -94,7 +104,9 @@ $txqReplacement = @'
             break;
         }
 '@
-if ($ampereText.Contains('case 0xb6f: { // TXQ texture dimensions, two packed scalar outputs.')) {
+if ($ampereText.Contains($modernTxq)) {
+    Write-Host "[PRESENT] build167 generalized TXQ/TXQ.B lowering"
+} elseif ($ampereText.Contains('case 0xb6f: { // TXQ texture dimensions, two packed scalar outputs.')) {
     $newText = [regex]::Replace($ampereText, $txqPattern, $txqReplacement.TrimEnd("`r", "`n"), 1)
     if ($newText -eq $ampereText) { throw "Could not replace Eglantine TXQ block" }
     $ampereText = $newText
@@ -154,8 +166,8 @@ if (-not $ampereText.Contains('case 0x924: { // OUT, immediate geometry stream')
 
 Set-Content -Path $amperePath -Value $ampereText -Encoding utf8 -NoNewline
 
-# Reuse the validated geometry-stage admission patch. The selected NX2 base still
-# has the same native stage guard as the previous baseline.
+# Reuse the validated geometry-stage admission patch; its build167 path preserves the newer mesh
+# slot admission while adding geometry validation instead of replacing that upstream capability.
 $geometryScript = Join-Path $PSScriptRoot "apply-ns2-geometry-stage.ps1"
 & $geometryScript
 
