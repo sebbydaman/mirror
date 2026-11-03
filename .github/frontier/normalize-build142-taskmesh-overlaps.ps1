@@ -79,19 +79,20 @@ if ($LASTEXITCODE -ne 0) { throw 'SPIR-V Task/Mesh StageName normalization faile
 
 # Build-142 has the final Task/Mesh NVN storage-buffer mapping: Task is bound in the vertex
 # slot (0x110), while Mesh is bound in the tessellation slot (0x310). The assembled Pokopia
-# stack predates that donor and also contains fallback Task/Mesh cases that return zero. Those
-# fallback cases become duplicate switch labels after donor-2 applies. Remove only the exact
-# fallback pair identified by its local explanatory comment, then require the donor mappings.
+# stack predates that donor and also contains fallback Task/Mesh cases that break out of the
+# switch so the following InvalidArgument path rejects them. After donor-2 applies those become
+# duplicate case labels. Remove only the exact fallback pair identified by its local explanatory
+# comment, then require the donor mappings to be the only Task/Mesh cases in each base switch.
 $nvnOverlaps = @(
     @{
         Path = 'src/shader_recompiler/ir_opt/collect_shader_info_pass.cpp'
         Label = 'shader-info NVN buffer base'
-        ObsoletePattern = '(?m)^[ \t]*case Stage::Task:[ \t]*// Task/Mesh have no legacy NVN buffer base\.[ \t]*\n[ \t]*case Stage::Mesh:[ \t]*\n[ \t]*return 0[uU]?[;][ \t]*(?:\n|$)'
+        ObsoletePattern = '(?m)^[ \t]*case Stage::Task:[ \t]*// Task/Mesh have no legacy NVN buffer base\.[ \t]*\n[ \t]*case Stage::Mesh:[ \t]*\n[ \t]*break;[ \t]*(?:\n|$)'
     },
     @{
         Path = 'src/shader_recompiler/frontend/maxwell/translate_program.cpp'
         Label = 'NVN storage-buffer base'
-        ObsoletePattern = '(?m)^[ \t]*case Stage::Task:[ \t]*// Task/Mesh have no legacy NVN storage-buffer base\.[ \t]*\n[ \t]*case Stage::Mesh:[ \t]*\n[ \t]*return 0[uU]?[;][ \t]*(?:\n|$)'
+        ObsoletePattern = '(?m)^[ \t]*case Stage::Task:[ \t]*// Task/Mesh have no legacy NVN storage-buffer base\.[ \t]*\n[ \t]*case Stage::Mesh:[ \t]*\n[ \t]*break;[ \t]*(?:\n|$)'
     }
 )
 
@@ -105,9 +106,9 @@ foreach ($overlap in $nvnOverlaps) {
     if ($obsoleteCount -eq 1) {
         $nvnText = [regex]::Replace($nvnText, $overlap.ObsoletePattern, '', 1)
         [IO.File]::WriteAllText((Resolve-Path $nvnPath).Path, $nvnText.TrimEnd("`r", "`n") + "`n", [Text.UTF8Encoding]::new($false))
-        Write-Host "[TASKMESH] Removed obsolete zero-base Task/Mesh $($overlap.Label) fallback from $nvnPath."
+        Write-Host "[TASKMESH] Removed obsolete rejecting Task/Mesh $($overlap.Label) fallback from $nvnPath."
     } else {
-        Write-Host "[TASKMESH] Obsolete Task/Mesh $($overlap.Label) fallback already absent from $nvnPath."
+        Write-Host "[TASKMESH] Obsolete rejecting Task/Mesh $($overlap.Label) fallback already absent from $nvnPath."
     }
 
     $post = (Get-Content $nvnPath -Raw).Replace("`r`n", "`n")
