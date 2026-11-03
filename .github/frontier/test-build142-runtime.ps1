@@ -28,7 +28,11 @@ Require $buffer 'it->second.copy_writes != writes'
 Require $buffer 'Nx2NoteListWrite(buffer_b, *cpu_dest_address, amount);'
 Require $buffer 'Nx2NoteListWrite(buffer, *cpu_dst_address, size);'
 Require $buffer 'nx2_list_pages.size() >= 1024'
+Require $buffer 'current.device_addr == 0 && current.size == 0 && current.buffer_id == NULL_BUFFER_ID'
 $text = Get-Content $buffer -Raw
+if ($text.Contains('current.device_addr == 0 && current.size == 0 && !current.buffer_id')) {
+    throw 'Build142 regression: obsolete uniform-buffer null guard survived build158 normalization'
+}
 foreach ($signature in @('void BufferCache<P>::UnmapGPUMemory', 'void BufferCache<P>::DeleteBuffer')) {
     $pos = $text.IndexOf($signature)
     if ($pos -lt 0 -or -not $text.Substring($pos, 200).Contains('Nx2InvalidateListCopies();')) {
