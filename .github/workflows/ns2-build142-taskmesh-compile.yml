@@ -6,6 +6,7 @@ on:
       - ns2-pokopia-startup-fast-win32
     paths:
       - '.github/workflows/ns2-build142-taskmesh-compile.yml'
+      - '.github/frontier/apply-final-performance-stack.ps1'
       - '.github/frontier/apply-build142-taskmesh.ps1'
       - '.github/frontier/normalize-build142-taskmesh-overlaps.ps1'
   workflow_dispatch:
@@ -20,7 +21,7 @@ concurrency:
 jobs:
   compile-taskmesh:
     runs-on: windows-2022
-    timeout-minutes: 45
+    timeout-minutes: 55
     env:
       EDEN_SKIP_POST_BUILD31_FRONTIER: '1'
 
@@ -39,7 +40,7 @@ jobs:
           path: eden
           fetch-depth: 1
 
-      - name: Assemble exact current Pokopia stack
+      - name: Assemble exact canonical Pokopia stack
         shell: pwsh
         working-directory: eden
         run: |
@@ -55,16 +56,10 @@ jobs:
           & "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-eglantine-late-stability.ps1"
           & "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-final-performance-stack.ps1"
           git diff --check
-          if ($LASTEXITCODE -ne 0) { throw 'Current assembled stack failed diff check' }
-
-      - name: Apply staged production build142 Task-Mesh adapter
-        shell: pwsh
-        working-directory: eden
-        run: |
-          & "$env:GITHUB_WORKSPACE\automation\.github\frontier\apply-build142-taskmesh.ps1"
-          if ($LASTEXITCODE -ne 0) { throw 'Production Task/Mesh adapter failed' }
-          git diff --check
-          if ($LASTEXITCODE -ne 0) { throw 'Production Task/Mesh adapter tree failed diff check' }
+          if ($LASTEXITCODE -ne 0) { throw 'Canonical Pokopia stack failed diff check' }
+          if (-not (git grep -n -I 'ExecutionModel::TaskEXT' -- src/shader_recompiler 2>$null)) { throw 'Canonical stack is missing TaskEXT shader path' }
+          if (-not (git grep -n -I 'ExecutionModel::MeshEXT' -- src/shader_recompiler 2>$null)) { throw 'Canonical stack is missing MeshEXT shader path' }
+          if (-not (git grep -n -I 'ISBE_nx2' -- src/shader_recompiler 2>$null)) { throw 'Canonical stack is missing ISBE_nx2 stage-buffer path' }
 
       - name: Set up MSYS2 Clang task-mesh toolchain
         uses: msys2/setup-msys2@v2
@@ -81,7 +76,7 @@ jobs:
             libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p
             lerc:p graphite2:p libwebp:p libtiff:p brotli:p
 
-      - name: Configure production-adapter compile gate
+      - name: Configure canonical Task-Mesh compile gate
         shell: msys2 {0}
         working-directory: eden
         run: |
