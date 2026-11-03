@@ -49,15 +49,9 @@ jobs:
           if (-not (Test-Path 'src/core/file_sys/nup_container.cpp')) { throw 'build167 NUP container is missing' }
           if (-not (Test-Path 'src/core/file_sys/nup_writer.cpp')) { throw 'build167 NUP writer is missing' }
           if (-not (Test-Path 'src/video_core/renderer_vulkan/vk_fsr3_upscaler.cpp')) { throw 'build167 FSR 3.1 upscaler is missing' }
-          if (-not (Select-String -Path 'src/core/file_sys/nup_writer.cpp' -SimpleMatch 'CollectTree(index, entry.path(), name);' -Quiet)) {
-            throw 'build167 NUP layout preservation fix is missing'
-          }
-          if (-not (Select-String -Path 'src/core/hle/service/nvdrv/nvdrv.cpp' -SimpleMatch 'Tegra::Nx2ClearSparseRegions();' -Quiet)) {
-            throw 'build167 native PokeDinner-era sparse-state reset is missing'
-          }
-          if (-not (Select-String -Path 'src/video_core/vulkan_common/vulkan_device.cpp' -SimpleMatch 'EDEN_NX2_VRAM_LIMIT_MIB' -Quiet)) {
-            throw 'build167 native VRAM-budget protection is missing'
-          }
+          if (-not (Select-String -Path 'src/core/file_sys/nup_writer.cpp' -SimpleMatch 'CollectTree(index, entry.path(), name);' -Quiet)) { throw 'build167 NUP layout preservation fix is missing' }
+          if (-not (Select-String -Path 'src/core/hle/service/nvdrv/nvdrv.cpp' -SimpleMatch 'Tegra::Nx2ClearSparseRegions();' -Quiet)) { throw 'build167 native PokeDinner-era sparse-state reset is missing' }
+          if (-not (Select-String -Path 'src/video_core/vulkan_common/vulkan_device.cpp' -SimpleMatch 'EDEN_NX2_VRAM_LIMIT_MIB' -Quiet)) { throw 'build167 native VRAM-budget protection is missing' }
 
       - name: Apply validated base NS2 stack over build167
         shell: pwsh
@@ -66,65 +60,42 @@ jobs:
           function Enable-Build167NativeSmallF2I {
             $path = 'src/shader_recompiler/frontend/ampere/lower_to_maxwell.h'
             $text = (Get-Content $path -Raw).Replace("`r`n", "`n")
-            if ($text.Contains('const bool byte = (mode & ~0x100U) == 0x0021e000;')) {
-              Write-Host '[PRESENT] build167 native byte/short F2I modes'
-              return
-            }
+            if ($text.Contains('const bool byte = (mode & ~0x100U) == 0x0021e000;')) { Write-Host '[PRESENT] build167 native byte/short F2I modes'; return }
             $startNeedle = '        case 0x305: case 0xb05: case 0xd05: { // F2I NTZ, register/constant-buffer/uniform source'
             $endNeedle = '        case 0xb6f:'
-            $start = $text.IndexOf($startNeedle)
-            if ($start -lt 0) { throw 'Could not locate build167 F2I start' }
-            $end = $text.IndexOf($endNeedle, $start)
-            if ($end -lt 0) { throw 'Could not locate build167 F2I end' }
+            $start = $text.IndexOf($startNeedle); if ($start -lt 0) { throw 'Could not locate build167 F2I start' }
+            $end = $text.IndexOf($endNeedle, $start); if ($end -lt 0) { throw 'Could not locate build167 F2I end' }
             $section = $text.Substring($start, $end - $start)
-
             $nearest = '            const bool nearest = (mode & ~0x10100U) == 0x00203000;'
             if (-not $section.Contains($nearest)) { throw 'Could not locate build167 F2I mode classification' }
-            $section = $section.Replace(
-              $nearest,
-              $nearest + "`n" +
-              '            // Destination size 0/1: truncate to 8/16-bit integer.' + "`n" +
-              '            const bool byte = (mode & ~0x100U) == 0x0021e000;' + "`n" +
-              '            const bool short_word = (mode & ~0x100U) == 0x0021e800;')
-
+            $section = $section.Replace($nearest, $nearest + "`n" + '            // Destination size 0/1: truncate to 8/16-bit integer.' + "`n" + '            const bool byte = (mode & ~0x100U) == 0x0021e000;' + "`n" + '            const bool short_word = (mode & ~0x100U) == 0x0021e800;')
             $reject167 = '            if ((!half && !small && !floor && !nearest && (mode & ~0x10100U) != 0x0020f000) ||'
             $rejectNew = '            if ((!half && !small && !floor && !nearest && !byte && !short_word && (mode & ~0x10100U) != 0x0020f000) ||'
-            if (-not $section.Contains($reject167)) { throw 'Could not locate build167 F2I rejection guard' }
-            $section = $section.Replace($reject167, $rejectNew)
-
-            $oldClamp = '                if (!small) {'
-            if (-not $section.Contains($oldClamp)) { throw 'Could not locate build167 unsigned F2I clamp guard' }
-            $section = $section.Replace($oldClamp, '                if (!small && !byte && !short_word) {')
-
+            if (-not $section.Contains($reject167)) { throw 'Could not locate build167 F2I rejection guard' }; $section = $section.Replace($reject167, $rejectNew)
+            $oldClamp = '                if (!small) {'; if (-not $section.Contains($oldClamp)) { throw 'Could not locate build167 unsigned F2I clamp guard' }; $section = $section.Replace($oldClamp, '                if (!small && !byte && !short_word) {')
             $oldWidth = '            emit(base(0x5cb0000000000000ULL) | (u64{small ? 1U : 2U} << 8) | (u64{2} << 10) |'
             $newWidth = '            emit(base(0x5cb0000000000000ULL) | (u64{byte ? 0U : small || short_word ? 1U : 2U} << 8) | (u64{2} << 10) |'
-            if (-not $section.Contains($oldWidth)) { throw 'Could not locate build167 F2I width encoding' }
-            $section = $section.Replace($oldWidth, $newWidth)
-
-            $oldTail = '            if (!is_signed && !small) {'
-            if (-not $section.Contains($oldTail)) { throw 'Could not locate build167 unsigned F2I saturation tail' }
-            $section = $section.Replace($oldTail, '            if (!is_signed && !small && !byte && !short_word) {')
-
+            if (-not $section.Contains($oldWidth)) { throw 'Could not locate build167 F2I width encoding' }; $section = $section.Replace($oldWidth, $newWidth)
+            $oldTail = '            if (!is_signed && !small) {'; if (-not $section.Contains($oldTail)) { throw 'Could not locate build167 unsigned F2I saturation tail' }; $section = $section.Replace($oldTail, '            if (!is_signed && !small && !byte && !short_word) {')
             $text = $text.Substring(0, $start) + $section + $text.Substring($end)
             [IO.File]::WriteAllText((Resolve-Path $path), $text, [Text.UTF8Encoding]::new($false))
             Write-Host '[APPLIED] build167 native byte/short F2I modes using modern rejection mask'
           }
 
-          $scripts = @(
-            'apply-eglantine-integration.ps1',
-            'apply-eglantine-positive-shader-cache.ps1',
-            'apply-bananza-generic-overlap.ps1',
-            'apply-eglantine-draw-state-cache.ps1',
-            'apply-eglantine-nso-loader.ps1',
-            'apply-eglantine-nx2-memory-layout.ps1',
-            'apply-bananza-post-menu-gpu.ps1',
-            'apply-eglantine-late-runtime.ps1',
-            'apply-eglantine-handheld-mode.ps1',
-            'apply-eglantine-late-stability.ps1'
-          )
+          $scripts = @('apply-eglantine-integration.ps1','apply-eglantine-positive-shader-cache.ps1','apply-bananza-generic-overlap.ps1','apply-eglantine-draw-state-cache.ps1','apply-eglantine-nso-loader.ps1','apply-eglantine-nx2-memory-layout.ps1','apply-bananza-post-menu-gpu.ps1','apply-eglantine-late-runtime.ps1','apply-eglantine-handheld-mode.ps1','apply-eglantine-late-stability.ps1')
           foreach ($script in $scripts) {
             if ($script -eq 'apply-bananza-post-menu-gpu.ps1') {
               Enable-Build167NativeSmallF2I
+              # Build167 already has the newer suspension-aware PR28/PR52 command-read path. Teach
+              # the legacy compatibility layer to treat that native path as satisfying its older
+              # gpu_written read-path patch, while still allowing the rest of the batch to apply.
+              $compatPath = "$env:GITHUB_WORKSPACE\automation\.github\scripts\apply-ns2-general-compat-batch-v2.ps1"
+              $compat = Get-Content $compatPath -Raw
+              $oldGuard = "if (-not `$dma.Contains('const bool gpu_written = FlushGpuWrittenCommands')) {"
+              $newGuard = "if (-not `$dma.Contains('const bool gpu_written = FlushGpuWrittenCommands') -and -not `$dma.Contains('command_list.snapshot_suspensions')) {"
+              if (-not $compat.Contains($oldGuard)) { throw 'Could not locate legacy PR28/PR52 read-path guard' }
+              $compat = $compat.Replace($oldGuard, $newGuard)
+              [IO.File]::WriteAllText((Resolve-Path $compatPath), $compat, [Text.UTF8Encoding]::new($false))
             }
             Write-Host "[BUILD167 BASE] $script"
             & "$env:GITHUB_WORKSPACE\automation\.github\scripts\$script"
@@ -145,30 +116,17 @@ jobs:
           if (-not (Test-Path 'src/core/file_sys/nup_container.cpp')) { throw 'NUP container disappeared after custom stack' }
           if (-not (Test-Path 'src/core/file_sys/nup_writer.cpp')) { throw 'NUP writer disappeared after custom stack' }
           if (-not (Test-Path 'src/video_core/renderer_vulkan/vk_fsr3_upscaler.cpp')) { throw 'FSR 3.1 disappeared after custom stack' }
-          if (-not (Select-String -Path 'src/core/file_sys/nup_writer.cpp' -SimpleMatch 'CollectTree(index, entry.path(), name);' -Quiet)) {
-            throw 'NUP folder-layout preservation was regressed by custom stack'
-          }
-          if (-not (Select-String -Path 'src/video_core/renderer_vulkan/vk_pipeline_cache.cpp' -SimpleMatch 'CreateGraphicsPipeline(main_pools, graphics_key, environments.Span(), nullptr, true)' -Quiet)) {
-            throw 'build167 async native pipeline handoff was regressed by custom stack'
-          }
-          if (-not (Select-String -Path 'src/video_core/shader_environment.cpp' -SimpleMatch 'native_shader_positive_cache_mutex' -Quiet)) {
-            throw 'build167 positive native shader cache disappeared'
-          }
+          if (-not (Select-String -Path 'src/core/file_sys/nup_writer.cpp' -SimpleMatch 'CollectTree(index, entry.path(), name);' -Quiet)) { throw 'NUP folder-layout preservation was regressed by custom stack' }
+          if (-not (Select-String -Path 'src/video_core/renderer_vulkan/vk_pipeline_cache.cpp' -SimpleMatch 'CreateGraphicsPipeline(main_pools, graphics_key, environments.Span(), nullptr, true)' -Quiet)) { throw 'build167 async native pipeline handoff was regressed by custom stack' }
+          if (-not (Select-String -Path 'src/video_core/shader_environment.cpp' -SimpleMatch 'native_shader_positive_cache_mutex' -Quiet)) { throw 'build167 positive native shader cache disappeared' }
           git diff --check
 
       - name: Run custom source regression checks
         shell: pwsh
         working-directory: eden
         run: |
-          $tests = @(
-            "$env:GITHUB_WORKSPACE\automation\.github\frontier\test-build158-map-in-order.ps1",
-            "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-ns2-regressions.ps1",
-            "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-ns2-late-regressions.ps1",
-            "$env:GITHUB_WORKSPACE\automation\.github\scripts\test-ns2-stability-regressions.ps1"
-          )
-          foreach ($test in $tests) {
-            if (Test-Path $test -PathType Leaf) { & $test }
-          }
+          $tests = @("$env:GITHUB_WORKSPACE\automation\.github\frontier\test-build158-map-in-order.ps1","$env:GITHUB_WORKSPACE\automation\.github\scripts\test-ns2-regressions.ps1","$env:GITHUB_WORKSPACE\automation\.github\scripts\test-ns2-late-regressions.ps1","$env:GITHUB_WORKSPACE\automation\.github\scripts\test-ns2-stability-regressions.ps1")
+          foreach ($test in $tests) { if (Test-Path $test -PathType Leaf) { & $test } }
           git diff --check
 
       - name: Set up MSYS2 clang toolchain
@@ -179,30 +137,14 @@ jobs:
           install: >-
             git make autoconf libtool automake-wrapper patch jq pactoys ninja
           pacboy: >-
-            toolchain:p clang:p lld:p cmake:p python-pip:p
-            qt6-base:p qt6-charts:p qt6-tools:p qt6-translations:p qt6-svg:p
-            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
-            vulkan-memory-allocator:p vulkan-devel:p glslang:p enet:p opus:p
-            libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p
-            lerc:p graphite2:p libwebp:p libtiff:p brotli:p
+            toolchain:p clang:p lld:p cmake:p python-pip:p qt6-base:p qt6-charts:p qt6-tools:p qt6-translations:p qt6-svg:p openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p vulkan-memory-allocator:p vulkan-devel:p glslang:p enet:p opus:p libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p lerc:p graphite2:p libwebp:p libtiff:p brotli:p
 
       - name: Configure build167 + final stack
         shell: msys2 {0}
         working-directory: eden
         run: |
           set -euo pipefail
-          cmake -S . -B build-build167 -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_TESTING=ON -DYUZU_TESTS=ON -DYUZU_CMD=OFF \
-            -DYUZU_ROOM=OFF -DYUZU_ROOM_STANDALONE=OFF \
-            -DYUZU_USE_BUNDLED_QT=OFF -DYUZU_USE_BUNDLED_SDL3=ON \
-            -DYUZU_USE_BUNDLED_FFMPEG=ON \
-            -DVulkanHeaders_FORCE_BUNDLED=ON -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
-            -DENABLE_UPDATE_CHECKER=OFF -DUSE_DISCORD_PRESENCE=OFF \
-            -DENABLE_WEB_SERVICE=OFF -DENABLE_CUBEB=OFF -DENABLE_LIBUSB=OFF \
-            -DENABLE_WERROR=OFF \
-            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-            -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld
+          cmake -S . -B build-build167 -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DYUZU_TESTS=ON -DYUZU_CMD=OFF -DYUZU_ROOM=OFF -DYUZU_ROOM_STANDALONE=OFF -DYUZU_USE_BUNDLED_QT=OFF -DYUZU_USE_BUNDLED_SDL3=ON -DYUZU_USE_BUNDLED_FFMPEG=ON -DVulkanHeaders_FORCE_BUNDLED=ON -DVulkanUtilityLibraries_FORCE_BUNDLED=ON -DENABLE_UPDATE_CHECKER=OFF -DUSE_DISCORD_PRESENCE=OFF -DENABLE_WEB_SERVICE=OFF -DENABLE_CUBEB=OFF -DENABLE_LIBUSB=OFF -DENABLE_WERROR=OFF -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld
 
       - name: Build full GUI plus tests
         shell: msys2 {0}
@@ -217,11 +159,7 @@ jobs:
         run: |
           set -euo pipefail
           testbin=''
-          while IFS= read -r candidate; do
-            case "$candidate" in
-              *tests.exe|*tests) testbin="$candidate"; break ;;
-            esac
-          done < <(find build-build167 -type f \( -name 'tests.exe' -o -name 'tests' \) -print)
+          while IFS= read -r candidate; do case "$candidate" in *tests.exe|*tests) testbin="$candidate"; break ;; esac; done < <(find build-build167 -type f \( -name 'tests.exe' -o -name 'tests' \) -print)
           [ -n "$testbin" ] || { echo 'Could not locate tests binary' >&2; exit 1; }
           "$testbin" '[nup]' --reporter compact
 
