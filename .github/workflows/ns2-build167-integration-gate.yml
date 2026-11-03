@@ -63,6 +63,53 @@ jobs:
         shell: pwsh
         working-directory: eden
         run: |
+          function Enable-Build167NativeSmallF2I {
+            $path = 'src/shader_recompiler/frontend/ampere/lower_to_maxwell.h'
+            $text = (Get-Content $path -Raw).Replace("`r`n", "`n")
+            if ($text.Contains('const bool byte = (mode & ~0x100U) == 0x0021e000;')) {
+              Write-Host '[PRESENT] build167 native byte/short F2I modes'
+              return
+            }
+            $startNeedle = '        case 0x305: case 0xb05: case 0xd05: { // F2I NTZ, register/constant-buffer/uniform source'
+            $endNeedle = '        case 0xb6f:'
+            $start = $text.IndexOf($startNeedle)
+            if ($start -lt 0) { throw 'Could not locate build167 F2I start' }
+            $end = $text.IndexOf($endNeedle, $start)
+            if ($end -lt 0) { throw 'Could not locate build167 F2I end' }
+            $section = $text.Substring($start, $end - $start)
+
+            $nearest = '            const bool nearest = (mode & ~0x10100U) == 0x00203000;'
+            if (-not $section.Contains($nearest)) { throw 'Could not locate build167 F2I mode classification' }
+            $section = $section.Replace(
+              $nearest,
+              $nearest + "`n" +
+              '            // Destination size 0/1: truncate to 8/16-bit integer.' + "`n" +
+              '            const bool byte = (mode & ~0x100U) == 0x0021e000;' + "`n" +
+              '            const bool short_word = (mode & ~0x100U) == 0x0021e800;')
+
+            $reject167 = '            if ((!half && !small && !floor && !nearest && (mode & ~0x10100U) != 0x0020f000) ||'
+            $rejectNew = '            if ((!half && !small && !floor && !nearest && !byte && !short_word && (mode & ~0x10100U) != 0x0020f000) ||'
+            if (-not $section.Contains($reject167)) { throw 'Could not locate build167 F2I rejection guard' }
+            $section = $section.Replace($reject167, $rejectNew)
+
+            $oldClamp = '                if (!small) {'
+            if (-not $section.Contains($oldClamp)) { throw 'Could not locate build167 unsigned F2I clamp guard' }
+            $section = $section.Replace($oldClamp, '                if (!small && !byte && !short_word) {')
+
+            $oldWidth = '            emit(base(0x5cb0000000000000ULL) | (u64{small ? 1U : 2U} << 8) | (u64{2} << 10) |'
+            $newWidth = '            emit(base(0x5cb0000000000000ULL) | (u64{byte ? 0U : small || short_word ? 1U : 2U} << 8) | (u64{2} << 10) |'
+            if (-not $section.Contains($oldWidth)) { throw 'Could not locate build167 F2I width encoding' }
+            $section = $section.Replace($oldWidth, $newWidth)
+
+            $oldTail = '            if (!is_signed && !small) {'
+            if (-not $section.Contains($oldTail)) { throw 'Could not locate build167 unsigned F2I saturation tail' }
+            $section = $section.Replace($oldTail, '            if (!is_signed && !small && !byte && !short_word) {')
+
+            $text = $text.Substring(0, $start) + $section + $text.Substring($end)
+            [IO.File]::WriteAllText((Resolve-Path $path), $text, [Text.UTF8Encoding]::new($false))
+            Write-Host '[APPLIED] build167 native byte/short F2I modes using modern rejection mask'
+          }
+
           $scripts = @(
             'apply-eglantine-integration.ps1',
             'apply-eglantine-positive-shader-cache.ps1',
@@ -76,6 +123,9 @@ jobs:
             'apply-eglantine-late-stability.ps1'
           )
           foreach ($script in $scripts) {
+            if ($script -eq 'apply-bananza-post-menu-gpu.ps1') {
+              Enable-Build167NativeSmallF2I
+            }
             Write-Host "[BUILD167 BASE] $script"
             & "$env:GITHUB_WORKSPACE\automation\.github\scripts\$script"
           }
