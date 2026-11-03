@@ -171,7 +171,13 @@ $fselNew = @'
             break;
         }
 '@
-Replace-Exact $ampere $fselOld $fselNew 'FSEL: the sources keep their .NEG/.ABS' 'Ampere FSEL source modifier preservation'
+$fselCurrent = Get-Content $ampere -Raw
+if ($fselCurrent.Contains('const bool floating = (opcode & 0x1ff) == 0x008;') -and
+    $fselCurrent.Contains('const u32 a = operand(0, floating), b = operand(1, floating);')) {
+    Write-Host '[PRESENT] build167 native FSEL modifier-aware selection'
+} else {
+    Replace-Exact $ampere $fselOld $fselNew 'FSEL: the sources keep their .NEG/.ABS' 'Ampere FSEL source modifier preservation'
+}
 
 # 5) NVIDIA device-loss avoidance for predicate masks. Guest compilers form abs(mask) as
 # max(x, -x), sometimes after merging masks through selects/phis. If x can only be -1/0/1,
