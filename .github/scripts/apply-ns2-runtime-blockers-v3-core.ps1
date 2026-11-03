@@ -28,9 +28,12 @@ function Replace-Once([string]$Text, [string]$Old, [string]$New, [string]$Label)
 $amperePath = 'src/shader_recompiler/frontend/ampere/lower_to_maxwell.h'
 $ampere = Read-Lf $amperePath
 
-# Eglantine PR #56: Ampere RET has no destination GPR. Bits 16..23 are reserved and must not be
-# interpreted as a write to the active call-link register (the observed Bananza RET encoded R0).
-if (-not $ampere.Contains('active_link && opcode != 0x950')) {
+# Eglantine PR #56: Ampere RET has no destination GPR. Build167 generalized this into a
+# no_destination classifier that also covers BRA/NOP/predicate-only instructions; preserve that
+# newer validation instead of trying to reapply the older single-opcode guard.
+$modernRetValidation = $ampere.Contains('const bool no_destination = opcode == 0x950') -and
+                       $ampere.Contains('active_link && !no_destination')
+if (-not $modernRetValidation -and -not $ampere.Contains('active_link && opcode != 0x950')) {
     $ampere = Replace-Once $ampere `
         '            if (active_link && insn.Bits(16, 8) == *active_link)' `
         '            if (active_link && opcode != 0x950 && insn.Bits(16, 8) == *active_link)' `
@@ -79,8 +82,6 @@ if (-not $current923.Contains('ISBERD indexed task/mesh attribute read')) {
             if (mem_type > 2 || output)
                 return fail(index, "native stage buffer read mode");
             if (access == 3) {
-                // ATTR mode: byte-addressed indexed varying/payload read. The observed form is
-                // .B32.SKEW with RZ+0, which addresses lane_id*4.
                 if (mem_type != 2 || dest >= reserved_register ||
                     (offset_reg != 255 && offset_reg >= reserved_register))
                     return fail(index, "native stage buffer attribute read mode");
@@ -95,14 +96,12 @@ if (-not $current923.Contains('ISBERD indexed task/mesh attribute read')) {
                          (u64{15} << 39) | (u64{offset_reg} << 20));
                 }
                 if (skew) {
-                    // SR_LANEID is special register 0 on both the captured Ampere and Maxwell path.
                     emit(0xf0c8000000000000ULL | predicate | 251);
                     emit(0x3848000000000000ULL | predicate | 251 |
                          (u64{251} << 8) | (u64{2} << 20));
                     emit(0x5c10000000000000ULL | predicate | 250 |
                          (u64{250} << 8) | (u64{251} << 20));
                 }
-                // Maxwell ALD with a non-RZ index is already translated to GetAttributeIndexed.
                 emit(0xefd8000000000000ULL | predicate | dest |
                      (u64{250} << 8) | (u64{255} << 39));
                 break;
@@ -152,8 +151,6 @@ if (-not $current923.Contains('ISBERD indexed task/mesh attribute read')) {
                 emit(0x5c10000000000000ULL | predicate | 250 |
                      (u64{250} << 8) | (u64{251} << 20));
             }
-            // Maxwell AST indexed-store IR support is enabled below. Vertex RZ matches the Ampere
-            // SetAttributeIndexed(entry, value, 0) semantics used by ISBEWR.O.ATTR.
             emit(0xeff0000000000000ULL | predicate | data |
                  (u64{250} << 8) | (u64{255} << 39));
             break;
@@ -163,8 +160,6 @@ if (-not $current923.Contains('ISBERD indexed task/mesh attribute read')) {
 }
 Write-Utf8 $amperePath $ampere
 
-# Maxwell's AST translator already contains the indexed-store implementation below this historical
-# guard. Remove only the unreachable early throw so ISBEWR can use SetAttributeIndexed.
 $attrPath = 'src/shader_recompiler/frontend/maxwell/translate/impl/load_store_attribute.cpp'
 $attr = Read-Lf $attrPath
 if ($attr.Contains('throw NotImplementedException("Indexed store");')) {
@@ -181,12 +176,13 @@ if ($attr.Contains('throw NotImplementedException("Indexed store");')) {
 }
 Write-Utf8 $attrPath $attr
 
-# Regression markers for the exact #73 failures. SURED 0x59f is intentionally not rejected here:
-# the newer validated compatibility path may already contain its proven lowering before v4 runs.
 $ampereCheck = Read-Lf $amperePath
 $attrCheck = Read-Lf $attrPath
+$retCheck = ($ampereCheck.Contains('active_link && opcode != 0x950')) -or
+            ($ampereCheck.Contains('const bool no_destination = opcode == 0x950') -and
+             $ampereCheck.Contains('active_link && !no_destination'))
+if (-not $retCheck) { throw 'Runtime-v3 regression: missing RET link-register validation' }
 foreach ($needle in @(
-    'active_link && opcode != 0x950',
     'special != 17 && special != 29',
     '(outputs > 1 && (dest & 1)) || dest + outputs > 246',
     'case 0x923: { // ISBERD indexed task/mesh attribute read / direct map read.',
