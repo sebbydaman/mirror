@@ -93,7 +93,7 @@ foreach ($needle in @('const bool native_tessellation_eval = program == Maxwell:
 Write-Host 'Enabled strictly validated native Tessellation evaluation-stage admission while preserving build167 mesh-slot admission; unknown task/mesh semantics remain rejected by the Ampere lowering.'
 
 # Native task/mesh capability foundation. Build167 may already provide individual pieces, so every
-# addition is independently idempotent; one native feature macro must not suppress the rest.
+# addition is independently idempotent; one native feature or accessor must not suppress the rest.
 $vkHeaderPath = 'src/video_core/vulkan_common/vulkan_device.h'
 $vkHeader = Read-Lf $vkHeaderPath
 if (-not $vkHeader.Contains('FEATURE(EXT, MeshShader, MESH_SHADER, mesh_shader)')) {
@@ -125,18 +125,49 @@ if (-not $vkHeader.Contains('bool IsExtMeshShaderSupported() const')) {
         return extensions.mesh_shader && features.mesh_shader.meshShader;
     }
 
+'@
+    $vkHeader = Replace-Once $vkHeader $anchor ($block + $anchor) 'mesh shader capability accessor'
+}
+if (-not $vkHeader.Contains('bool IsExtTaskShaderSupported() const')) {
+    $meshAccessor = @'
+    bool IsExtMeshShaderSupported() const {
+        return extensions.mesh_shader && features.mesh_shader.taskShader &&
+               features.mesh_shader.meshShader;
+    }
+'@
+    if (-not $vkHeader.Contains($meshAccessor)) {
+        $meshAccessor = @'
+    bool IsExtMeshShaderSupported() const {
+        return extensions.mesh_shader && features.mesh_shader.meshShader;
+    }
+'@
+    }
+    $taskAccessor = @'
+
     /// Returns true when the optional task shader stage is also available.
     bool IsExtTaskShaderSupported() const {
-        return IsExtMeshShaderSupported() && features.mesh_shader.taskShader;
+        return extensions.mesh_shader && features.mesh_shader.meshShader &&
+               features.mesh_shader.taskShader;
     }
+'@
+    $vkHeader = Replace-Once $vkHeader $meshAccessor ($meshAccessor + $taskAccessor) 'task shader capability accessor'
+}
+if (-not $vkHeader.Contains('const VkPhysicalDeviceMeshShaderPropertiesEXT& GetMeshShaderProperties() const')) {
+    $taskAccessor = @'
+    /// Returns true when the optional task shader stage is also available.
+    bool IsExtTaskShaderSupported() const {
+        return extensions.mesh_shader && features.mesh_shader.meshShader &&
+               features.mesh_shader.taskShader;
+    }
+'@
+    $propertyAccessor = @'
 
     /// Host task/mesh workgroup, payload and output limits.
     const VkPhysicalDeviceMeshShaderPropertiesEXT& GetMeshShaderProperties() const {
         return properties.mesh_shader;
     }
-
 '@
-    $vkHeader = Replace-Once $vkHeader $anchor ($block + $anchor) 'mesh shader capability accessors'
+    $vkHeader = Replace-Once $vkHeader $taskAccessor ($taskAccessor + $propertyAccessor) 'mesh shader properties accessor'
 }
 if (-not $vkHeader.Contains('VkPhysicalDeviceMeshShaderPropertiesEXT mesh_shader{};')) {
     $anchor = '        VkPhysicalDeviceTransformFeedbackPropertiesEXT transform_feedback{};'
@@ -185,7 +216,7 @@ Write-Utf8 $vkCppPath $vkCpp
 
 $vkHeaderCheck = Read-Lf $vkHeaderPath
 $vkCppCheck = Read-Lf $vkCppPath
-foreach ($needle in @('FEATURE(EXT, MeshShader, MESH_SHADER, mesh_shader)','EXTENSION_NAME(VK_EXT_MESH_SHADER_EXTENSION_NAME)','FEATURE_NAME(mesh_shader, meshShader)','FEATURE_NAME(mesh_shader, taskShader)','bool IsExtMeshShaderSupported() const','bool IsExtTaskShaderSupported() const','VkPhysicalDeviceMeshShaderPropertiesEXT mesh_shader{};')) {
+foreach ($needle in @('FEATURE(EXT, MeshShader, MESH_SHADER, mesh_shader)','EXTENSION_NAME(VK_EXT_MESH_SHADER_EXTENSION_NAME)','FEATURE_NAME(mesh_shader, meshShader)','FEATURE_NAME(mesh_shader, taskShader)','bool IsExtMeshShaderSupported() const','bool IsExtTaskShaderSupported() const','const VkPhysicalDeviceMeshShaderPropertiesEXT& GetMeshShaderProperties() const','VkPhysicalDeviceMeshShaderPropertiesEXT mesh_shader{};')) {
     if (-not $vkHeaderCheck.Contains($needle)) { throw "Runtime-v6 mesh capability regression: missing $needle" }
 }
 foreach ($needle in @('VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT','extensions.mesh_shader = features.mesh_shader.meshShader;','VK_EXT_MESH_SHADER_EXTENSION_NAME')) {
