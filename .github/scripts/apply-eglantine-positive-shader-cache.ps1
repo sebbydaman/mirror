@@ -1,5 +1,155 @@
 $ErrorActionPreference = "Stop"
 
+# Build167 already includes the PokeDinner-era object-pool, VRAM-budget and native-lowering reuse
+# layers. Replaying the older cherry-pick batch over that newer source creates conflicts and can
+# regress upstream fixes. On build167, keep those native implementations and add only our bounded,
+# collision-safe positive lowering cache. Older source generations continue through the original
+# curated PokeDinner composition below.
+$isBuild167Generation = (Test-Path 'src/core/file_sys/nup_writer.cpp' -PathType Leaf) -and
+                        (Test-Path 'src/video_core/renderer_vulkan/vk_fsr3_upscaler.cpp' -PathType Leaf)
+if ($isBuild167Generation) {
+    $environmentHeader = (Get-Content 'src/video_core/shader_environment.h' -Raw).Replace("`r`n", "`n")
+    foreach ($needle in @(
+        'struct LoweredNativeCode {',
+        'LoweredNative() const noexcept',
+        'std::shared_ptr<const LoweredNativeCode> lowered_native;',
+        'std::shared_ptr<const LoweredNativeCode> lowered_native_ = {}'
+    )) {
+        if (-not $environmentHeader.Contains($needle)) {
+            throw "Build167 native-reuse prerequisite missing: $needle"
+        }
+    }
+    $shaderCacheHeader = (Get-Content 'src/video_core/shader_cache.h' -Raw).Replace("`r`n", "`n")
+    if (-not $shaderCacheHeader.Contains('std::shared_ptr<const LoweredNativeCode> lowered_native;')) {
+        throw 'Build167 ShaderInfo native-lowering reuse is missing'
+    }
+
+    $path = 'src/video_core/shader_environment.cpp'
+    $text = (Get-Content $path -Raw).Replace("`r`n", "`n")
+    if ($text.Contains('native_shader_positive_cache_mutex')) {
+        Write-Host '[PRESENT] build167 collision-safe positive native shader cache'
+        return
+    }
+
+    if (-not $text.Contains('#include <mutex>')) {
+        $needle = '#include <memory>'
+        if (-not $text.Contains($needle)) { throw 'Could not locate build167 cache include insertion point' }
+        $text = $text.Replace($needle, "#include <memory>`n#include <mutex>")
+    }
+    if (-not $text.Contains('#include <unordered_map>')) {
+        $needle = '#include <utility>'
+        if (-not $text.Contains($needle)) { throw 'Could not locate build167 unordered_map include insertion point' }
+        $text = $text.Replace($needle, "#include <unordered_map>`n$needle")
+    }
+
+    $namespaceNeedle = "namespace VideoCommon {`n`nconstexpr std::array<char, 8> MAGIC_NUMBER"
+    if (-not $text.Contains($namespaceNeedle)) {
+        throw 'Could not locate VideoCommon insertion point for build167 positive cache'
+    }
+    $cacheBlock = @'
+namespace VideoCommon {
+
+namespace {
+
+constexpr size_t NativeShaderPositiveCacheMaxEntries = 4096;
+
+struct NativeShaderPositiveCacheEntry {
+    std::vector<Shader::Ampere::Instruction> source;
+    Shader::Ampere::LoweredProgram lowered;
+};
+
+std::mutex native_shader_positive_cache_mutex;
+std::unordered_map<u64, std::vector<NativeShaderPositiveCacheEntry>> native_shader_positive_cache;
+size_t native_shader_positive_cache_entries{};
+
+u64 NativeShaderPositiveCacheKey(std::span<const Shader::Ampere::Instruction> source) {
+    return Common::CityHash64(reinterpret_cast<const char*>(source.data()), source.size_bytes());
+}
+
+bool SameNativeShader(std::span<const Shader::Ampere::Instruction> source,
+                      const NativeShaderPositiveCacheEntry& entry) {
+    if (source.size() != entry.source.size()) {
+        return false;
+    }
+    return std::equal(source.begin(), source.end(), entry.source.begin(), entry.source.end(),
+                      [](const auto& lhs, const auto& rhs) { return lhs.words == rhs.words; });
+}
+
+std::optional<Shader::Ampere::LoweredProgram> FindPositiveNativeShaderCache(
+    std::span<const Shader::Ampere::Instruction> source) {
+    const u64 key = NativeShaderPositiveCacheKey(source);
+    std::scoped_lock lock{native_shader_positive_cache_mutex};
+    const auto it = native_shader_positive_cache.find(key);
+    if (it == native_shader_positive_cache.end()) {
+        return std::nullopt;
+    }
+    for (const auto& entry : it->second) {
+        if (SameNativeShader(source, entry)) {
+            return entry.lowered;
+        }
+    }
+    return std::nullopt;
+}
+
+void StorePositiveNativeShaderCache(std::span<const Shader::Ampere::Instruction> source,
+                                    const Shader::Ampere::LoweredProgram& lowered) {
+    if (!lowered) {
+        return;
+    }
+    const u64 key = NativeShaderPositiveCacheKey(source);
+    std::scoped_lock lock{native_shader_positive_cache_mutex};
+    auto& bucket = native_shader_positive_cache[key];
+    for (auto& entry : bucket) {
+        if (SameNativeShader(source, entry)) {
+            entry.lowered = lowered;
+            return;
+        }
+    }
+    if (native_shader_positive_cache_entries >= NativeShaderPositiveCacheMaxEntries) {
+        native_shader_positive_cache.clear();
+        native_shader_positive_cache_entries = 0;
+    }
+    native_shader_positive_cache[key].push_back(
+        NativeShaderPositiveCacheEntry{std::vector<Shader::Ampere::Instruction>{source.begin(), source.end()}, lowered});
+    ++native_shader_positive_cache_entries;
+}
+
+} // namespace
+
+constexpr std::array<char, 8> MAGIC_NUMBER
+'@
+    $text = $text.Replace($namespaceNeedle, $cacheBlock.TrimEnd("`r", "`n"))
+
+    $lowerNeedle = '    auto lowered = Shader::Ampere::LowerToMaxwell(native);'
+    if (-not $text.Contains($lowerNeedle)) {
+        throw 'Could not locate build167 native lowering call for positive cache'
+    }
+    $lowerReplacement = @'
+    auto cached_lowered = FindPositiveNativeShaderCache(native);
+    auto lowered = cached_lowered ? std::move(*cached_lowered)
+                                  : Shader::Ampere::LowerToMaxwell(native);
+    if (!cached_lowered && lowered) {
+        StorePositiveNativeShaderCache(native, lowered);
+    }
+'@
+    $text = $text.Replace($lowerNeedle, $lowerReplacement.TrimEnd("`r", "`n"))
+    [IO.File]::WriteAllText((Resolve-Path $path), $text, [Text.UTF8Encoding]::new($false))
+
+    git diff --check
+    if ($LASTEXITCODE -ne 0) { throw 'Build167 positive cache introduced whitespace errors' }
+    $check = Get-Content $path -Raw
+    foreach ($needle in @(
+        'native_shader_positive_cache_mutex',
+        'NativeShaderPositiveCacheKey',
+        'FindPositiveNativeShaderCache(native)',
+        'StorePositiveNativeShaderCache(native, lowered)'
+    )) {
+        if (-not $check.Contains($needle)) { throw "Build167 positive-cache invariant missing: $needle" }
+    }
+    Write-Host 'Build167 native shader reuse preserved; positive lowering cache applied and validated.'
+    return
+}
+
 # The earlier integration step intentionally edits the detached Eglantine worktree in place.
 # PokeDinner is applied with cherry-pick --no-commit, so give Git a clean CI-only checkpoint
 # first. This checkpoint exists only inside the ephemeral Actions checkout; it prevents Git from
