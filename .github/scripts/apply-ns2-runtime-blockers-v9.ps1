@@ -146,7 +146,7 @@ if (-not $translate.Contains('case Stage::Task: // Task/Mesh have no legacy NVN 
 # up a header and accidentally treating an unsupported stage as valid.
 $glasmPath = 'src/shader_recompiler/backend/glasm/emit_glasm.cpp'
 $glasm = Read-Lf $glasmPath
-if (-not $glasm.Contains('case Stage::Task: // GLASM has no Task/Mesh program header.')) {
+if (-not $glasm.Contains('case Stage::Task: // GLASM has no Task/Mesh program header.') -and -not $glasm.Contains("    case Stage::Task:`n    case Stage::Mesh:`n        break;")) {
     $old = @'
     case Stage::Compute:
         return "!!NVcp5.0\n";
@@ -210,12 +210,14 @@ foreach ($needle in @(
 )) {
     if (-not $translateCheck.Contains($needle)) { throw "Runtime-v9 translate-program exhaustive-stage regression: missing $needle" }
 }
-foreach ($needle in @(
-    'case Stage::Task: // GLASM has no Task/Mesh program header.',
-    'case Stage::Mesh:',
-    'throw InvalidArgument("Invalid stage {}", stage);'
-)) {
-    if (-not $glasmCheck.Contains($needle)) { throw "Runtime-v9 GLASM exhaustive-stage regression: missing $needle" }
+# Build167 already rejects Task/Mesh through the same invalid-stage path.
+# Preserve its native exhaustive cases rather than requiring the older comment anchor.
+if (-not ($glasmCheck.Contains('case Stage::Task: // GLASM has no Task/Mesh program header.') -or
+           $glasmCheck.Contains("    case Stage::Task:`n    case Stage::Mesh:`n        break;"))) {
+    throw 'Runtime-v9 GLASM exhaustive-stage regression: missing Task/Mesh invalid-stage cases'
+}
+if (-not $glasmCheck.Contains('throw InvalidArgument("Invalid stage {}", stage);')) {
+    throw 'Runtime-v9 GLASM exhaustive-stage regression: missing invalid-stage rejection'
 }
 
 Write-Host 'Added isolated Task/Mesh identities, Vulkan/SPIR-V mappings, and exhaustive legacy-stage guards; legacy stage indexing remains unchanged.'
