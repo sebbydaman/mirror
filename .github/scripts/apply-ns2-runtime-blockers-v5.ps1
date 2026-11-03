@@ -38,9 +38,17 @@ if (-not $text.Contains($eligibilityMarker)) {
 '@
     $text = Replace-Once $text $usesSparseSignature $newUsesSparseSignature 'UsesSparseLayers signature'
 
+    # Build167 has the same color-only predicate in UsesSparseTiles, so scope this replacement to
+    # UsesSparseLayers rather than treating a file-wide duplicate as an ambiguous anchor.
+    $usesSparseStart = $text.IndexOf($newUsesSparseSignature)
+    if ($usesSparseStart -lt 0) { throw 'Could not locate patched UsesSparseLayers implementation' }
+    $usesSparseEnd = $text.IndexOf('enum class SparseTilesMode', $usesSparseStart)
+    if ($usesSparseEnd -lt 0) { throw 'Could not locate end of UsesSparseLayers implementation' }
+    $usesSparse = $text.Substring($usesSparseStart, $usesSparseEnd - $usesSparseStart)
     $colorOnlyCondition =
         'VideoCore::Surface::GetFormatType(info.format) != VideoCore::Surface::SurfaceType::ColorTexture) {'
-    $text = Replace-Once $text $colorOnlyCondition '!sparse_layer_format) {' 'SparseLayers color-only condition'
+    $usesSparse = Replace-Once $usesSparse $colorOnlyCondition '!sparse_layer_format) {' 'SparseLayers color-only condition'
+    $text = $text.Substring(0, $usesSparseStart) + $usesSparse + $text.Substring($usesSparseEnd)
 
     # Scope the sparse-requirement edits to InitSparseLayers so identical lambdas elsewhere cannot
     # become accidental anchors.
