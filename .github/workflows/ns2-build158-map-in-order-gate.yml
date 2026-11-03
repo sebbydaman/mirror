@@ -7,6 +7,7 @@ on:
       - ns2-pokopia-startup-fast-win32
     paths:
       - '.github/workflows/ns2-build158-map-in-order-gate.yml'
+      - '.github/frontier/apply-final-performance-stack.ps1'
       - '.github/frontier/apply-build158-map-in-order.ps1'
       - '.github/frontier/test-build158-map-in-order.ps1'
 
