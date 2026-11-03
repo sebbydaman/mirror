@@ -21,6 +21,20 @@ function Require-Text([string]$Path, [string]$Needle, [string]$Name) {
     Write-Host "[PASS] $Name"
 }
 
+function Require-AnyText([string]$Path, [string[]]$Needles, [string]$Name) {
+    if (-not (Test-Path $Path -PathType Leaf)) {
+        throw "Build31 frontier: missing required file $Path"
+    }
+    $text = Get-Content $Path -Raw
+    foreach ($needle in $Needles) {
+        if ($text.Contains($needle)) {
+            Write-Host "[PASS] $Name"
+            return
+        }
+    }
+    throw "Build31 frontier: $Name missing from $Path"
+}
+
 # 1) Preserve the ASID that owns the currently coalesced cache-count run. Without this assignment,
 # later contiguous pages from the new ASID can keep being compared against the stale owner.
 $deviceMemory = 'src/core/device_memory_manager.inc'
@@ -202,16 +216,26 @@ if (-not $nx2Text.Contains('word.fetch_or(bits, std::memory_order_relaxed);')) {
 
 # 4) Async native pipeline path: translation workers should stop after translation/SPIR-V. Queue the
 # expensive host-driver pipeline compilation on the normal pipeline workers, preserving our existing
-# bounded wait/skip/adopt policy on the GPU thread.
+# bounded wait/skip/adopt policy on the GPU thread. Build167 carries the same behavior through the
+# newer main_pools/runtime CreateGraphicsPipeline call, so recognize either generation as present.
 $pipelineCache = 'src/video_core/renderer_vulkan/vk_pipeline_cache.cpp'
 $pipeline = Get-Content $pipelineCache -Raw
-$parallelCall = 'pipeline = CreateGraphicsPipeline(pools, key, MakeSpan(env_ptrs), nullptr, true);'
-if (-not $pipeline.Contains($parallelCall)) {
+$parallelLegacy = 'pipeline = CreateGraphicsPipeline(pools, key, MakeSpan(env_ptrs), nullptr, true);'
+$parallelModern = 'CreateGraphicsPipeline(main_pools, graphics_key, environments.Span(), nullptr, true)'
+$parallelMarkers = @($parallelLegacy, $parallelModern)
+$hasParallel = $false
+foreach ($marker in $parallelMarkers) {
+    if ($pipeline.Contains($marker)) {
+        $hasParallel = $true
+        break
+    }
+}
+if (-not $hasParallel) {
     $oldCall = 'pipeline = CreateGraphicsPipeline(pools, key, MakeSpan(env_ptrs), nullptr, false);'
     if (-not $pipeline.Contains($oldCall)) {
         throw 'Build31 frontier: async native pipeline driver-compile call changed'
     }
-    $pipeline = $pipeline.Replace($oldCall, $parallelCall)
+    $pipeline = $pipeline.Replace($oldCall, $parallelLegacy)
     $pipeline = $pipeline.Replace(
         '// Not built in parallel: the driver compile runs here too, so the pipeline can be drawn' + "`n" +
         '        // with as soon as the GPU thread adopts it.',
@@ -288,7 +312,7 @@ Require-Text $rangeHeader 'std::multimap<P, Range> ranges;' 'indexed Dynarmic ra
 Require-Text $rangeHeader 'P max_span{};' 'Dynarmic invalidation overlap bound'
 Require-Text $rangeCpp 'auto it = ranges.lower_bound(search_begin);' 'bounded Dynarmic invalidation lookup'
 Require-Text $nx2 'word.fetch_or(bits, std::memory_order_relaxed);' 'batched GPU-written bitmap OR'
-Require-Text $pipelineCache $parallelCall 'pipeline-worker native driver compilation'
+Require-AnyText $pipelineCache $parallelMarkers 'pipeline-worker native driver compilation'
 Require-Text $rasterizer 'static GPUVAddr last_program = ~GPUVAddr{0};' 'indirect-reset last-program cache'
 Require-Text $rasterizer 'if (last_is_reset) {' 'indirect-reset scalar fast path'
 
