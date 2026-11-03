@@ -55,7 +55,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Current assembled stack failed diff check' }
           git rev-parse HEAD | Set-Content "$env:RUNNER_TEMP\assembled-head.txt"
 
-      - name: Stage exact conflict contexts
+      - name: Apply coherent build142 Task-Mesh donor tree only
+        shell: pwsh
+        working-directory: eden
+        run: |
+          & "$env:GITHUB_WORKSPACE\automation\.github\frontier\probe-apply-build142-taskmesh.ps1"
+          if ($LASTEXITCODE -ne 0) { throw 'Task/Mesh donor helper failed' }
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'Post-donor tree failed diff check' }
+
+      - name: Stage exact post-donor contexts
         shell: pwsh
         working-directory: eden
         run: |
@@ -66,6 +75,8 @@ jobs:
             'src/shader_recompiler/backend/glasm/glasm_emit_context.cpp',
             'src/shader_recompiler/backend/glsl/glsl_emit_context.cpp',
             'src/shader_recompiler/backend/spirv/spirv_emit_context.cpp',
+            'src/shader_recompiler/ir_opt/collect_shader_info_pass.cpp',
+            'src/shader_recompiler/frontend/maxwell/translate_program.cpp',
             'src/shader_recompiler/stage.h'
           )
           foreach ($file in $files) {
@@ -73,7 +84,24 @@ jobs:
             Copy-Item $file (Join-Path $out $safe)
           }
           Copy-Item "$env:RUNNER_TEMP\assembled-head.txt" (Join-Path $out 'assembled-head.txt')
-          git diff -- $files | Set-Content (Join-Path $out 'assembled-local-diff.patch') -Encoding utf8
+          git diff -- $files | Set-Content (Join-Path $out 'post-donor-local-diff.patch') -Encoding utf8
+
+          $targets = @(
+            @{ Path = 'src/shader_recompiler/ir_opt/collect_shader_info_pass.cpp'; Out = 'collect-taskmesh-nvn-context.txt' },
+            @{ Path = 'src/shader_recompiler/frontend/maxwell/translate_program.cpp'; Out = 'translate-taskmesh-nvn-context.txt' }
+          )
+          foreach ($target in $targets) {
+            $lines = Get-Content $target.Path
+            $hits = @($lines | Select-String -Pattern 'case Stage::(?:Task|Mesh):')
+            $selected = New-Object System.Collections.Generic.SortedSet[int]
+            foreach ($hit in $hits) {
+              $start = [Math]::Max(1, $hit.LineNumber - 8)
+              $end = [Math]::Min($lines.Count, $hit.LineNumber + 8)
+              for ($n = $start; $n -le $end; $n++) { [void]$selected.Add($n) }
+            }
+            $rendered = foreach ($n in $selected) { '{0,5}: {1}' -f $n, $lines[$n - 1] }
+            $rendered | Set-Content (Join-Path $out $target.Out) -Encoding utf8
+          }
 
           $spirv = Get-Content 'src/shader_recompiler/backend/spirv/spirv_emit_context.cpp'
           $stageNameLine = ($spirv | Select-String -SimpleMatch 'std::string_view StageName(Stage stage)' | Select-Object -First 1).LineNumber
@@ -83,7 +111,7 @@ jobs:
             $spirv[($start - 1)..($end - 1)] | Set-Content (Join-Path $out 'spirv-stage-name-context.txt') -Encoding utf8
           }
 
-      - name: Upload assembled contexts
+      - name: Upload post-donor contexts
         uses: actions/upload-artifact@v7
         with:
           name: taskmesh-context-${{ github.sha }}
