@@ -122,21 +122,11 @@ $legacyMufuGuardNew = @'
 $legacyMufuGuardNew = $legacyMufuGuardNew.TrimEnd("`r", "`n")
 $donorMufuGuard = '            if (operation > 8 || operation == 6 || operation == 7 || modifiers) return fail(index, "native MUFU mode");'
 $donorMufuGuardNew = '            if (operation > 9 || (operation == 9 && insn.Bits(73, 1)) || operation == 6 || operation == 7 || modifiers) return fail(index, "native MUFU mode");'
-$build167MufuGuard = @'
-            if (operation > 8 || operation == 6 || operation == 7 ||
-                insn.Bits(80, 12) != (opcode == 0xd08 ? 0x800U : 0U))
-                return fail(index, "native MUFU mode");
-'@
-$build167MufuGuardNew = @'
-            if (operation > 9 || (operation == 9 && insn.Bits(73, 1)) ||
-                operation == 6 || operation == 7 ||
-                insn.Bits(80, 12) != (opcode == 0xd08 ? 0x800U : 0U))
-                return fail(index, "native MUFU mode");
-'@
-$build167MufuGuard = $build167MufuGuard.TrimEnd("`r", "`n")
-$build167MufuGuardNew = $build167MufuGuardNew.TrimEnd("`r", "`n")
-if ($text.Contains($build167MufuGuard)) {
-    $text = $text.Replace($build167MufuGuard, $build167MufuGuardNew)
+$build167MufuPrefix = '            if (operation > 8 || operation == 6 || operation == 7 ||'
+$build167MufuPrefixNew = '            if (operation > 9 || (operation == 9 && insn.Bits(73, 1)) || operation == 6 || operation == 7 ||'
+$isBuild167Mufu = $text.Contains('case 0x308: case 0xb08: case 0xd08: { // MUFU (register, constant or uniform register source)')
+if ($isBuild167Mufu -and $text.Contains($build167MufuPrefix)) {
+    $text = $text.Replace($build167MufuPrefix, $build167MufuPrefixNew)
     Write-Host "Added operation-9 compatibility to build167 MUFU while preserving its D08 encoding guard."
 } elseif ($text.Contains($legacyMufuGuard)) {
     $text = $text.Replace($legacyMufuGuard, $legacyMufuGuardNew)
