@@ -1,9 +1,11 @@
 $ErrorActionPreference = 'Stop'
 
 # Final production performance composition for NS2. This wrapper intentionally excludes pure
-# telemetry-only adapters, the experimental contiguous split-ring work, and the older
-# apply-post-build31-cpu-frontier.ps1 meta-wrapper. The useful production patches from that
-# meta-wrapper are applied individually below so they are composed exactly once.
+# telemetry-only adapters, the experimental contiguous split-ring work, the queued Build-142
+# runtime/command-list donor, and the older apply-post-build31-cpu-frontier.ps1 meta-wrapper.
+# The useful production patches from that meta-wrapper are applied individually below so they
+# are composed exactly once. The Build-142 Task/Mesh shader path is included separately after
+# its semantic, shader_recompiler, and full-GUI compile/link gates passed.
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $experiments = Join-Path (Split-Path $root -Parent) 'experiments'
@@ -45,6 +47,23 @@ try {
         }
         Write-Host "[FINAL PERF] Completed $script"
     }
+
+    # Build-142 Task/Mesh stage-buffer support passed the semantic donor probe, the focused
+    # shader_recompiler build, and the full yuzu GUI compile/link over this exact Pokopia stack.
+    # Compose the production adapter here, after the established performance patch sequence and
+    # before startup-only RomFS/HostMemory experiments, so shader semantics do not disturb the
+    # proven startup/pipeline ordering. The separate Build-142 runtime donor remains excluded.
+    $taskMesh = Join-Path $root 'apply-build142-taskmesh.ps1'
+    if (-not (Test-Path $taskMesh -PathType Leaf)) {
+        throw "Final NS2 performance stack: missing $taskMesh"
+    }
+    Write-Host '[FINAL PERF] Applying compile-proven Build-142 Task/Mesh shader path'
+    try {
+        & $taskMesh
+    } catch {
+        throw "Final NS2 performance stack failed in apply-build142-taskmesh.ps1: $($_.Exception.Message)"
+    }
+    Write-Host '[FINAL PERF] Completed Build-142 Task/Mesh shader path'
 
     # Keep the already-proven in-process memoization: frontend probing should still construct a
     # given loose RomFS only once per Eden process.
@@ -88,8 +107,8 @@ try {
     & $goldenHostmem
 
     # Build-142 GPU-written command-list copies remain a queued donor experiment. Do not compose
-    # apply-build142-runtime.ps1 here until the timing/feel and task/mesh shader-correctness gates
-    # have passed; mixing it now would invalidate those controlled A/B tests.
+    # apply-build142-runtime.ps1 here until its independent timing/feel and correctness gates pass;
+    # mixing it into the now-validated Task/Mesh stack would invalidate controlled A/B testing.
 
     git diff --check
     if ($LASTEXITCODE -ne 0) {
