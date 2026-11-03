@@ -124,6 +124,19 @@ if ($pickCode -ne 0) {
 $remaining = @(git diff --name-only --diff-filter=U)
 if ($remaining.Count -ne 0) { throw "Build142 Task/Mesh unresolved conflicts remain: $($remaining -join ', ')" }
 
+# The compile gate proved three non-conflicting semantic overlaps that Git can merge textually but
+# C++ cannot accept: duplicate SPIR-V StageName Task/Mesh cases and two obsolete NVN zero/reject
+# fallbacks. Reuse the exact fail-closed normalizer exercised by the shader_recompiler CI gate so
+# the staged production adapter cannot drift from the compile-proven tree.
+$normalizerPath = Join-Path $PSScriptRoot 'normalize-build142-taskmesh-overlaps.ps1'
+if (-not (Test-Path $normalizerPath)) {
+    throw "Missing compile-proven Task/Mesh overlap normalizer: $normalizerPath"
+}
+& $normalizerPath
+if ($LASTEXITCODE -ne 0) {
+    throw "Task/Mesh overlap normalizer left native failure code $LASTEXITCODE"
+}
+
 $localChecks = @{
     'src/shader_recompiler/stage.h' = @('Task,', 'Mesh,')
     'src/shader_recompiler/backend/glasm/emit_glasm.cpp' = @('case Stage::Task:', 'case Stage::Mesh:')
