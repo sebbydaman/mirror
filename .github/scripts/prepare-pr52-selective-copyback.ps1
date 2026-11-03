@@ -1,5 +1,32 @@
 $ErrorActionPreference = 'Stop'
 
+# Build167 already carries the later command-coherency design: GPU-written page history, per-entry
+# submission snapshots, suspension generations, copied command-list reads, and a fallback drain /
+# flush path. That is newer than the old PR28/PR52 QueueDownload adaptation below. Preserve it.
+$nativeBuffer = 'src/video_core/buffer_cache/buffer_cache.h'
+$nativeDmaHeader = 'src/video_core/dma_pusher.h'
+$nativeDma = 'src/video_core/dma_pusher.cpp'
+if ((Test-Path $nativeBuffer -PathType Leaf) -and
+    (Test-Path $nativeDmaHeader -PathType Leaf) -and
+    (Test-Path $nativeDma -PathType Leaf)) {
+    $nativeBufferText = Get-Content $nativeBuffer -Raw
+    $nativeDmaHeaderText = Get-Content $nativeDmaHeader -Raw
+    $nativeDmaText = Get-Content $nativeDma -Raw
+    $nativeComplete = $nativeBufferText.Contains('Tegra::Nx2MarkGpuWritten(device_addr, size);') -and
+                      $nativeBufferText.Contains('Nx2NoteListWrite(buffer_id, device_addr, size);') -and
+                      $nativeDmaHeaderText.Contains('bool IsGpuWrittenCommands(GPUVAddr address, size_t size);') -and
+                      $nativeDmaHeaderText.Contains('bool ReadGpuWrittenCommands(GPUVAddr address, u32 count);') -and
+                      $nativeDmaHeaderText.Contains('void FlushGpuWrittenCommands(GPUVAddr address, size_t size);') -and
+                      $nativeDmaText.Contains('command_list.snapshot_suspensions') -and
+                      $nativeDmaText.Contains('!IsGpuWrittenCommands(dma_state.dma_get,') -and
+                      $nativeDmaText.Contains('ReadGpuWrittenCommands(dma_state.dma_get, static_cast<u32>(header.size))') -and
+                      $nativeDmaText.Contains('FlushGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));')
+    if ($nativeComplete) {
+        Write-Host '[PRESENT] build167 native PR28/PR52 command coherency and submission snapshots'
+        return
+    }
+}
+
 # PokeDinner 2.0 replaces the old inline async-download block in MarkWrittenBuffer with
 # QueueDownload(device_addr, size). PR52's command-page history should layer on top of that
 # selective copyback policy, not replace it. This preparer also adapts PR28/PR52 to the current
