@@ -80,13 +80,14 @@ jobs:
             default { throw "Unknown build158 candidate $candidate" }
           }
 
-          # Fetch the donor and its parent. A depth-1 fetch makes the donor look like a root commit,
-          # causing cherry-pick to treat the entire Eglantine tree as newly added instead of applying
-          # only this donor's delta onto the canonical Pokopia stack.
-          git fetch --no-tags --depth=2 https://github.com/Djihads80/Eglantine.git $sha
-          if ($LASTEXITCODE -ne 0) { throw "Could not fetch donor $sha with its parent" }
-          git rev-parse "$sha^" *> $null
-          if ($LASTEXITCODE -ne 0) { throw "Donor parent is unavailable after depth-2 fetch for $sha" }
+          # Fetch the donor ref, then explicitly deepen until its parent object is available.
+          # Asking for --depth=2 on a raw SHA can still leave the fetched commit marked shallow.
+          git fetch --no-tags --depth=1 https://github.com/Djihads80/Eglantine.git $sha
+          if ($LASTEXITCODE -ne 0) { throw "Could not fetch donor $sha" }
+          git fetch --no-tags --deepen=1 https://github.com/Djihads80/Eglantine.git $sha
+          if ($LASTEXITCODE -ne 0) { throw "Could not deepen donor history for $sha" }
+          git cat-file -e "$sha^`{commit`}" 2>$null
+          if ($LASTEXITCODE -ne 0) { throw "Donor parent object is unavailable after explicit deepen for $sha" }
 
           git cherry-pick --no-commit $sha
           $pickStatus = $LASTEXITCODE
