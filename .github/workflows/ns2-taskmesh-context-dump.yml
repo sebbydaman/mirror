@@ -64,6 +64,57 @@ jobs:
           git diff --check
           if ($LASTEXITCODE -ne 0) { throw 'Post-donor tree failed diff check' }
 
+      - name: Run normalizer with fail-closed diagnostics
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $out = Join-Path $env:RUNNER_TEMP 'taskmesh-context'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $diag = Join-Path $out 'normalizer-diagnostic.txt'
+          function Emit([string]$text = '') { $text | Tee-Object -FilePath $diag -Append }
+          Emit "automation=$env:GITHUB_SHA"
+          Emit "normalizer=$env:GITHUB_WORKSPACE\automation\.github\frontier\normalize-build142-taskmesh-overlaps.ps1"
+          Emit '--- pre-normalizer exact counts ---'
+
+          $targets = @(
+            @{ Path = 'src/shader_recompiler/ir_opt/collect_shader_info_pass.cpp'; Label = 'collect'; Obsolete = 'Task/Mesh have no legacy NVN buffer base.' },
+            @{ Path = 'src/shader_recompiler/frontend/maxwell/translate_program.cpp'; Label = 'translate'; Obsolete = 'Task/Mesh have no legacy NVN storage-buffer base.' }
+          )
+          foreach ($target in $targets) {
+            $text = (Get-Content $target.Path -Raw).Replace("`r`n", "`n")
+            $anchor = '    const u32 base{[&] {'
+            $first = $text.IndexOf($anchor)
+            $second = if ($first -ge 0) { $text.IndexOf($anchor, $first + $anchor.Length) } else { -1 }
+            $end = if ($first -ge 0) { $text.IndexOf('    }()};', $first) } else { -1 }
+            Emit "$($target.Label): anchor_first=$first anchor_second=$second base_end=$end"
+            Emit "$($target.Label): obsolete_comment_count=$(([regex]::Matches($text, [regex]::Escape($target.Obsolete))).Count)"
+            if ($first -ge 0 -and $end -gt $first) {
+              $base = $text.Substring($first, ($end + 10) - $first)
+              Emit "$($target.Label): task_cases=$(([regex]::Matches($base, '(?m)^[ \t]*case Stage::Task:')).Count) mesh_cases=$(([regex]::Matches($base, '(?m)^[ \t]*case Stage::Mesh:')).Count)"
+              Emit "$($target.Label): task_110=$(([regex]::Matches($base, '(?m)^[ \t]*case Stage::Task:[ \t]*// bound in the vertex slot[ \t]*\n[ \t]*return 0x110[uU];[ \t]*$')).Count) mesh_310=$(([regex]::Matches($base, '(?m)^[ \t]*case Stage::Mesh:[ \t]*// bound in the tessellation slot[ \t]*\n[ \t]*return 0x310[uU];[ \t]*$')).Count)"
+            }
+          }
+
+          Emit '--- normalizer execution ---'
+          try {
+            & "$env:GITHUB_WORKSPACE\automation\.github\frontier\normalize-build142-taskmesh-overlaps.ps1" *>&1 | ForEach-Object { Emit "normalizer: $_" }
+            Emit "normalizer_last_exit=$LASTEXITCODE"
+            Emit 'normalizer_result=success'
+          } catch {
+            Emit 'normalizer_result=exception'
+            Emit "exception_type=$($_.Exception.GetType().FullName)"
+            Emit "exception_message=$($_.Exception.Message)"
+            Emit "position=$($_.InvocationInfo.PositionMessage)"
+            Emit "script_stack=$($_.ScriptStackTrace)"
+          }
+
+          Emit '--- post-normalizer diff check ---'
+          $diffOut = @(git diff --check 2>&1)
+          $diffCode = $LASTEXITCODE
+          $diffOut | ForEach-Object { Emit "diff-check: $_" }
+          Emit "diff_check_exit=$diffCode"
+
       - name: Stage exact post-donor contexts
         shell: pwsh
         working-directory: eden
@@ -84,7 +135,7 @@ jobs:
             Copy-Item $file (Join-Path $out $safe)
           }
           Copy-Item "$env:RUNNER_TEMP\assembled-head.txt" (Join-Path $out 'assembled-head.txt')
-          git diff -- $files | Set-Content (Join-Path $out 'post-donor-local-diff.patch') -Encoding utf8
+          git diff -- $files | Set-Content (Join-Path $out 'post-normalizer-local-diff.patch') -Encoding utf8
 
           $targets = @(
             @{ Path = 'src/shader_recompiler/ir_opt/collect_shader_info_pass.cpp'; Out = 'collect-taskmesh-nvn-context.txt' },
@@ -101,14 +152,6 @@ jobs:
             }
             $rendered = foreach ($n in $selected) { '{0,5}: {1}' -f $n, $lines[$n - 1] }
             $rendered | Set-Content (Join-Path $out $target.Out) -Encoding utf8
-          }
-
-          $spirv = Get-Content 'src/shader_recompiler/backend/spirv/spirv_emit_context.cpp'
-          $stageNameLine = ($spirv | Select-String -SimpleMatch 'std::string_view StageName(Stage stage)' | Select-Object -First 1).LineNumber
-          if ($stageNameLine) {
-            $start = [Math]::Max(1, $stageNameLine)
-            $end = [Math]::Min($spirv.Count, $stageNameLine + 40)
-            $spirv[($start - 1)..($end - 1)] | Set-Content (Join-Path $out 'spirv-stage-name-context.txt') -Encoding utf8
           }
 
       - name: Upload post-donor contexts
