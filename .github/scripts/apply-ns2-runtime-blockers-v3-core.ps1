@@ -55,8 +55,12 @@ if (-not $ampere.Contains('special != 17 && special != 29')) {
 }
 
 # A scalar TXQ result does not need an even destination register. #73 rejected mask=1 queries to
-# R5/R15/R17, causing full-resolution world draws to lose their pipelines.
-if (-not $ampere.Contains('(outputs > 1 && (dest & 1)) || dest + outputs > 246')) {
+# R5/R15/R17, causing full-resolution world draws to lose their pipelines. Build167 already uses
+# the newer direct/components form and only requires even alignment for a direct two-component result.
+$legacyTxqValidation = $ampere.Contains('(outputs > 1 && (dest & 1)) || dest + outputs > 246')
+$modernTxqValidation = $ampere.Contains('const bool direct = second_dest == 255;') -and
+                       $ampere.Contains('(direct && components == 2 && (dest & 1))')
+if (-not $legacyTxqValidation -and -not $modernTxqValidation) {
     $ampere = Replace-Once $ampere `
         '                insn.Bits(40, 14) > 0x1fff || (dest & 1) || dest + outputs > 246)' `
         '                insn.Bits(40, 14) > 0x1fff || (outputs > 1 && (dest & 1)) || dest + outputs > 246)' `
@@ -182,9 +186,12 @@ $retCheck = ($ampereCheck.Contains('active_link && opcode != 0x950')) -or
             ($ampereCheck.Contains('const bool no_destination = opcode == 0x950') -and
              $ampereCheck.Contains('active_link && !no_destination'))
 if (-not $retCheck) { throw 'Runtime-v3 regression: missing RET link-register validation' }
+$txqCheck = $ampereCheck.Contains('(outputs > 1 && (dest & 1)) || dest + outputs > 246') -or
+            ($ampereCheck.Contains('const bool direct = second_dest == 255;') -and
+             $ampereCheck.Contains('(direct && components == 2 && (dest & 1))'))
+if (-not $txqCheck) { throw 'Runtime-v3 regression: missing scalar TXQ odd-register validation' }
 foreach ($needle in @(
     'special != 17 && special != 29',
-    '(outputs > 1 && (dest & 1)) || dest + outputs > 246',
     'case 0x923: { // ISBERD indexed task/mesh attribute read / direct map read.',
     'case 0x927: { // ISBEWR indexed task/mesh attribute write.',
     '0xefd8000000000000ULL | predicate | dest',
