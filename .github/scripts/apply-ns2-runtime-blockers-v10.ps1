@@ -22,8 +22,9 @@ function Replace-Once([string]$Text, [string]$Old, [string]$New, [string]$Label)
 $glasmPath = 'src/shader_recompiler/backend/glasm/glasm_emit_context.cpp'
 $glasm = Read-Lf $glasmPath
 $glasmMarker = 'throw InvalidArgument("GLASM does not support shader stage {}", program.stage);'
+$glasmNativeMarker = 'throw NotImplementedException("GLASM task and mesh programs");'
 
-if (-not $glasm.Contains($glasmMarker)) {
+if (-not $glasm.Contains($glasmMarker) -and -not $glasm.Contains($glasmNativeMarker)) {
     $glasmOld = @'
     case Stage::Compute:
         stage_name = "invocation";
@@ -49,10 +50,11 @@ $glasmCheck = Read-Lf $glasmPath
 foreach ($needle in @(
     'case Stage::Task:',
     'case Stage::Mesh:',
-    $glasmMarker
+    'case Stage::Mesh:'
 )) {
     if (-not $glasmCheck.Contains($needle)) { throw "Runtime-v10 GLASM EmitContext regression: missing $needle" }
 }
+if (-not ($glasmCheck.Contains($glasmMarker) -or $glasmCheck.Contains($glasmNativeMarker))) { throw 'Runtime-v10 GLASM Task/Mesh rejection missing' }
 
 # GLSL's Compute case declares local_x/local_y/local_z. Braces are required before adding later
 # case labels, otherwise MSVC C2360 rejects a jump across those initialized declarations.
@@ -61,6 +63,7 @@ foreach ($needle in @(
 $glslPath = 'src/shader_recompiler/backend/glsl/glsl_emit_context.cpp'
 $glsl = Read-Lf $glslPath
 $glslMarker = 'throw InvalidArgument("GLSL does not support shader stage {}", program.stage);'
+$glslNativeMarker = 'throw NotImplementedException("GLSL task and mesh programs");'
 $glslScopedMarker = 'case Stage::Compute: {'
 
 if ($glsl.Contains($glslMarker) -and -not $glsl.Contains($glslScopedMarker)) {
@@ -93,7 +96,7 @@ if ($glsl.Contains($glslMarker) -and -not $glsl.Contains($glslScopedMarker)) {
 '@
     $glsl = Replace-Once $glsl $glslIntermediate $glslScoped 'runtime-v8 GLSL Compute scope normalization'
     Write-Utf8 $glslPath $glsl
-} elseif (-not $glsl.Contains($glslMarker)) {
+} elseif (-not $glsl.Contains($glslMarker) -and -not $glsl.Contains($glslNativeMarker)) {
     $glslOld = @'
     case Stage::Compute:
         stage_name = "cs";
@@ -125,14 +128,17 @@ if ($glsl.Contains($glslMarker) -and -not $glsl.Contains($glslScopedMarker)) {
 }
 
 $glslCheck = Read-Lf $glslPath
-foreach ($needle in @(
-    'case Stage::Compute: {',
-    'case Stage::Task:',
-    'case Stage::Mesh:',
-    $glslMarker
-)) {
+foreach ($needle in @('case Stage::Task:', 'case Stage::Mesh:')) {
     if (-not $glslCheck.Contains($needle)) { throw "Runtime-v10 GLSL EmitContext regression: missing $needle" }
 }
+if ($glslCheck.Contains($glslNativeMarker)) {
+    # Build167 already rejects Task/Mesh before its Compute case; no C2360 jump across locals.
+    if ($glslCheck.IndexOf('case Stage::Task:') -gt $glslCheck.IndexOf('case Stage::Compute:')) {
+        throw 'Runtime-v10 native GLSL Task/Mesh labels must precede Compute locals'
+    }
+} elseif (-not ($glslCheck.Contains($glslMarker) -and $glslCheck.Contains($glslScopedMarker))) {
+    throw 'Runtime-v10 GLSL Task/Mesh rejection or Compute scope missing'
+}
 
-Write-Host 'Added explicit Task/Mesh rejection to legacy GLASM and normalized GLSL Compute scope.'
+Write-Host 'Validated Task/Mesh rejection in legacy GLASM/GLSL; preserved native build167 guards.'
 git diff -- $glasmPath $glslPath
