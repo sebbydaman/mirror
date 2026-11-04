@@ -64,6 +64,14 @@ An independent four-candidate Windows gate [#41891471057](https://github.com/seb
 
 The fourth staged donor, `.github/unified/experiments/apply-lichii-inline-pipeline-builds.ps1`, ports the Lichii build-70 PR #71 `457a32de0a` approach into a *separate candidate*: when a draw needs a pipeline, its scheduler may claim and compile it immediately instead of waiting behind hundreds of background worker compiles. The design keeps one build owner via `build_claimed` and retains the completion condition variable. The source anchors are checked against pinned Orchid v0.7.0. This is a promising shader-stall optimization but should remain isolated until Vulkan `video_core` compiles, gameplay stability is checked, and an A/B measurement demonstrates benefit.
 
+## Fast source validation — November 4, 2026
+
+The new Windows [fast four-candidate source gate #41893968205](https://github.com/sebbydaman/mirror/actions/runs/41893968205) **passed all four matrices** (Task/Mesh, Mario Kart World, Star Fox, and waited-on Vulkan pipelines). Each applies the previously compiled unified ports, applies its isolated donor patch twice, checks that the source diff is idempotent, and checks `git diff --check`. It does not compile the C++ or run a game.
+
+This resolves the prior Task/Mesh source-anchor failure with an actual GitHub Actions result, not only local string comparison. The expensive independent Windows C++ checks remain outstanding.
+
+Lichii build70 Kirby dynamic texture-array port (#65) is not a single small change: commits `d5ed8e1a97c85f57f795486d4961ef94466365af` and `f2cd29272e8b75e7be8860ec181cc342332dd760` alter texture handle reconstruction, Vulkan/OpenGL combined sampler bindings, descriptor-array limit accounting, and shader cache versioning. **Orchid v0.7.0 no longer has Lichii's `src/video_core/pipeline_cache_files.h` file**, so a blind transplant of cache-version changes is unsafe. Hold the port until Orchid's newer shader-cache architecture is mapped and tested.
+
 ## Preflight and acceptance
 
 1. Pin and verify Orchid's exact SHA and `orchid.profdata`.
