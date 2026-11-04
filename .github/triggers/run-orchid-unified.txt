@@ -1,0 +1,5 @@
+Orchid unified integration gate (UTC 2026-11-04)
+Base: MythosOfs/Orchid@d858fc90683ec55ecca9321081e719e02acbfd28
+Apply Eglantine212 H0/NUP and Lichii70 Kirby via strict source anchors.
+Compile targeted C++ then full Zen4 PGO Windows GUI; package and verify.
+PokeDinner2.5 donor audit remains gated on source inspection, no blind patches.
