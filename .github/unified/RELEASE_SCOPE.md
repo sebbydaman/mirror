@@ -13,7 +13,7 @@ This build **is not a claim that every Eglantine, Lichii and PokeDinner patch wa
 - **Eglantine build-212**: corrected native `H0_NH1` FP16 mixed-sign source, commit `77952c8d8c1bac5d6164587d69150c8ad0156ea0`.
 - **Eglantine build-212**: treat a NUP package's contentless ExeFS as absent, `GetExeFSDir` part of `9279b24e4c487b75d1e8e88a1f99677512be1bab`. The separate NUP writer optimization is intentionally unported until tested.
 - **Lichii build-70**: corrected blit-constant integer dither handling through float-derived Phi nodes for Kirby Air Riders, original commit `0aabd552a22d9d45612d4e828a667a808e36eed5`; limited to Switch 2 fragments and preserves Orchid's separate Fast Fusion HDR/tonemap bank-17 guard.
-- **PokeDinner 2.5.0**: reviewed release `216b5034c6` and preserved compatible functionality already present in Orchid/upstream (e.g. NUP/NSP compatibility and DK lock support). No raw PokeDinner source patch was applied because this Forgejo snapshot has not yet been audited at the source level. The release's Splatoon Raiders visuals remain a candidate, not an asserted inclusion.
+- **PokeDinner 2.5.0**: release `216b5034c6` maps to the independent GitHub Forgejo source sync `969981/PokeDinner-a-Eglantine-Fork@16fa882b1be385f1475640550af451fff15c41f9` (commit message: sync Forgejo master `216b5034c60a`). This gives a citable source snapshot for targeted comparisons. No PokeDinner source patch is applied in this first batch; inspect its unique MKW Dynamic FPS mode and any Splatoon visuals individually. Orchid already implements NUP/NSP compatibility and DK built-in 30 FPS lock.
 
 ## Remaining high-value donor candidates, deliberately held back
 
@@ -22,8 +22,16 @@ This build **is not a claim that every Eglantine, Lichii and PokeDinner patch wa
 | Eglantine build-212 | Pokopia native ULEA/compute shader lowering, Fast Fusion shaders and GPU-split waits, Mario Tennis, NUP packer | Need validate against Orchid v0.7 current versions one group at a time |
 | Lichii build-70 | Kirby dynamic texture arrays with separate samplers (#65), inline waited-on pipelines (#71) | Shader cache versioning and threading semantics must be reviewed; no stage-specific regressions. Lichii's faster control-flow traversal (#71) is already present in Orchid v0.7.0; do not duplicate. |
 | Lichii build-70 | DKB GPU split synchronization (#70), Star Fox fixes, Sports Resort S16 sysmix (#75) | Significant shared GPU/audio interfaces; affected game smoke tests necessary |
-| PokeDinner 2.5.0 | Splatoon Raiders visuals and any remaining unique Nintendo Switch 2 game-specific work | Exact tag source access/diff required; release notes alone do not prove safe code merge |
+| PokeDinner 2.5.0 | Mario Kart World optional 30 FPS/dynamic FPS, Splatoon Raiders visuals | Forgejo source snapshot mirrored at `969981/PokeDinner-a-Eglantine-Fork@16fa882`; review its `src/core/loader/nso.cpp`, `src/common/settings.h`, `src/core/hle/service/nx2_gsv.h`, and renderer against newer Orchid before porting. Unique MKW dynamic FPS is not in Orchid; Orchid already has a generic DK 30 FPS patch. |
 | All | Multiple overlapping 30 FPS/dynamic FPS options | Only one lock per game. Avoid applying duplicate patch engines or changing speed semantics |
+
+## PokeDinner 2.5.0 verified source inventory
+
+An independently accessible GitHub mirror contains a full checkout of Forgejo master at 2.5.0. The sync commit `16fa882b1be385f1475640550af451fff15c41f9` explicitly records upstream `216b5034c60a`; avoid newer mirror-only CI commits when attributing game code.
+
+Its release contains an optional Mario Kart World frame-controller code patch in `src/core/loader/nso.cpp` with match-count guards (30 FPS mode or a dynamic FPS variant), a present-pacing adjustment in `src/core/hle/service/nx2_gsv.h`, plus matching UI settings. Orchid v0.7.0 lacks this exact MKW mode but contains its own configurable Donkey Kong Bananza 30 FPS patch. Do **not** transplant PokeDinner's separate DK patch over Orchid's generic one. Keep MKW dynamic FPS and its frame-pacing changes as a grouped, opt-in, version-matched experiment. It has no demonstrated FPS benefit in Orchid and must be tested independently from other game fixes.
+
+A source-tree inventory found approximately **402 differing common blob paths** between the PokeDinner snapshot and Orchid v0.7.0. Most differences cannot be treated as additive fixes; both projects have had significant independent GPU/video evolution. Source-level diffs and game reproduction are mandatory.
 
 ## Missing shader instruction coverage
 
