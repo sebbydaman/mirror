@@ -1,0 +1,170 @@
+name: Orchid Unified Isolated Donor C++ Gates
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ns2-orchid-unified-20261104
+    paths:
+      - '.github/workflows/ns2-unified-candidate-gates.yml'
+      - '.github/triggers/run-orchid-unified-candidate-gates.txt'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ns2-orchid-unified-candidate-gates
+  cancel-in-progress: false
+
+jobs:
+  donor-cpp-gates:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - name: Checkout pinned integration automation
+        uses: actions/checkout@v5
+        with:
+          path: automation
+          fetch-depth: 1
+
+      - name: Checkout exact Orchid v0.7.0 source
+        uses: actions/checkout@v5
+        with:
+          repository: MythosOfs/Orchid
+          ref: d858fc90683ec55ecca9321081e719e02acbfd28
+          path: eden
+          fetch-depth: 1
+
+      - name: Verify source and apply previously compiled unified ports
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $expected = 'd858fc90683ec55ecca9321081e719e02acbfd28'
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -ne $expected) { throw "Unexpected Orchid source: $actual" }
+          & "$env:GITHUB_WORKSPACE\automation\.github\unified\apply-verified-source-ports.ps1"
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'Unified production ports diff check failed' }
+
+      - name: Set up MSYS2 Clang for isolated C++ gates
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq pactoys ninja
+          pacboy: >-
+            toolchain:p clang:p lld:p cmake:p python-pip:p
+            qt6-base:p qt6-charts:p qt6-tools:p qt6-translations:p qt6-svg:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p enet:p opus:p
+            libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p
+            lerc:p graphite2:p libwebp:p libtiff:p brotli:p
+
+      - name: Configure one reusable C++ gate build (no PGO, no GUI)
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-gates -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF -DYUZU_TESTS=OFF -DYUZU_CMD=OFF \
+            -DYUZU_ROOM=OFF -DYUZU_ROOM_STANDALONE=OFF \
+            -DYUZU_USE_BUNDLED_QT=OFF -DYUZU_USE_BUNDLED_SDL3=ON \
+            -DYUZU_USE_BUNDLED_FFMPEG=ON \
+            -DVulkanHeaders_FORCE_BUNDLED=ON -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
+            -DENABLE_UPDATE_CHECKER=OFF -DUSE_DISCORD_PRESENCE=OFF \
+            -DENABLE_WEB_SERVICE=OFF -DENABLE_CUBEB=OFF -DENABLE_LIBUSB=OFF \
+            -DENABLE_WERROR=OFF \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld \
+            '-DCMAKE_C_FLAGS=-mtune=znver4' \
+            '-DCMAKE_CXX_FLAGS=-mtune=znver4'
+
+      - name: Candidate 1 native TaskMesh 0x923 and 0x927 shader C++ gate
+        shell: pwsh
+        working-directory: eden
+        run: |
+          & "$env:GITHUB_WORKSPACE\automation\.github\unified\experiments\apply-native-taskmesh-stage-buffer.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\unified\experiments\apply-native-taskmesh-stage-buffer.ps1"
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'Task/Mesh donor preflight failed' }
+
+      - name: Build shader translator target and capture first diagnostic
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set +e
+          cmake --build build-gates --target shader_recompiler --parallel 4 2>&1 | tee donor-shader-gate.log
+          status=${PIPESTATUS[0]}
+          set -e
+          exit $status
+
+      - name: Candidate 2 PokeDinner MKW dynamic and native 30 FPS C++ gate
+        shell: pwsh
+        working-directory: eden
+        run: |
+          & "$env:GITHUB_WORKSPACE\automation\.github\unified\experiments\apply-pokedinner-mkw-fps.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\unified\experiments\apply-pokedinner-mkw-fps.ps1"
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'MKW donor preflight failed' }
+
+      - name: Build core target with MKW patch and capture first diagnostic
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set +e
+          cmake --build build-gates --target core --parallel 4 2>&1 | tee donor-mkw-gate.log
+          status=${PIPESTATUS[0]}
+          set -e
+          exit $status
+
+      - name: Candidate 3 Lichii Star Fox streamplay HID C++ gate
+        shell: pwsh
+        working-directory: eden
+        run: |
+          & "$env:GITHUB_WORKSPACE\automation\.github\unified\experiments\apply-lichii-streamplay-hid.ps1"
+          & "$env:GITHUB_WORKSPACE\automation\.github\unified\experiments\apply-lichii-streamplay-hid.ps1"
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'Streamplay HID donor preflight failed' }
+
+      - name: Rebuild core target with streamplay HID and capture first diagnostic
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set +e
+          cmake --build build-gates --target core --parallel 4 2>&1 | tee donor-streamplay-gate.log
+          status=${PIPESTATUS[0]}
+          set -e
+          exit $status
+
+      - name: Verify donor changes and record source provenance
+        shell: pwsh
+        working-directory: eden
+        run: |
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'Combined isolated donors fail whitespace gate' }
+          git diff --stat | Set-Content -Path donor-diff-stat.txt
+          git diff -- src/shader_recompiler/frontend/ampere/lower_to_maxwell.h src/core/loader/nso.cpp src/core/hle/service/ngc/ngc.cpp | Set-Content -Path donor-source-review.diff
+          @(
+            'Orchid=MythosOfs/Orchid v0.7.0 d858fc90683ec55ecca9321081e719e02acbfd28'
+            'TaskMesh=Eglantine build212 shader stage-buffer 0x923/0x927 plus Orchid native pseudo backend'
+            'MKW=PokeDinner 2.5.0 snapshot 969981/PokeDinner-a-Eglantine-Fork@16fa882'
+            'Streamplay=Lichii build70 286117c7e0d89ab0384e896489128fdd88a424f8 PR64'
+            'Compilation passes do not imply in-game compatibility, FPS gain, or readiness to merge'
+          ) | Set-Content -Path donor-preflight-provenance.txt
+
+      - name: Upload isolated compiler and source records
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: unified-donor-cpp-preflight-${{ github.sha }}
+          path: |
+            eden/donor-shader-gate.log
+            eden/donor-mkw-gate.log
+            eden/donor-streamplay-gate.log
+            eden/donor-diff-stat.txt
+            eden/donor-source-review.diff
+            eden/donor-preflight-provenance.txt
+          if-no-files-found: warn
+          retention-days: 14
