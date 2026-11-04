@@ -60,6 +60,15 @@ $newNup = @'
 '@
 Edit-Exact $nup $oldNup $newNup 'Eglantine-212 contentless NUP ExeFS'
 $pos = 'src/shader_recompiler/ir_opt/position_pass.cpp'
+$oldHeader = @'
+#include <boost/container/small_vector.hpp>
+'@
+$newHeader = @'
+#include <boost/container/small_vector.hpp>
+
+#include "common/settings.h"
+'@
+Edit-Exact $pos $oldHeader $newHeader 'Switch 2 runtime gate for Kirby shader correctness'
 $oldHelper = @'
 using PositionInstVector = boost::container::small_vector<PositionInst, 24>;
 } // Anonymous namespace
@@ -101,7 +110,7 @@ $newDither = @'
     }
     // Lichii build-70: Kirby's SMAA resolve adds bank-17 dither bias to a phi
     // of float-encoded colors. Preserve Orchid's Fast Fusion HDR guard below.
-    if (env.ShaderStage() == Stage::Fragment && env.HasNativeInstructions()) {
+    if (env.ShaderStage() == Stage::Fragment && Settings::CurrentProgramIsSwitch2()) {
         for (IR::Block* const block : program.post_order_blocks) {
             for (IR::Inst& inst : block->Instructions()) {
                 if (inst.GetOpcode() != IR::Opcode::BitCastF32U32) {
