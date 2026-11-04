@@ -6,7 +6,7 @@ on:
     branches:
       - ns2-orchid-unified-20261104
     paths:
-      - '.github/workflows/ns2-orchid-unified-20261104-zen4.yml'
+      - '.github/workflows/ns2-orchid-unified-zen4.yml'
       - '.github/triggers/run-orchid-unified.txt'
 
 permissions:
