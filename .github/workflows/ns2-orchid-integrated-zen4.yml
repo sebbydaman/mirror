@@ -125,6 +125,47 @@ jobs:
           ) | Set-Content -Path INTEGRATION_PROVENANCE.txt -Encoding utf8
           git diff -- src/shader_recompiler/ir_opt/position_pass.cpp src/shader_recompiler/frontend/ampere/lower_to_maxwell.h src/core/file_sys/nup_container.cpp | Set-Content -Path verified-donor-source.diff -Encoding utf8
 
+      - name: Apply runtime-log-targeted Star Fox and MKW repairs with idempotence gates
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $root = "$env:GITHUB_WORKSPACE\\automation\\.github\\unified\\repairs"
+          $fixes = @(
+            (Join-Path $root 'apply-starfox-gradient.ps1'),
+            (Join-Path $root 'apply-mkw-gpu-backing-lifetime.ps1')
+          )
+          foreach ($fix in $fixes) {
+            if (-not (Test-Path $fix -PathType Leaf)) { throw "Missing repair $fix" }
+            & $fix
+            if (-not $?) { throw "Repair failed $fix" }
+            git diff --check
+            if ($LASTEXITCODE -ne 0) { throw "Repair whitespace failure $fix" }
+            $before = (git diff --binary | Out-String)
+            & $fix
+            if (-not $?) { throw "Repair second pass failed $fix" }
+            $after = (git diff --binary | Out-String)
+            if ($before -cne $after) { throw "Repair is not idempotent $fix" }
+          }
+          $checks = @(
+            @('src/shader_recompiler/frontend/ampere/lower_to_maxwell.h','case 0xf6c:'),
+            @('src/shader_recompiler/frontend/ampere/lower_to_maxwell.h','op == 0xf60 || op == 0xf6c'),
+            @('src/core/hle/service/nx2_gsv.h','registry.ReleaseBacking(old->second.cpu_address'),
+            @('src/core/hle/service/nx2_gsv.h','m_released_regions.push_back({std::move(old->second), done})')
+          )
+          foreach ($check in $checks) {
+            if (-not (Select-String -Path $check[0] -SimpleMatch $check[1] -Quiet)) {
+              throw "Runtime repair invariant missing $($check[1])"
+            }
+          }
+          @(
+            'StarFox gradient source/C++ gate=GitHub Actions 41924081920 (passed)'
+            'MKW GPU backing lifetime source/C++ gate=GitHub Actions 41924742698 (passed)'
+            'Runtime validation=not yet performed; these are candidate repairs'
+          ) | Set-Content -Path RUNTIME_REPAIR_PROVENANCE.txt -Encoding utf8
+          git diff --stat
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'Combined repair diff invalid' }
+
       - name: Set up MSYS2 clang PGO toolchain
         uses: msys2/setup-msys2@v2
         with:
@@ -232,7 +273,7 @@ jobs:
           Toolchain: LLVM/Clang -fprofile-use=orchid.profdata -mtune=znver4.
           Profile: Orchid's v0.7.0 game-trained profile (not the older Eden-CI profile).
           Verified source ports: Eglantine FP16/NUP, Lichii Kirby SMAA phi, native TaskMesh 0x927,
-          Star Fox shared-memory HID and waited-on Vulkan pipelines, PokeDinner MKW native 30/dynamic FPS.
+          Star Fox shared-memory HID and waited-on Vulkan pipelines, PokeDinner MKW native 30/dynamic FPS.\n          Runtime-log repair candidates: Star Fox native 0xf6c gradient and MKW GPU-only backing lifetime.
           Four additions passed individual Windows C++ checks in GitHub Actions #41891471057.
           They are now compiled together only if this integrated workflow completes successfully.
           Mario Kart World 30/dynamic modes default OFF. Do not enable both at once.
@@ -289,7 +330,7 @@ jobs:
 
           find . -type f -printf '%P\t%s\n' | sort > RUNTIME_MANIFEST.txt
           cp "$GITHUB_WORKSPACE/automation/.github/unified/RELEASE_SCOPE.md" RELEASE_SCOPE.md
-          cp "$GITHUB_WORKSPACE/eden/FOUR_DONOR_PROVENANCE.txt" FOUR_DONOR_PROVENANCE.txt
+          cp "$GITHUB_WORKSPACE/eden/FOUR_DONOR_PROVENANCE.txt" FOUR_DONOR_PROVENANCE.txt\n          cp "$GITHUB_WORKSPACE/eden/RUNTIME_REPAIR_PROVENANCE.txt" RUNTIME_REPAIR_PROVENANCE.txt
           cp "$GITHUB_WORKSPACE/eden/combined-four-donor-diff-stat.txt" FOUR_DONOR_SOURCE_CHANGES.txt
           echo 'Four-donor combined source validation completed; not proof of in-game correctness.' > INTEGRATED_FOUR_DONORS.txt
           echo "Integrated four-donor portable checkpoint staged: $exe, $dll_count DLLs, $file_count files"
@@ -328,7 +369,7 @@ jobs:
           if (-not (Test-Path (Join-Path $bin 'COMPILED_CHECKPOINT.txt') -PathType Leaf)) {
             throw 'Compiled checkpoint marker is missing.'
           }
-          foreach ($note in @('POKOPIA_CONFIG.txt','FINAL_BUILD_NOTES.txt','RUNTIME_MANIFEST.txt','RELEASE_SCOPE.md','FOUR_DONOR_PROVENANCE.txt','INTEGRATED_FOUR_DONORS.txt')) {
+          foreach ($note in @('POKOPIA_CONFIG.txt','FINAL_BUILD_NOTES.txt','RUNTIME_MANIFEST.txt','RELEASE_SCOPE.md','FOUR_DONOR_PROVENANCE.txt','INTEGRATED_FOUR_DONORS.txt','RUNTIME_REPAIR_PROVENANCE.txt')) {
             if (-not (Test-Path (Join-Path $bin $note) -PathType Leaf)) { throw "Checkpoint is missing $note" }
           }
 
