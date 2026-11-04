@@ -60,8 +60,10 @@ $new = @'
             break;
         }
 '@
-$old = $old.TrimEnd([char[]]@([char]13,[char]10))
-$new = $new.TrimEnd([char[]]@([char]13,[char]10))
+$crlf = [string][char]13 + [string][char]10
+$lf = [string][char]10
+$old = $old.Replace($crlf, $lf).TrimEnd([char[]]@([char]13,[char]10))
+$new = $new.Replace($crlf, $lf).TrimEnd([char[]]@([char]13,[char]10))
 if ($raw.Contains($new)) { Write-Host '[ALREADY] Task/Mesh stage-buffer lowering'; exit 0 }
 $offset = $raw.IndexOf($old, [StringComparison]::Ordinal)
 if ($offset -lt 0 -or $raw.IndexOf($old, $offset + $old.Length, [StringComparison]::Ordinal) -ge 0) {
