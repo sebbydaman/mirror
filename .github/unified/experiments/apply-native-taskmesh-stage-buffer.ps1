@@ -65,7 +65,9 @@ $new = $new.TrimEnd([char[]]@([char]13,[char]10))
 if ($raw.Contains($new)) { Write-Host '[ALREADY] Task/Mesh stage-buffer lowering'; exit 0 }
 $offset = $raw.IndexOf($old, [StringComparison]::Ordinal)
 if ($offset -lt 0 -or $raw.IndexOf($old, $offset + $old.Length, [StringComparison]::Ordinal) -ge 0) {
-    throw 'Orchid 0x923 lowering anchor differs or is duplicated; re-review against current pinned source'
+    $caseAt = $raw.IndexOf("case 0x923:", [StringComparison]::Ordinal)
+    $secondAt = if ($offset -ge 0) { $raw.IndexOf($old, $offset + $old.Length, [StringComparison]::Ordinal) } else { -1 }
+    throw "Orchid stage buffer anchor mismatch (fullMatch=$offset, secondMatch=$secondAt, caseAt=$caseAt, anchorLength=$($old.Length))."
 }
 $raw = $raw.Substring(0,$offset) + $new + $raw.Substring($offset + $old.Length)
 [IO.File]::WriteAllText((Resolve-Path $path).Path,$raw,[Text.UTF8Encoding]::new($false))
