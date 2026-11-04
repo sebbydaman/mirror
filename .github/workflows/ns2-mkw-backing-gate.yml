@@ -44,7 +44,7 @@ jobs:
           $after = (git diff --binary | Out-String)
           if ($before -cne $after) { throw 'MKW backing fix is not idempotent' }
           foreach ($part in @('registry.ReleaseBacking(old->second.cpu_address', 'm_gpu_only_regions.erase(old)', 'm_released_regions.push_back({std::move(old->second), done})')) {
-            if (-not (Select-String -Path 'src/shader_recompiler/frontend/ampere/lower_to_maxwell.h' -Pattern $part -SimpleMatch -Quiet)) { throw "Missing $part" }
+            if (-not (Select-String -Path 'src/core/hle/service/nx2_gsv.h' -Pattern $part -SimpleMatch -Quiet)) { throw "Missing $part" }
           }
           git diff --stat
       - name: Set up MSYS2 clang
