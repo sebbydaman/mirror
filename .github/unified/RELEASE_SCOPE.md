@@ -54,6 +54,16 @@ All staged candidates need clean builds and runtime A/B before promotion. No cla
 
 **Independent Windows C++ candidate gate:** [Actions run #41878900706](https://github.com/sebbydaman/mirror/actions/runs/41878900706) builds `shader_recompiler` after Task/Mesh, `core` after MKW, and `core` again after the Lichii HID addition. It is distinct from the successful baseline C++/GUI compile in the first unified Windows PGO run [#41868882990](https://github.com/sebbydaman/mirror/actions/runs/41868882990); final portable-package verification is separately gated.
 
+## Independent donor compilation and pipeline stalls
+
+The first two Orchid v0.7.0 Windows PGO builds passed source, targeted C++, full GUI, staging and portable package verification: [#41868882990](https://github.com/sebbydaman/mirror/actions/runs/41868882990) and [#41868983830](https://github.com/sebbydaman/mirror/actions/runs/41868983830). These are **compile and package successes**, not in-game FPS benchmarks.
+
+The first donor workflow failed before compilation because the Task/Mesh script's multiline PowerShell match preserved Windows CRLF line endings while the target source was normalized to LF. Diagnostic run [#41890396929](https://github.com/sebbydaman/mirror/actions/runs/41890396929) confirmed `fullMatch=-1, caseAt=146770, anchorLength=525`. The exact matcher has been corrected to normalize CRLF on both old and new snippets; no opcode safety predicates were removed.
+
+An independent four-candidate Windows gate [#41891471057](https://github.com/sebbydaman/mirror/actions/runs/41891471057) now tests Task/Mesh, PokeDinner MKW dynamic/30, Lichii Star Fox HID, and Lichii waited-on Vulkan pipeline compilation. It avoids a failing Task/Mesh source step from skipping other game builds.
+
+The fourth staged donor, `.github/unified/experiments/apply-lichii-inline-pipeline-builds.ps1`, ports the Lichii build-70 PR #71 `457a32de0a` approach into a *separate candidate*: when a draw needs a pipeline, its scheduler may claim and compile it immediately instead of waiting behind hundreds of background worker compiles. The design keeps one build owner via `build_claimed` and retains the completion condition variable. The source anchors are checked against pinned Orchid v0.7.0. This is a promising shader-stall optimization but should remain isolated until Vulkan `video_core` compiles, gameplay stability is checked, and an A/B measurement demonstrates benefit.
+
 ## Preflight and acceptance
 
 1. Pin and verify Orchid's exact SHA and `orchid.profdata`.
