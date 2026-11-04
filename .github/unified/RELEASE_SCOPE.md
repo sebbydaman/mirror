@@ -47,9 +47,12 @@ These files are deliberately **not called by the initial unified workflow**; the
 
 - `.github/unified/experiments/apply-native-taskmesh-stage-buffer.ps1`: a source-anchor-checked native `0x923/0x927` Task/Mesh read/write lowering candidate based on Eglantine build212 and Orchid's own unused upstream donor. Keeps active Orchid geometry/tessellation read instructions intact. A script-level check verifies `ISBE_nx2` backend availability. Targeted shader compilation and native game testing still outstanding.
 - `.github/unified/experiments/apply-pokedinner-mkw-fps.ps1`: PokeDinner 2.5.0 code-matched optional MKW 30 FPS and dynamic FPS modes. Four exact Orchid v0.7.0 source anchors verified present uniquely; defaults OFF, has a title-ID guard on presentation changes, retains Orchid's built-in DK 30 FPS code and `EDEN_NX2_SWAP_STABLE` policy for other titles. Targeted C++ compile and an affected-game test still outstanding.
+- `.github/unified/experiments/apply-lichii-streamplay-hid.ps1`: Lichii build70 PR #64's Star Fox/GameShare HID command-300 IPC contract. Replaces the guessed event response on both user and NGC shim service routes with a zero-initialized `0x9b000` shared-memory object and the required size/offset reply. The original Orchid v0.7.0 entry points are uniquely matched; the helper and changed service routes are staged for focused C++ compilation and IPC/game testing. Not included in first production package.
 - Lichii build70 dynamic texture arrays, waited-on pipeline scheduling, and back-thread synchronization have not yet been ported: preserve shader-cache and scheduler ownership guarantees.
 
-Both candidates need clean builds and runtime A/B before promotion. No claim of working compatibility or FPS gains for them is supported yet.
+All staged candidates need clean builds and runtime A/B before promotion. No claim of working compatibility or FPS gains for them is supported yet.
+
+**Independent Windows C++ candidate gate:** [Actions run #41878900706](https://github.com/sebbydaman/mirror/actions/runs/41878900706) builds `shader_recompiler` after Task/Mesh, `core` after MKW, and `core` again after the Lichii HID addition. It is distinct from the successful baseline C++/GUI compile in the first unified Windows PGO run [#41868882990](https://github.com/sebbydaman/mirror/actions/runs/41868882990); final portable-package verification is separately gated.
 
 ## Preflight and acceptance
 
