@@ -1,0 +1,1 @@
+Rerun isolated compatibility checks with exact TaskMesh anchor diagnostics. Baseline Orchid v0.7.0. November 4, 2026.
