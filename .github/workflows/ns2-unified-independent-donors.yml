@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        candidate: [taskmesh, mkw, starfox]
+        candidate: [taskmesh, mkw, starfox, pipelines]
     steps:
       - name: Checkout integration controls
         uses: actions/checkout@v5
@@ -95,6 +95,7 @@ jobs:
             taskmesh = 'apply-native-taskmesh-stage-buffer.ps1'
             mkw = 'apply-pokedinner-mkw-fps.ps1'
             starfox = 'apply-lichii-streamplay-hid.ps1'
+            pipelines = 'apply-lichii-inline-pipeline-builds.ps1'
           }
           $script = Join-Path "$env:GITHUB_WORKSPACE\automation\.github\unified\experiments" $names[$env:CANDIDATE]
           if (-not (Test-Path $script)) { throw "Missing candidate: $env:CANDIDATE" }
@@ -114,6 +115,7 @@ jobs:
           case "$CANDIDATE" in
             taskmesh) target=shader_recompiler ;;
             mkw|starfox) target=core ;;
+            pipelines) target=video_core ;;
             *) echo "unknown candidate $CANDIDATE" >&2; exit 2 ;;
           esac
           cmake --build build-gates --target "$target" --parallel 4 --verbose 2>&1 | tee "donor-$CANDIDATE.log"
