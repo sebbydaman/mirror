@@ -1,0 +1,93 @@
+name: Orchid Unified Fast Donor Source Gates
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ns2-orchid-unified-20261104
+    paths:
+      - '.github/workflows/ns2-unified-quick-source-gates.yml'
+      - '.github/unified/experiments/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: orchid-unified-fast-source-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-port:
+    name: "${{ matrix.candidate }} source/idempotence"
+    runs-on: windows-2022
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        candidate: [taskmesh, mkw, starfox, pipelines]
+    steps:
+      - name: Checkout pinned integration scripts
+        uses: actions/checkout@v5
+        with:
+          path: automation
+          fetch-depth: 1
+
+      - name: Checkout exact Orchid v0.7.0
+        uses: actions/checkout@v5
+        with:
+          repository: MythosOfs/Orchid
+          ref: d858fc90683ec55ecca9321081e719e02acbfd28
+          path: eden
+          fetch-depth: 1
+
+      - name: Apply verified production ports and selected isolated source patch
+        shell: pwsh
+        working-directory: eden
+        env:
+          CANDIDATE: ${{ matrix.candidate }}
+        run: |
+          $expected = 'd858fc90683ec55ecca9321081e719e02acbfd28'
+          $sha = (git rev-parse HEAD).Trim()
+          if ($sha -ne $expected) { throw "Wrong Orchid source: $sha" }
+          $automation = Join-Path $env:GITHUB_WORKSPACE 'automation/.github/unified'
+          & (Join-Path $automation 'apply-verified-source-ports.ps1')
+          $scripts = @{
+            taskmesh = 'apply-native-taskmesh-stage-buffer.ps1'
+            mkw = 'apply-pokedinner-mkw-fps.ps1'
+            starfox = 'apply-lichii-streamplay-hid.ps1'
+            pipelines = 'apply-lichii-inline-pipeline-builds.ps1'
+          }
+          $script = Join-Path (Join-Path $automation 'experiments') $scripts[$env:CANDIDATE]
+          if (-not (Test-Path $script -PathType Leaf)) { throw "Candidate script missing: $script" }
+          & $script
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw "$env:CANDIDATE first source diff failed" }
+          $first = (git diff --binary | Out-String)
+          & $script
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw "$env:CANDIDATE repeat source diff failed" }
+          $second = (git diff --binary | Out-String)
+          if ($first -cne $second) { throw "$env:CANDIDATE source patch is not idempotent" }
+          $changed = @(git diff --name-only)
+          if ($changed.Count -lt 1) { throw "No source files changed for $env:CANDIDATE" }
+          Write-Host "SOURCE PREFLIGHT PASSED for $env:CANDIDATE; changed files:"
+          git diff --stat
+
+      - name: Upload source-diff diagnostics
+        if: always()
+        shell: pwsh
+        working-directory: eden
+        run: |
+          git diff --check | Out-File -Encoding utf8 -FilePath source-diff-check.txt
+          git diff --stat | Out-File -Encoding utf8 -FilePath source-diff-stat.txt
+
+      - name: Publish source preflight record
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: quick-source-${{ matrix.candidate }}-${{ github.sha }}
+          path: |
+            eden/source-diff-check.txt
+            eden/source-diff-stat.txt
+          if-no-files-found: warn
+          retention-days: 7
