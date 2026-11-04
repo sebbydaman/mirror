@@ -41,6 +41,16 @@ In particular, opcode `0x927` (task/mesh `ISBEWR`) is absent from Orchid's *acti
 
 The donor's newer NUP writer optimization and Eglantine's remaining Pokopia/Star Fox/Fast Fusion shaders are also pending independent source-level correctness gates.
 
+## Staged but not yet compiled second-phase candidates
+
+These files are deliberately **not called by the initial unified workflow**; they need their own independent cheap C++ and game-correctness gates after the initial artifact has compiled and packaged:
+
+- `.github/unified/experiments/apply-native-taskmesh-stage-buffer.ps1`: a source-anchor-checked native `0x923/0x927` Task/Mesh read/write lowering candidate based on Eglantine build212 and Orchid's own unused upstream donor. Keeps active Orchid geometry/tessellation read instructions intact. A script-level check verifies `ISBE_nx2` backend availability. Targeted shader compilation and native game testing still outstanding.
+- `.github/unified/experiments/apply-pokedinner-mkw-fps.ps1`: PokeDinner 2.5.0 code-matched optional MKW 30 FPS and dynamic FPS modes. Four exact Orchid v0.7.0 source anchors verified present uniquely; defaults OFF, has a title-ID guard on presentation changes, retains Orchid's built-in DK 30 FPS code and `EDEN_NX2_SWAP_STABLE` policy for other titles. Targeted C++ compile and an affected-game test still outstanding.
+- Lichii build70 dynamic texture arrays, waited-on pipeline scheduling, and back-thread synchronization have not yet been ported: preserve shader-cache and scheduler ownership guarantees.
+
+Both candidates need clean builds and runtime A/B before promotion. No claim of working compatibility or FPS gains for them is supported yet.
+
 ## Preflight and acceptance
 
 1. Pin and verify Orchid's exact SHA and `orchid.profdata`.
