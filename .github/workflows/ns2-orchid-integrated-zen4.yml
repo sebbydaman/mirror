@@ -1,0 +1,365 @@
+name: Orchid Unified Four-Donor Integrated Windows PGO
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ns2-orchid-unified-20261104
+    paths:
+      - '.github/workflows/ns2-orchid-integrated-zen4.yml'
+      - '.github/triggers/run-orchid-integrated.txt'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ns2-orchid-integrated-20261104-zen4-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-final-zen4:
+    runs-on: windows-2022
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout build automation
+        uses: actions/checkout@v5
+        with:
+          path: automation
+          fetch-depth: 1
+
+      - name: Checkout exact Orchid v0.7.0 source
+        uses: actions/checkout@v5
+        with:
+          repository: MythosOfs/Orchid
+          ref: d858fc90683ec55ecca9321081e719e02acbfd28
+          path: eden
+          fetch-depth: 1
+
+      - name: Verify immutable Orchid v0.7.0 baseline and native features
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $expected = 'd858fc90683ec55ecca9321081e719e02acbfd28'
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -ne $expected) { throw "Wrong Orchid baseline: $actual" }
+          if (-not (Test-Path 'orchid.profdata' -PathType Leaf)) { throw 'Orchid trained PGO profile missing' }
+          if ((Get-Item orchid.profdata).Length -lt 1048576) { throw 'Orchid PGO profile is unexpectedly small' }
+          foreach ($path in @('src/video_core/renderer_vulkan/vk_pipeline_cache.cpp', 'src/video_core/renderer_vulkan/vk_fsr3_upscaler.cpp', 'src/core/file_sys/nup_container.cpp', 'src/video_core/buffer_cache/buffer_cache_base.h')) {
+            if (-not (Test-Path $path -PathType Leaf)) { throw "Orchid baseline missing $path" }
+          }
+          if (-not (Select-String -Path 'src/video_core/buffer_cache/buffer_cache_base.h' -SimpleMatch 'ArmReadTraps(' -Quiet)) { throw 'Orchid GPU read traps missing' }
+          if (-not (Select-String -Path 'src/video_core/renderer_vulkan/vk_pipeline_cache.cpp' -SimpleMatch 'CreateGraphicsPipeline' -Quiet)) { throw 'Orchid pipeline restoration missing' }
+          git diff --exit-code
+          if ($LASTEXITCODE -ne 0) { throw 'Baseline modified before compile' }
+          Write-Host 'Verified exact Orchid v0.7.0 base; no legacy PokeDinner/Build142/Build167 patches applied.'
+
+      - name: Apply source-matched Eglantine and Lichii donor patches
+        shell: pwsh
+        working-directory: eden
+        run: |
+          & "$env:GITHUB_WORKSPACE\automation\.github\unified\apply-verified-source-ports.ps1"
+          if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { throw 'Unified ports failed' }
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'Unified patches fail diff check' }
+          git diff --stat
+          & "$env:GITHUB_WORKSPACE\automation\.github\unified\apply-verified-source-ports.ps1"
+          if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { throw 'Unified ports are not idempotent' }
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'Repeat patch fails diff check' }
+
+      - name: Apply all four independently compiled donors to one source tree
+        shell: pwsh
+        working-directory: eden
+        run: |
+          & "$env:GITHUB_WORKSPACE\automation\.github\unified\apply-combined-four-donors.ps1"
+          if (-not $?) { throw 'Four-donor integrated port failed' }
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'Combined port introduces source whitespace errors' }
+          @(
+            'Orchid=MythosOfs/Orchid v0.7.0 d858fc90683ec55ecca9321081e719e02acbfd28'
+            'Earlier Eglantine/Lichii donor source check=GitHub Actions 41868983830'
+            'Independent full C++ target gate=GitHub Actions 41891471057 (four candidates passed)'
+            'Eglantine=build-212 FP16 H0_NH1 and NUP empty ExeFS'
+            'Lichii=build-70 Kirby SMAA phi, native TaskMesh 0x927, Star Fox HID, waited-on Vulkan pipeline'
+            'PokeDinner=2.5.0 native Mario Kart World 30/dynamic FPS (opt-in)'
+            'Validation=All six source adapters applied together, idempotence and invariants checked'
+            'Limit=Full combined GUI compilation, portable packaging and in-game tests outstanding'
+          ) | Set-Content -Path FOUR_DONOR_PROVENANCE.txt -Encoding utf8
+          git diff --stat | Set-Content -Path combined-four-donor-diff-stat.txt -Encoding utf8
+          git diff --check
+
+      - name: Check combined game-specific source invariants and donor provenance
+        shell: pwsh
+        working-directory: eden
+        run: |
+          $checks = @(
+            @('src/shader_recompiler/frontend/ampere/lower_to_maxwell.h', 'H0_NH1 swaps the FP16 halves'),
+            @('src/core/file_sys/nup_container.cpp', 'GetFiles().empty() && dir->GetSubdirectories().empty()'),
+            @('src/shader_recompiler/ir_opt/position_pass.cpp', 'IsFloatBits(arithmetic->Arg(1 - bias_arg), 0)'),
+            @('src/shader_recompiler/ir_opt/position_pass.cpp', 'env.ShaderStage() == Stage::Fragment && inst.Arg(1).U32() < 0x30'),
+            @('src/video_core/renderer_vulkan/vk_rasterizer.cpp', 'DRAWS_TO_DISPATCH = 4096'),
+            @('src/shader_recompiler/frontend/ampere/lower_to_maxwell.h', 'case 0x923: case 0x927:'),
+            @('src/common/settings.h', 'mkw_dynamic_fps'),
+            @('src/core/hle/service/nx2_streamplay.h', 'NGC::ReplyGuestHidSharedMemory(ctx, system, guest_hid_memory)'),
+            @('src/video_core/renderer_vulkan/vk_compute_pipeline.cpp', 'void ComputePipeline::RunBuild()'),
+            @('src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp', 'void GraphicsPipeline::RunBuild()')
+          )
+          foreach ($check in $checks) {
+            if (-not (Select-String -Path $check[0] -SimpleMatch $check[1] -Quiet)) {
+              throw "Missing required game-correctness guard $($check[1])"
+            }
+          }
+          @(
+            'Base=MythosOfs/Orchid v0.7.0 d858fc90683ec55ecca9321081e719e02acbfd28'
+            'Eglantine=build-212 d6efc8ef0849bf7423fe0a96dace49a8a2dcc877'
+            'Eglantine applied=77952c8d8c1bac5d6164587d69150c8ad0156ea0 (H0_NH1)'
+            'Eglantine applied=9279b24e4c487b75d1e8e88a1f99677512be1bab (GetExeFSDir only)'
+            'Lichii=build-70 286117c7e0d89ab0384e896489128fdd88a424f8'
+            'Lichii applied=0aabd552a22d9d45612d4e828a667a808e36eed5 (Kirby shader logic only)'
+            'PokeDinner=2.5.0 216b5034c6 (MKW 30/dynamic FPS opt-in port only)'
+            'Independent donor C++ gates=GitHub Actions run 41891471057 (all four passed)'
+            'Combined source=TaskMesh, MKW FPS, StarFox HID, waited-on Vulkan pipeline builders'
+            'Combined in-game testing=not yet performed'
+            'Limit=No gameplay FPS claim before same-scene A/B tests'
+          ) | Set-Content -Path INTEGRATION_PROVENANCE.txt -Encoding utf8
+          git diff -- src/shader_recompiler/ir_opt/position_pass.cpp src/shader_recompiler/frontend/ampere/lower_to_maxwell.h src/core/file_sys/nup_container.cpp | Set-Content -Path verified-donor-source.diff -Encoding utf8
+
+      - name: Set up MSYS2 clang PGO toolchain
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq pactoys ninja
+          pacboy: >-
+            toolchain:p clang:p lld:p cmake:p python-pip:p
+            qt6-base:p qt6-charts:p qt6-tools:p qt6-translations:p qt6-svg:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p enet:p opus:p
+            libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p
+            lerc:p graphite2:p libwebp:p libtiff:p brotli:p
+
+      - name: Configure exact final Zen4 PGO build
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          test -s orchid.profdata || { echo 'Orchid PGO profile is missing' >&2; exit 1; }
+          profile="-fprofile-use=$(cygpath -m "$PWD/orchid.profdata") -Wno-backend-plugin -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date"
+          zen4="-mtune=znver4"
+          cmake -S . -B build-final -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF -DYUZU_TESTS=OFF -DYUZU_CMD=OFF \
+            -DYUZU_ROOM=OFF -DYUZU_ROOM_STANDALONE=OFF \
+            -DYUZU_USE_BUNDLED_QT=OFF -DYUZU_USE_BUNDLED_SDL3=ON \
+            -DYUZU_USE_BUNDLED_FFMPEG=ON \
+            -DVulkanHeaders_FORCE_BUNDLED=ON -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
+            -DENABLE_UPDATE_CHECKER=OFF -DUSE_DISCORD_PRESENCE=OFF \
+            -DENABLE_WEB_SERVICE=OFF -DENABLE_CUBEB=OFF -DENABLE_LIBUSB=OFF \
+            -DENABLE_WERROR=OFF \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld \
+            "-DCMAKE_C_FLAGS=$profile $zen4" \
+            "-DCMAKE_CXX_FLAGS=$profile $zen4"
+
+      - name: Focused C++ compilation before the full GUI
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          cmake --build build-final --target shader_recompiler --parallel 4
+          cmake --build build-final --target core --parallel 4
+          cmake --build build-final --target video_core --parallel 4
+
+      - name: Build full final GUI and capture compiler log
+        id: build_gui
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set +e
+          cmake --build build-final --target yuzu --parallel 4 --verbose 2>&1 | tee build-final-gui.log
+          status=${PIPESTATUS[0]}
+          set -e
+          grep -n -m1 -E 'fatal error:| error:|undefined reference|FAILED:' build-final-gui.log > first-error.txt || true
+          if [ -s first-error.txt ]; then
+            echo '### First full-build diagnostic' >> "$GITHUB_STEP_SUMMARY"
+            echo '```text' >> "$GITHUB_STEP_SUMMARY"
+            cat first-error.txt >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'No compiler/linker error pattern found in build-final-gui.log.' > first-error.txt
+          fi
+          exit $status
+
+      - name: Upload final full-build compiler logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: final-zen4-full-build-log-${{ github.sha }}
+          path: |
+            eden/build-final-gui.log
+            eden/first-error.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Stage portable runtime on Clang runner
+        shell: msys2 {0}
+        working-directory: eden
+        run: |
+          set -euo pipefail
+          export PATH="/ucrt64/bin:$PATH"
+          cd build-final/bin
+
+          exe=''
+          for candidate in orchid.exe eglantine.exe eden.exe yuzu.exe; do
+            if [ -f "$candidate" ]; then exe="$candidate"; break; fi
+          done
+          [ -n "$exe" ] || { echo 'No GUI executable found' >&2; exit 1; }
+
+          cat > POKOPIA_CONFIG.txt <<'EOF'
+          Multi-game Orchid / Eglantine / Lichii integration
+          ==================================================
+          Start with Orchid's defaults and configure each game's profile individually.
+          Do not force Pokopia's older memory-layout or single-core configuration onto other games.
+          Only use one dynamic-FPS/30-FPS patch at a time when such settings are available.
+          EOF
+
+          cat > FINAL_BUILD_NOTES.txt <<'EOF'
+          Orchid v0.7.0 / targeted multi-fork ports
+          =========================================
+          Source: MythosOfs/Orchid v0.7.0, commit d858fc90683ec55ecca9321081e719e02acbfd28.
+          Toolchain: LLVM/Clang -fprofile-use=orchid.profdata -mtune=znver4.
+          Profile: Orchid's v0.7.0 game-trained profile (not the older Eden-CI profile).
+          Verified source ports: Eglantine FP16/NUP, Lichii Kirby SMAA phi, native TaskMesh 0x927,
+          Star Fox shared-memory HID and waited-on Vulkan pipelines, PokeDinner MKW native 30/dynamic FPS.
+          Four additions passed individual Windows C++ checks in GitHub Actions #41891471057.
+          They are now compiled together only if this integrated workflow completes successfully.
+          Mario Kart World 30/dynamic modes default OFF. Do not enable both at once.
+          Runtime gameplay and performance improvements remain UNVERIFIED until in-game testing.
+          Run each affected game with the same save/settings/cache before making performance claims.
+          EOF
+
+          windeployqt6 --no-translations --no-compiler-runtime --no-opengl-sw \
+            --no-system-dxc-compiler --no-system-d3d-compiler "$exe"
+
+          copy_dep() {
+            local dll="$1"
+            [ -z "$dll" ] && return 0
+            case "${dll,,}" in
+              kernel32.dll|user32.dll|gdi32.dll|advapi32.dll|shell32.dll|ole32.dll|oleaut32.dll|ws2_32.dll|bcrypt.dll|crypt32.dll|ntdll.dll|secur32.dll|setupapi.dll|winmm.dll|version.dll|shlwapi.dll|comdlg32.dll|comctl32.dll|imm32.dll|dwmapi.dll|uxtheme.dll|msimg32.dll|winspool.drv|rpcrt4.dll|normaliz.dll|iphlpapi.dll|dnsapi.dll|userenv.dll|dbghelp.dll|powrprof.dll|cfgmgr32.dll) return 0 ;;
+            esac
+            if [ -f "$dll" ]; then return 0; fi
+            local source=''
+            source=$(find /ucrt64/bin -maxdepth 1 -type f -iname "$dll" -print -quit 2>/dev/null || true)
+            if [ -z "$source" ]; then
+              source=$(command -v "$dll" 2>/dev/null || true)
+            fi
+            [ -n "$source" ] || return 0
+            cp "$source" "$dll"
+            stage_deps "$dll"
+          }
+
+          stage_deps() {
+            local file="$1"
+            objdump -p "$file" 2>/dev/null | awk '/DLL Name:/ {print $3}' | while read -r dep; do
+              copy_dep "$dep"
+            done
+          }
+
+          stage_deps "$exe"
+          while IFS= read -r -d '' dll; do stage_deps "$dll"; done < <(find . -type f -name '*.dll' -print0)
+
+          qt_count=$(find . -type f -iname 'Qt6*.dll' | wc -l)
+          if [ "$qt_count" -gt 0 ]; then
+            if [ ! -f plugins/platforms/qwindows.dll ] && [ ! -f platforms/qwindows.dll ]; then
+              echo 'Qt6 is dynamic but qwindows.dll is missing' >&2
+              exit 1
+            fi
+          fi
+
+          dll_count=$(find . -type f -iname '*.dll' | wc -l)
+          file_count=$(find . -type f | wc -l)
+          {
+            echo "GUI=$exe"
+            echo "DLL_COUNT=$dll_count"
+            echo "FILE_COUNT=$file_count"
+            echo "AUTOMATION_SHA=$GITHUB_SHA"
+          } > COMPILED_CHECKPOINT.txt
+
+          find . -type f -printf '%P\t%s\n' | sort > RUNTIME_MANIFEST.txt
+          cp "$GITHUB_WORKSPACE/automation/.github/unified/RELEASE_SCOPE.md" RELEASE_SCOPE.md
+          cp "$GITHUB_WORKSPACE/eden/FOUR_DONOR_PROVENANCE.txt" FOUR_DONOR_PROVENANCE.txt
+          cp "$GITHUB_WORKSPACE/eden/combined-four-donor-diff-stat.txt" FOUR_DONOR_SOURCE_CHANGES.txt
+          echo 'Four-donor combined source validation completed; not proof of in-game correctness.' > INTEGRATED_FOUR_DONORS.txt
+          echo "Integrated four-donor portable checkpoint staged: $exe, $dll_count DLLs, $file_count files"
+
+      - name: Upload reusable final compiled runtime checkpoint
+        uses: actions/upload-artifact@v7
+        with:
+          name: Orchid-NS2-FourDonors-PGO-Zen4-compiled-${{ github.sha }}
+          path: eden/build-final/bin/**
+          if-no-files-found: error
+          retention-days: 14
+
+  package-final-zen4:
+    needs: build-final-zen4
+    runs-on: windows-2022
+    timeout-minutes: 20
+
+    steps:
+      - name: Download reusable final compiled checkpoint
+        uses: actions/download-artifact@v8
+        with:
+          name: Orchid-NS2-FourDonors-PGO-Zen4-compiled-${{ github.sha }}
+          path: eden/build/bin
+
+      - name: Validate and stage final portable package
+        shell: pwsh
+        run: |
+          $bin = "$env:GITHUB_WORKSPACE\eden\build\bin"
+          if (-not (Test-Path $bin -PathType Container)) { throw "Compiled checkpoint missing: $bin" }
+
+          $gui = @('orchid.exe','eglantine.exe','eden.exe','yuzu.exe') |
+            ForEach-Object { Join-Path $bin $_ } |
+            Where-Object { Test-Path $_ -PathType Leaf } |
+            Select-Object -First 1
+          if (-not $gui) { throw 'Compiled checkpoint has no GUI executable.' }
+          if (-not (Test-Path (Join-Path $bin 'COMPILED_CHECKPOINT.txt') -PathType Leaf)) {
+            throw 'Compiled checkpoint marker is missing.'
+          }
+          foreach ($note in @('POKOPIA_CONFIG.txt','FINAL_BUILD_NOTES.txt','RUNTIME_MANIFEST.txt','RELEASE_SCOPE.md','FOUR_DONOR_PROVENANCE.txt','INTEGRATED_FOUR_DONORS.txt')) {
+            if (-not (Test-Path (Join-Path $bin $note) -PathType Leaf)) { throw "Checkpoint is missing $note" }
+          }
+
+          $qtDlls = @(Get-ChildItem $bin -Filter 'Qt6*.dll' -File -ErrorAction SilentlyContinue)
+          if ($qtDlls.Count -gt 0) {
+            $qwindows = @(
+              (Join-Path $bin 'plugins\platforms\qwindows.dll'),
+              (Join-Path $bin 'platforms\qwindows.dll')
+            ) | Where-Object { Test-Path $_ -PathType Leaf } | Select-Object -First 1
+            if (-not $qwindows) { throw 'Qt runtime is present but qwindows.dll is missing.' }
+          }
+
+          $dllCount = @(Get-ChildItem $bin -Filter '*.dll' -File -Recurse -ErrorAction SilentlyContinue).Count
+          if ($dllCount -lt 5) { throw "Portable checkpoint has suspiciously few DLLs: $dllCount" }
+
+          $out = "$env:GITHUB_WORKSPACE\eden\dist\Orchid-NS2-FourDonors-PGO-Zen4-Windows"
+          if (Test-Path $out) { Remove-Item $out -Recurse -Force }
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          Copy-Item (Join-Path $bin '*') $out -Recurse -Force
+
+          $sha256 = (Get-FileHash -Algorithm SHA256 -Path $gui).Hash
+          Write-Host "Verified source package SHA256 (GUI): $sha256"
+          Write-Host "Final portable package: $out"
+          Write-Host "GUI: $(Split-Path $gui -Leaf)"
+          Write-Host "DLL count: $dllCount"
+          Write-Host "File count: $(@(Get-ChildItem $out -File -Recurse).Count)"
+
+      - name: Upload final optimized runtime
+        uses: actions/upload-artifact@v7
+        with:
+          name: Orchid-NS2-FourDonors-PGO-Zen4-Windows-${{ github.sha }}
+          path: eden/dist/Orchid-NS2-FourDonors-PGO-Zen4-Windows/**
+          if-no-files-found: error
+          retention-days: 14
