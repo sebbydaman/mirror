@@ -44,7 +44,7 @@ jobs:
           $after = (git diff --binary | Out-String)
           if ($before -cne $after) { throw 'Star Fox patch is not idempotent' }
           foreach ($part in @('case 0xf6c:', 'case 0x923: case 0x927:', 'op == 0xf60 || op == 0xf6c')) {
-            if (-not (Select-String 'src/shader_recompiler/frontend/ampere/lower_to_maxwell.h' -SimpleMatch $part -Quiet)) { throw "Missing $part" }
+            if (-not (Select-String -Path 'src/shader_recompiler/frontend/ampere/lower_to_maxwell.h' -Pattern $part -SimpleMatch -Quiet)) { throw "Missing $part" }
           }
           git diff --stat
       - name: Set up MSYS2 clang
