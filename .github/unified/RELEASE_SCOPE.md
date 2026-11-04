@@ -20,10 +20,18 @@ This build **is not a claim that every Eglantine, Lichii and PokeDinner patch wa
 | Donor | Candidate | Why not blanket-merged |
 |---|---|---|
 | Eglantine build-212 | Pokopia native ULEA/compute shader lowering, Fast Fusion shaders and GPU-split waits, Mario Tennis, NUP packer | Need validate against Orchid v0.7 current versions one group at a time |
-| Lichii build-70 | Kirby dynamic texture arrays with separate samplers (#65), inline waited-on pipelines (#71), improved shader CFG (#71) | Shader cache versioning and threading semantics must be reviewed; no stage-specific regressions |
+| Lichii build-70 | Kirby dynamic texture arrays with separate samplers (#65), inline waited-on pipelines (#71) | Shader cache versioning and threading semantics must be reviewed; no stage-specific regressions. Lichii's faster control-flow traversal (#71) is already present in Orchid v0.7.0; do not duplicate. |
 | Lichii build-70 | DKB GPU split synchronization (#70), Star Fox fixes, Sports Resort S16 sysmix (#75) | Significant shared GPU/audio interfaces; affected game smoke tests necessary |
 | PokeDinner 2.5.0 | Splatoon Raiders visuals and any remaining unique Nintendo Switch 2 game-specific work | Exact tag source access/diff required; release notes alone do not prove safe code merge |
 | All | Multiple overlapping 30 FPS/dynamic FPS options | Only one lock per game. Avoid applying duplicate patch engines or changing speed semantics |
+
+## Missing shader instruction coverage
+
+Comparing the actual `src/shader_recompiler/frontend/ampere/lower_to_maxwell.h` switch cases at the three pinned source revisions found **15 Eglantine build-212 and 21 Lichii build-70 case opcodes not represented as cases in Orchid v0.7.0**. This is a syntactic case audit, **not** proof each is unsupported at runtime.
+
+In particular, opcode `0x927` (task/mesh `ISBEWR`) is absent from Orchid's *active* lowering switch, although an unused `lower_to_maxwell_upstream.h` reference does contain `case 0x923: case 0x927`. Active Orchid already treats `0x923` as a geometry/tessellation read; importing the donor's combined case wholesale would replace newer behavior. Review and port an entire coherent task/mesh lowering chain only after a dedicated shader semantic gate, then a C++ and full Windows build. Do not just copy the single switch case.
+
+The donor's newer NUP writer optimization and Eglantine's remaining Pokopia/Star Fox/Fast Fusion shaders are also pending independent source-level correctness gates.
 
 ## Preflight and acceptance
 
