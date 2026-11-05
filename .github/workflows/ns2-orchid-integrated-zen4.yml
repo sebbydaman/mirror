@@ -330,7 +330,8 @@ jobs:
 
           find . -type f -printf '%P\t%s\n' | sort > RUNTIME_MANIFEST.txt
           cp "$GITHUB_WORKSPACE/automation/.github/unified/RELEASE_SCOPE.md" RELEASE_SCOPE.md
-          cp "$GITHUB_WORKSPACE/eden/FOUR_DONOR_PROVENANCE.txt" FOUR_DONOR_PROVENANCE.txt\n          cp "$GITHUB_WORKSPACE/eden/RUNTIME_REPAIR_PROVENANCE.txt" RUNTIME_REPAIR_PROVENANCE.txt
+          cp "$GITHUB_WORKSPACE/eden/FOUR_DONOR_PROVENANCE.txt" FOUR_DONOR_PROVENANCE.txt
+          cp "$GITHUB_WORKSPACE/eden/RUNTIME_REPAIR_PROVENANCE.txt" RUNTIME_REPAIR_PROVENANCE.txt
           cp "$GITHUB_WORKSPACE/eden/combined-four-donor-diff-stat.txt" FOUR_DONOR_SOURCE_CHANGES.txt
           echo 'Four-donor combined source validation completed; not proof of in-game correctness.' > INTEGRATED_FOUR_DONORS.txt
           echo "Integrated four-donor portable checkpoint staged: $exe, $dll_count DLLs, $file_count files"
